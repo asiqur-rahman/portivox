@@ -4,9 +4,28 @@ import { nanoid } from 'nanoid';
 import { TunnelRegistry } from './registry.js';
 import { generateSubdomain } from './subdomain.js';
 
-const app = Fastify({ logger: true });
+type TunnelHttpResponse = {
+  type: 'http_response';
+  streamId: string;
+  statusCode: number;
+  headers?: Record<string, string | string[] | number | undefined>;
+  bodyBase64?: string;
+};
+
+type PendingResponse = {
+  resolve: (response: TunnelHttpResponse) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+};
+
+const app = Fastify({
+  logger: true,
+  bodyLimit: 10 * 1024 * 1024
+});
+
 const registry = new TunnelRegistry();
-const pendingResponses = new Map();
+const pendingResponses = new Map<string, PendingResponse>();
+const requestTimeoutMs = Number(process.env.TUNNEL_REQUEST_TIMEOUT_MS || 30000);
 
 await app.register(websocket);
 
@@ -22,8 +41,8 @@ app.get('/api/tunnels', async () => {
 });
 
 app.all('/tunnel/:subdomain/*', async (request, reply) => {
-  const subdomain = request.params.subdomain;
-  const session = registry.get(subdomain);
+  const params = request.params as { subdomain: string };
+  const session = registry.get(params.subdomain);
 
   if (!session || !session.socket) {
     reply.code(404);
@@ -33,32 +52,52 @@ app.all('/tunnel/:subdomain/*', async (request, reply) => {
   }
 
   const streamId = nanoid();
+  const forwardedPath = request.url.replace(`/tunnel/${params.subdomain}`, '') || '/';
 
-  const responsePromise = new Promise((resolve) => {
-    pendingResponses.set(streamId, resolve);
+  const responsePromise = new Promise<TunnelHttpResponse>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingResponses.delete(streamId);
+      reject(new Error('Tunnel request timed out'));
+    }, requestTimeoutMs);
+
+    pendingResponses.set(streamId, { resolve, reject, timeout });
   });
+
+  const bodyBase64 = request.body
+    ? Buffer.from(typeof request.body === 'string' ? request.body : JSON.stringify(request.body)).toString('base64')
+    : undefined;
 
   session.socket.send(JSON.stringify({
     type: 'http_request',
     streamId,
     method: request.method,
-    path: request.url,
-    headers: request.headers
+    path: forwardedPath,
+    headers: request.headers,
+    bodyBase64
   }));
 
-  const tunnelResponse = await responsePromise;
+  try {
+    const tunnelResponse = await responsePromise;
 
-  reply.code(tunnelResponse.statusCode || 200);
+    reply.code(tunnelResponse.statusCode || 200);
 
-  if (tunnelResponse.headers) {
-    for (const [key, value] of Object.entries(tunnelResponse.headers)) {
-      reply.header(key, value);
+    if (tunnelResponse.headers) {
+      for (const [key, value] of Object.entries(tunnelResponse.headers)) {
+        if (value !== undefined) {
+          reply.header(key, value as string);
+        }
+      }
     }
-  }
 
-  return tunnelResponse.bodyBase64
-    ? Buffer.from(tunnelResponse.bodyBase64, 'base64').toString()
-    : '';
+    return tunnelResponse.bodyBase64
+      ? Buffer.from(tunnelResponse.bodyBase64, 'base64').toString()
+      : '';
+  } catch (error) {
+    reply.code(504);
+    return {
+      error: error instanceof Error ? error.message : 'Tunnel request failed'
+    };
+  }
 });
 
 app.register(async function websocketRoutes(instance) {
@@ -80,13 +119,24 @@ app.register(async function websocketRoutes(instance) {
 
     socket.on('message', (payload) => {
       try {
-        const message = JSON.parse(payload.toString());
+        const message = JSON.parse(payload.toString()) as TunnelHttpResponse | { type: string; streamId?: string; message?: string };
 
         if (message.type === 'http_response' && message.streamId) {
-          const resolver = pendingResponses.get(message.streamId);
+          const pending = pendingResponses.get(message.streamId);
 
-          if (resolver) {
-            resolver(message);
+          if (pending) {
+            clearTimeout(pending.timeout);
+            pending.resolve(message as TunnelHttpResponse);
+            pendingResponses.delete(message.streamId);
+          }
+        }
+
+        if (message.type === 'error' && message.streamId) {
+          const pending = pendingResponses.get(message.streamId);
+
+          if (pending) {
+            clearTimeout(pending.timeout);
+            pending.reject(new Error(message.message || 'Tunnel client error'));
             pendingResponses.delete(message.streamId);
           }
         }
