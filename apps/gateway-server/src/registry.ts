@@ -1,7 +1,10 @@
+import type WebSocket from 'ws';
+
 export interface TunnelSession {
   id: string;
   subdomain: string;
   connectedAt: number;
+  socket?: WebSocket;
 }
 
 export class TunnelRegistry {
@@ -20,6 +23,10 @@ export class TunnelRegistry {
   }
 
   list(): TunnelSession[] {
-    return Array.from(this.sessions.values());
+    return Array.from(this.sessions.values()).map((session) => ({
+      id: session.id,
+      subdomain: session.subdomain,
+      connectedAt: session.connectedAt
+    }));
   }
 }
