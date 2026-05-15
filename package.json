@@ -1,0 +1,13 @@
+{
+  "name": "tunnelix",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:gateway": "npm --workspace apps/gateway-server run dev",
+    "build": "npm run build --workspaces"
+  }
+}
