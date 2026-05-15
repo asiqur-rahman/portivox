@@ -6,6 +6,7 @@ import { generateSubdomain } from './subdomain.js';
 
 const app = Fastify({ logger: true });
 const registry = new TunnelRegistry();
+const pendingResponses = new Map();
 
 await app.register(websocket);
 
@@ -20,6 +21,46 @@ app.get('/api/tunnels', async () => {
   return registry.list();
 });
 
+app.all('/tunnel/:subdomain/*', async (request, reply) => {
+  const subdomain = request.params.subdomain;
+  const session = registry.get(subdomain);
+
+  if (!session || !session.socket) {
+    reply.code(404);
+    return {
+      error: 'Tunnel not connected'
+    };
+  }
+
+  const streamId = nanoid();
+
+  const responsePromise = new Promise((resolve) => {
+    pendingResponses.set(streamId, resolve);
+  });
+
+  session.socket.send(JSON.stringify({
+    type: 'http_request',
+    streamId,
+    method: request.method,
+    path: request.url,
+    headers: request.headers
+  }));
+
+  const tunnelResponse = await responsePromise;
+
+  reply.code(tunnelResponse.statusCode || 200);
+
+  if (tunnelResponse.headers) {
+    for (const [key, value] of Object.entries(tunnelResponse.headers)) {
+      reply.header(key, value);
+    }
+  }
+
+  return tunnelResponse.bodyBase64
+    ? Buffer.from(tunnelResponse.bodyBase64, 'base64').toString()
+    : '';
+});
+
 app.register(async function websocketRoutes(instance) {
   instance.get('/connect', { websocket: true }, (socket) => {
     const subdomain = generateSubdomain();
@@ -27,17 +68,31 @@ app.register(async function websocketRoutes(instance) {
     registry.register({
       id: nanoid(),
       subdomain,
-      connectedAt: Date.now()
+      connectedAt: Date.now(),
+      socket
     });
 
     socket.send(JSON.stringify({
       type: 'tunnel_registered',
       subdomain,
-      publicUrl: `https://${subdomain}.localhost`
+      publicUrl: `http://localhost:8080/tunnel/${subdomain}`
     }));
 
     socket.on('message', (payload) => {
-      app.log.info({ payload: payload.toString() }, 'message received');
+      try {
+        const message = JSON.parse(payload.toString());
+
+        if (message.type === 'http_response' && message.streamId) {
+          const resolver = pendingResponses.get(message.streamId);
+
+          if (resolver) {
+            resolver(message);
+            pendingResponses.delete(message.streamId);
+          }
+        }
+      } catch (error) {
+        app.log.error(error);
+      }
     });
 
     socket.on('close', () => {
