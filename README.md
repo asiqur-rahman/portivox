@@ -2,27 +2,15 @@
 
 Self-hosted reverse tunneling platform inspired by ngrok, FRP, and OpenPort.
 
-## MVP Goal
+## MVP Features
 
-Expose a local application through a secure public tunnel.
-
-```text
-localhost:3000
-↓
-Tunnelix Client
-↓
-Tunnelix Gateway
-↓
-public-url.example.com
-```
-
-## Stack
-
-- Node.js
-- TypeScript
-- Fastify
-- ws
-- Docker
+- WebSocket gateway server
+- Tunnel registration
+- Dynamic subdomain allocation
+- Heartbeat transport
+- Auto reconnecting tunnel client
+- In-memory tunnel registry
+- Docker development environment
 
 ## Repository Structure
 
@@ -32,12 +20,90 @@ apps/
   tunnel-client/
 packages/
   protocol/
-  shared-types/
+docs/
 ```
 
-## Development
+## Local Development
+
+### Start With Docker
+
+```bash
+docker compose up
+```
+
+### Manual Runtime
+
+Install:
 
 ```bash
 npm install
+```
+
+Run gateway:
+
+```bash
 npm run dev:gateway
+```
+
+Run client:
+
+```bash
+npm run dev:client
+```
+
+## Gateway Endpoints
+
+### Health Check
+
+```http
+GET /health
+```
+
+### Active Tunnels
+
+```http
+GET /api/tunnels
+```
+
+### Tunnel WebSocket
+
+```text
+ws://localhost:8080/connect
+```
+
+## MVP Flow
+
+```text
+Tunnel Client
+    ↓
+WebSocket Connection
+    ↓
+Gateway Registration
+    ↓
+Subdomain Assignment
+    ↓
+Heartbeat Maintenance
+```
+
+## Current Limitations
+
+Current implementation is MVP-only.
+
+Not yet implemented:
+- real HTTP forwarding
+- TCP streams
+- authentication
+- persistence
+- TLS
+- distributed scaling
+- dashboard
+
+## Next Phase
+
+Next engineering target:
+
+```text
+localhost:3000
+↓
+remote browser access
 ```
