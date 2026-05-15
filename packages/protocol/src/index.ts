@@ -29,8 +29,26 @@ export interface HeartbeatMessage extends BaseTunnelMessage {
   timestamp: number;
 }
 
+export interface HttpRequestMessage extends BaseTunnelMessage {
+  type: 'http_request';
+  streamId: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  bodyBase64?: string;
+}
+
+export interface HttpResponseMessage extends BaseTunnelMessage {
+  type: 'http_response';
+  streamId: string;
+  statusCode: number;
+  headers: Record<string, string>;
+  bodyBase64?: string;
+}
+
 export interface TunnelErrorMessage extends BaseTunnelMessage {
   type: 'error';
+  streamId?: string;
   message: string;
 }
 
@@ -38,8 +56,9 @@ export type TunnelMessage =
   | RegisterTunnelMessage
   | TunnelRegisteredMessage
   | HeartbeatMessage
-  | TunnelErrorMessage
-  | BaseTunnelMessage;
+  | HttpRequestMessage
+  | HttpResponseMessage
+  | TunnelErrorMessage;
 
 export function encodeMessage(message: TunnelMessage): string {
   return JSON.stringify(message);
@@ -53,4 +72,18 @@ export function decodeMessage(payload: string): TunnelMessage {
   }
 
   return parsed;
+}
+
+export function normalizeHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === 'string') {
+      normalized[key] = value;
+    } else if (Array.isArray(value)) {
+      normalized[key] = value.join(', ');
+    }
+  }
+
+  return normalized;
 }
