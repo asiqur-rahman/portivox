@@ -25,10 +25,10 @@ function requestGateway() {
     const req = http.request(
       {
         host: "127.0.0.1",
-        port: 8080,
+        port: 80,
         path: "/",
         method: "GET",
-        headers: { Host: "demo.localtest.me" },
+        headers: { Host: "demo.app.localtest.me" },
       },
       (res) => {
         const chunks = [];

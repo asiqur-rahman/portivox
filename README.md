@@ -6,6 +6,7 @@ Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP r
 
 - Customer-facing summary: `docs/SECURITY_SUMMARY.md`
 - Full technical details: `docs/FEATURES_SECURITY.md`
+- NGINX single-subdomain setup: `docs/NGINX_SINGLE_SUBDOMAIN.md`
 
 ## What You Need
 - Node.js 22+
@@ -47,9 +48,35 @@ npm run dev:gateway
 docker compose up --build
 ```
 
-By default:
-- Gateway HTTP: `http://localhost:8080`
-- Gateway WS: `ws://localhost:7000/connect`
+By default (with NGINX):
+- App UI + API: `http://app.localtest.me`
+- Gateway WS (for tunnel client): `ws://localhost:7000/connect`
+- Tunnel ingress host pattern: `http://<subdomain>.app.localtest.me`
+
+For local testing, add hosts entries:
+- `127.0.0.1 app.localtest.me`
+- `127.0.0.1 demo.app.localtest.me` (or any tunnel subdomain you test)
+
+## Frontend Console (React + Vite)
+
+Start user frontend:
+
+```bash
+npm run dev:frontend
+```
+
+Open:
+
+```text
+http://localhost:5173
+```
+
+Frontend supports:
+- API key login (header-based)
+- Tunnel list
+- Tunnel create
+- Tunnel delete
+- Admin panel (system state, key management, diagnostics, audit)
 
 ---
 
@@ -130,16 +157,16 @@ Use that host/port from remote machine to connect over SSH/RDP/TCP client.
 
 ## 5) Access Your Exposed App
 
-If your root domain is `localtest.me` and assigned subdomain is `demo`, access:
+If your root domain is `app.localtest.me` and assigned subdomain is `demo`, access:
 
 ```text
-http://demo.localtest.me:8080
+http://demo.app.localtest.me
 ```
 
 In local testing (without DNS), you can simulate host routing:
 
 ```bash
-curl -H "Host: demo.localtest.me" http://localhost:8080/
+curl -H "Host: demo.app.localtest.me" http://localhost/
 ```
 
 ---
