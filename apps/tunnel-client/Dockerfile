@@ -3,8 +3,8 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package*.json ./
-COPY apps/gateway-server/package.json ./apps/gateway-server/package.json
-COPY apps/tunnel-client/package.json ./apps/tunnel-client/package.json
+COPY apps ./apps
+COPY packages ./packages
 RUN npm ci
 
 FROM deps AS builder
@@ -22,6 +22,7 @@ ENV MAX_LOCAL_RESPONSE_BODY_BYTES=2097152
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/apps/tunnel-client/dist ./apps/tunnel-client/dist
 COPY --from=builder /app/apps/tunnel-client/package.json ./apps/tunnel-client/package.json
+COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./package.json
 
 CMD ["node", "apps/tunnel-client/dist/index.js"]

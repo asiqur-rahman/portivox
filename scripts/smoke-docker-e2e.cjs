@@ -73,24 +73,43 @@ async function cleanup() {
   }
 }
 
+async function printLogsFor(service) {
+  try {
+    await run("docker", ["compose", "logs", "--no-color", service]);
+  } catch {
+    // ignore
+  }
+}
+
 async function main() {
   try {
     await run("docker", ["compose", "down", "--remove-orphans"]);
-    await run("docker", ["compose", "up", "-d", "--build", "redis", "gateway", "sample-local-app"]);
-    await run("docker", [
-      "compose",
-      "run",
-      "-d",
-      "--name",
-      "portivox-client-smoke",
-      "client",
-      "open",
-      "3000",
-      "--host",
-      "sample-local-app",
-      "--subdomain",
-      "demo",
-    ]);
+    try {
+      await run("docker", ["compose", "up", "-d", "--build", "redis", "gateway", "sample-local-app"]);
+    } catch (error) {
+      await printLogsFor("gateway");
+      throw error;
+    }
+    try {
+      await run("docker", [
+        "compose",
+        "run",
+        "-d",
+        "--name",
+        "portivox-client-smoke",
+        "client",
+        "open",
+        "3000",
+        "--host",
+        "sample-local-app",
+        "--subdomain",
+        "demo",
+      ]);
+    } catch (error) {
+      await printLogsFor("client");
+      await printLogsFor("gateway");
+      throw error;
+    }
 
     await waitForTunnel();
     console.log("Docker smoke tunnel test passed");
