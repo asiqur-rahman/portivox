@@ -5,9 +5,16 @@ on:
   push:
     tags:
       - "portivox-client-v*"
+  workflow_run:
+    workflows: ["portivox-ci"]
+    types: [completed]
 
 jobs:
   publish:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/portivox-client-v') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -17,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -36,7 +45,30 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Check if version already published
+        id: version_check
+        shell: bash
+        run: |
+        set -euo pipefail
+        PKG_NAME=$(node -p "require('./packages/portivox-client/package.json').name")
+        PKG_VERSION=$(node -p "require('./packages/portivox-client/package.json').version")
+        echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+        echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+        if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+          echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          echo "Version already published: $PKG_NAME@$PKG_VERSION"
+        else
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          echo "Version not published yet: $PKG_NAME@$PKG_VERSION"
+        fi
+
       - name: Publish portivox-client
+        if: steps.version_check.outputs.should_publish == 'true'
         run: npm publish --workspace packages/portivox-client --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip publish notice
+        if: steps.version_check.outputs.should_publish != 'true'
+        run: echo "Skipping publish because version is already on npm"
