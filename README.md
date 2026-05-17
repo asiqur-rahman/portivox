@@ -8,6 +8,7 @@ Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP r
 - Full technical details: `docs/FEATURES_SECURITY.md`
 - NGINX single-subdomain setup: `docs/NGINX_SINGLE_SUBDOMAIN.md`
 - Production deployment: `docs/PRODUCTION_DEPLOYMENT.md`
+- Standalone client publish: `docs/CLIENT_PUBLISH.md`
 
 ## What You Need
 - Node.js 22+
@@ -21,6 +22,14 @@ Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP r
 
 ```bash
 npm install
+```
+
+### Client-only install (recommended for customers)
+
+After publishing `portivox-client` package, customers install only client:
+
+```bash
+npm install -g portivox-client
 ```
 
 ### Docker Shortcuts

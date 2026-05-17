@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run -w apps/gateway-server build && npm run -w apps/tunnel-client build && npm run -w apps/frontend build",
+    "build": "npm run -w apps/gateway-server build && npm run -w apps/tunnel-client build && npm run -w apps/frontend build && npm run -w packages/portivox-client build",
     "openapi:export": "npm run -w apps/gateway-server build && node ./scripts/export-openapi.cjs",
     "openapi:check-sdk-compat": "node ./scripts/check-sdk-openapi-compat.cjs",
     "typecheck": "npm run build",
@@ -37,9 +37,12 @@
     "db:studio": "prisma studio",
     "dev:gateway": "npm run -w apps/gateway-server dev",
     "dev:client": "npm run -w apps/tunnel-client dev --",
+    "dev:client:package": "npm run -w packages/portivox-client dev --",
     "dev:frontend": "npm run -w apps/frontend dev",
     "portivox:register": "npm run -w apps/tunnel-client dev -- register",
     "portivox:open": "npm run -w apps/tunnel-client dev -- open",
+    "client:build": "npm run -w packages/portivox-client build",
+    "client:pack": "npm pack --workspace packages/portivox-client",
     "docker:dev:up": "docker compose up -d --build",
     "docker:dev:down": "docker compose down --remove-orphans",
     "docker:dev:logs": "docker compose logs -f",
