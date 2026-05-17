@@ -32,6 +32,18 @@ After publishing `portivox-client` package, customers install only client:
 npm install -g portivox-client
 ```
 
+### Publish Client to npm (GitHub Actions)
+
+1. Add repo secret: `NPM_TOKEN` (granular token with publish + 2FA bypass).
+2. Push tag:
+
+```bash
+git tag portivox-client-v0.1.0
+git push origin portivox-client-v0.1.0
+```
+
+Or run workflow manually: `publish-portivox-client`.
+
 ### Docker Shortcuts
 
 ```bash
