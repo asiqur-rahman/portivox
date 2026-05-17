@@ -1,4 +1,4 @@
-﻿import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import net from "node:net";
@@ -8,7 +8,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import WebSocket, { WebSocketServer } from "ws";
 import { PrismaClient } from "@prisma/client";
 import { badRequest, gatewayTimeout, notFound, toErrorPayload } from "portivox-errors";
-import { hasScope, parseApiKeys, parseScopes, readBearerToken, validateApiKey, verifyAccessToken } from "portivox-auth";
+import { hasScope, parseApiKeys, parseScopes, readBearerToken, signAccessToken, validateApiKey, verifyAccessToken } from "portivox-auth";
 import { GatewayMetrics } from "./metrics";
 import { buildOpenApiDocument } from "./openapi";
 import { RateLimiter } from "./rate-limit";
@@ -218,6 +218,59 @@ class AuthStore {
       }
     }
     return null;
+  }
+
+  async close(): Promise<void> {
+    if (this.prisma) {
+      await this.prisma.$disconnect();
+    }
+  }
+}
+
+type UserAuthRecord = {
+  id: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+};
+
+class UserAuthStore {
+  private readonly prisma: PrismaClient | null;
+  private readonly memory = new Map<string, UserAuthRecord>();
+
+  constructor() {
+    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  }
+
+  async register(email: string, passwordHash: string): Promise<UserAuthRecord> {
+    if (this.prisma) {
+      const existing = await this.prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        throw new Error("USER_EXISTS");
+      }
+      const row = await this.prisma.user.create({ data: { email, passwordHash } });
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash ?? "", createdAt: row.createdAt.toISOString() };
+    }
+
+    const found = [...this.memory.values()].find((item) => item.email === email);
+    if (found) {
+      throw new Error("USER_EXISTS");
+    }
+    const created: UserAuthRecord = { id: randomUUID(), email, passwordHash, createdAt: new Date().toISOString() };
+    this.memory.set(created.id, created);
+    return created;
+  }
+
+  async findByEmail(email: string): Promise<UserAuthRecord | null> {
+    if (this.prisma) {
+      const row = await this.prisma.user.findUnique({ where: { email } });
+      if (!row || !row.passwordHash) {
+        return null;
+      }
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash, createdAt: row.createdAt.toISOString() };
+    }
+
+    return [...this.memory.values()].find((item) => item.email === email) ?? null;
   }
 
   async close(): Promise<void> {
@@ -539,6 +592,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   });
   const store = new TunnelStore();
   const authStore = new AuthStore();
+  const userAuthStore = new UserAuthStore();
   const auditStore = new AuditStore(new AuditSink({
     jsonlPath: config.auditExportJsonlPath,
     webhookUrl: config.auditExportWebhookUrl,
@@ -673,6 +727,25 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   function hashApiKey(value: string): string {
     return createHash("sha256").update(value).digest("hex");
+  }
+
+  function hashPassword(plaintext: string): string {
+    const salt = randomBytes(16).toString("hex");
+    const digest = scryptSync(plaintext, salt, 64).toString("hex");
+    return `${salt}:${digest}`;
+  }
+
+  function verifyPassword(plaintext: string, passwordHash: string): boolean {
+    const [salt, digest] = passwordHash.split(":");
+    if (!salt || !digest) {
+      return false;
+    }
+    const expected = Buffer.from(digest, "hex");
+    const actual = scryptSync(plaintext, salt, expected.length);
+    if (expected.length !== actual.length) {
+      return false;
+    }
+    return timingSafeEqual(expected, actual);
   }
 
   async function resolvePrincipal(headers: Record<string, unknown>): Promise<Principal | null> {
@@ -871,6 +944,25 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return null;
     }
     return { subdomain: rawBody.subdomain.trim().toLowerCase() };
+  }
+
+  function parseAuthRegisterBody(rawBody: unknown): { email: string; password: string } | null {
+    if (!isPlainObject(rawBody) || !hasOnlyAllowedKeys(rawBody, ["email", "password"])) {
+      return null;
+    }
+    if (typeof rawBody.email !== "string" || typeof rawBody.password !== "string") {
+      return null;
+    }
+    const email = rawBody.email.trim().toLowerCase();
+    const password = rawBody.password;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 128) {
+      return null;
+    }
+    return { email, password };
+  }
+
+  function parseAuthLoginBody(rawBody: unknown): { email: string; password: string } | null {
+    return parseAuthRegisterBody(rawBody);
   }
 
   function parseCreateApiKeyBody(rawBody: unknown): { name: string; scopesRaw?: string } | null {
@@ -1194,6 +1286,73 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const host = typeof req.headers.host === "string" ? req.headers.host : `localhost:${config.gatewayPort}`;
     const scheme = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     return reply.status(200).send(buildOpenApiDocument(`${scheme}://${host}`));
+  });
+
+  app.post("/api/auth/register", async (req, reply) => {
+    const endpoint = "/api/auth/register";
+    const apiLimit = apiWriteLimiter.take(`api:write:auth_register:${req.ip}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    const body = parseAuthRegisterBody(req.body);
+    if (!body) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "Body must include valid { email, password(min 8 chars) }" } });
+    }
+    if (!config.authJwtSecret) {
+      return reply.status(503).send({ error: { code: "JWT_NOT_CONFIGURED", message: "AUTH_JWT_SECRET is required for registration/login" } });
+    }
+    try {
+      const created = await userAuthStore.register(body.email, hashPassword(body.password));
+      const scopes = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"];
+      const role: Principal["role"] = "owner";
+      const token = signAccessToken({ sub: created.id, role, scopes }, config.authJwtSecret, "7d");
+      await auditStore.log(created.id, "user_registered", "user", created.id, { email: created.email });
+      return reply.status(201).send({
+        user: { id: created.id, email: created.email, role },
+        accessToken: token,
+        tokenType: "Bearer",
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "UNKNOWN";
+      if (code === "USER_EXISTS") {
+        return reply.status(409).send({ error: { code: "USER_EXISTS", message: "User already exists" } });
+      }
+      return reply.status(500).send({ error: { code: "REGISTER_FAILED", message: "Registration failed" } });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, reply) => {
+    const endpoint = "/api/auth/login";
+    const apiLimit = apiWriteLimiter.take(`api:write:auth_login:${req.ip}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    const body = parseAuthLoginBody(req.body);
+    if (!body) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "Body must include valid { email, password }" } });
+    }
+    if (!config.authJwtSecret) {
+      return reply.status(503).send({ error: { code: "JWT_NOT_CONFIGURED", message: "AUTH_JWT_SECRET is required for registration/login" } });
+    }
+    const user = await userAuthStore.findByEmail(body.email);
+    if (!user || !verifyPassword(body.password, user.passwordHash)) {
+      return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
+    }
+    const scopes = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"];
+    const role: Principal["role"] = "owner";
+    const token = signAccessToken({ sub: user.id, role, scopes }, config.authJwtSecret, "7d");
+    await auditStore.log(user.id, "user_login", "user", user.id, { email: user.email });
+    return reply.status(200).send({
+      user: { id: user.id, email: user.email, role },
+      accessToken: token,
+      tokenType: "Bearer",
+    });
   });
 
   app.get("/api/tunnels", async (req, reply) => {
@@ -1855,8 +2014,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       wsServer.close();
       await store.close();
       await authStore.close();
+      await userAuthStore.close();
       await auditStore.close();
     },
   };
 }
+
+
 

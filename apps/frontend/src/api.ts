@@ -33,8 +33,35 @@ export type ChunkDiagnostics = {
   chunkIncompleteTimeouts: number;
 };
 
+export type AuthResponse = {
+  user: { id: string; email: string; role: "owner" | "admin" | "viewer" };
+  accessToken: string;
+  tokenType: "Bearer";
+};
+
+type GatewayAuth = {
+  apiKey?: string;
+  accessToken?: string;
+};
+
 export class GatewayApi {
-  constructor(private readonly baseUrl: string, private readonly apiKey: string) {}
+  constructor(private readonly baseUrl: string, private readonly auth: GatewayAuth) {}
+
+  async register(email: string, password: string): Promise<AuthResponse> {
+    return this.request<AuthResponse>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      authOverride: {},
+    });
+  }
+
+  async login(email: string, password: string): Promise<AuthResponse> {
+    return this.request<AuthResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      authOverride: {},
+    });
+  }
 
   async listTunnels(): Promise<TunnelRecord[]> {
     const result = await this.request<{ tunnels: TunnelRecord[] }>("/api/tunnels", { method: "GET" });
@@ -57,7 +84,7 @@ export class GatewayApi {
     return Array.isArray(result.keys) ? result.keys : [];
   }
 
-  async createApiKey(name: string, scopes: string): Promise<{ id: string; name: string; token?: string; scopes?: string[] }> {
+  async createApiKey(name: string, scopes: string): Promise<{ apiKey?: { id: string; name: string; token?: string; scopes?: string[] } }> {
     return this.request("/api/keys", {
       method: "POST",
       body: JSON.stringify({ name, scopes }),
@@ -88,14 +115,23 @@ export class GatewayApi {
     return Array.isArray(result.items) ? result.items : [];
   }
 
-  private async request<T = unknown>(path: string, init: RequestInit): Promise<T> {
+  private async request<T = unknown>(path: string, init: RequestInit & { authOverride?: GatewayAuth }): Promise<T> {
+    const auth = init.authOverride ?? this.auth;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      ...(init.headers as Record<string, string> | undefined),
+    };
+
+    if (auth.apiKey) {
+      headers["x-api-key"] = auth.apiKey;
+    }
+    if (auth.accessToken) {
+      headers.authorization = `Bearer ${auth.accessToken}`;
+    }
+
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": this.apiKey,
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
 
     if (!response.ok) {

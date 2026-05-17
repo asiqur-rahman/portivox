@@ -10,6 +10,9 @@ export function App() {
   const [tab, setTab] = useState<ViewTab>("customer");
   const [gatewayUrl, setGatewayUrl] = useState(DEFAULT_GATEWAY);
   const [apiKey, setApiKey] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const [subdomain, setSubdomain] = useState("");
   const [tunnels, setTunnels] = useState<TunnelRecord[]>([]);
@@ -26,14 +29,17 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
+  const baseUrl = gatewayUrl.replace(/\/$/, "");
   const api = useMemo(() => {
-    if (!apiKey.trim()) return null;
-    return new GatewayApi(gatewayUrl.replace(/\/$/, ""), apiKey.trim());
-  }, [gatewayUrl, apiKey]);
+    if (!apiKey.trim() && !accessToken.trim()) return null;
+    return new GatewayApi(baseUrl, { apiKey: apiKey.trim() || undefined, accessToken: accessToken.trim() || undefined });
+  }, [baseUrl, apiKey, accessToken]);
+
+  const authApi = useMemo(() => new GatewayApi(baseUrl, {}), [baseUrl]);
 
   const withRun = async (fn: () => Promise<void>): Promise<void> => {
     if (!api) {
-      setError("Enter API key first.");
+      setError("Login with JWT or enter API key first.");
       return;
     }
     setLoading(true);
@@ -43,6 +49,36 @@ export function App() {
       await fn();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doRegister = async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const result = await authApi.register(email.trim(), password);
+      setAccessToken(result.accessToken);
+      setStatus(`Registered and logged in as ${result.user.email}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doLogin = async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const result = await authApi.login(email.trim(), password);
+      setAccessToken(result.accessToken);
+      setStatus(`Logged in as ${result.user.email}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setLoading(false);
     }
@@ -64,8 +100,7 @@ export function App() {
     await withRun(async () => {
       await api!.createTunnel(subdomain.trim().toLowerCase());
       setSubdomain("");
-      const rows = await api!.listTunnels();
-      setTunnels(rows);
+      setTunnels(await api!.listTunnels());
       setStatus("Tunnel created.");
     });
   };
@@ -101,7 +136,7 @@ export function App() {
     }
     await withRun(async () => {
       const created = await api!.createApiKey(newKeyName.trim(), newKeyScopes.trim());
-      setCreatedToken(created.token ?? null);
+      setCreatedToken(created.apiKey?.token ?? null);
       setKeys(await api!.listApiKeys());
       setStatus("API key created.");
     });
@@ -139,12 +174,28 @@ export function App() {
           <input value={gatewayUrl} onChange={(event) => setGatewayUrl(event.target.value)} placeholder="http://localhost:8080" />
         </label>
         <label>
-          API Key
+          Email
+          <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
+        </label>
+        <label>
+          Password
+          <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Min 8 chars" type="password" />
+        </label>
+        <div className="row">
+          <button disabled={loading || !email || !password} onClick={() => void doRegister()}>Register</button>
+          <button disabled={loading || !email || !password} onClick={() => void doLogin()}>Login</button>
+        </div>
+        <label>
+          Access Token (JWT)
+          <input value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="Paste bearer token or login above" type="password" />
+        </label>
+        <label>
+          API Key (optional)
           <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="tk_xxx" type="password" />
         </label>
         <div className="row">
-          <button disabled={loading || !apiKey.trim()} onClick={() => void refreshTunnels()}>Load Customer Data</button>
-          <button disabled={loading || !apiKey.trim()} onClick={() => void loadAdminOverview()}>Load Admin Data</button>
+          <button disabled={loading || (!accessToken.trim() && !apiKey.trim())} onClick={() => void refreshTunnels()}>Load Customer Data</button>
+          <button disabled={loading || (!accessToken.trim() && !apiKey.trim())} onClick={() => void loadAdminOverview()}>Load Admin Data</button>
         </div>
       </section>
 
@@ -164,7 +215,7 @@ export function App() {
               Requested Subdomain
               <input value={subdomain} onChange={(event) => setSubdomain(event.target.value)} placeholder="myapp" />
             </label>
-            <button disabled={loading || !apiKey.trim()} onClick={() => void createTunnel()}>Create</button>
+            <button disabled={loading || (!accessToken.trim() && !apiKey.trim())} onClick={() => void createTunnel()}>Create</button>
           </section>
 
           <section className="card">

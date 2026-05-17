@@ -7,6 +7,7 @@ Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP r
 - Customer-facing summary: `docs/SECURITY_SUMMARY.md`
 - Full technical details: `docs/FEATURES_SECURITY.md`
 - NGINX single-subdomain setup: `docs/NGINX_SINGLE_SUBDOMAIN.md`
+- Production deployment: `docs/PRODUCTION_DEPLOYMENT.md`
 
 ## What You Need
 - Node.js 22+
@@ -20,6 +21,15 @@ Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP r
 
 ```bash
 npm install
+```
+
+### Docker Shortcuts
+
+```bash
+npm run docker:dev:up
+npm run docker:dev:down
+npm run docker:prod:up
+npm run docker:prod:down
 ```
 
 Optional (global command):
@@ -72,7 +82,8 @@ http://localhost:5173
 ```
 
 Frontend supports:
-- API key login (header-based)
+- Self register/login (JWT)
+- API key login (optional)
 - Tunnel list
 - Tunnel create
 - Tunnel delete
