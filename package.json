@@ -1,7 +1,10 @@
 {
-  "name": "tunnel-platform",
+  "name": "portivox-platform",
   "private": true,
   "version": "0.1.0",
+  "bin": {
+    "portivox": "scripts/portivox-cli.cjs"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -20,6 +23,7 @@
     "test:security-cors-contract": "node ./scripts/test-security-cors-contract.cjs",
     "test:payload-validation-contract": "node ./scripts/test-payload-validation-contract.cjs",
     "test:idempotency-contract": "node ./scripts/test-idempotency-contract.cjs",
+    "test:audit-query-contract": "node ./scripts/test-audit-query-contract.cjs",
     "test:sdk": "node ./scripts/test-sdk-integration.cjs",
     "test:redis-registry": "node ./scripts/test-registry-redis.cjs",
     "drill:health": "node ./scripts/drills/health-readiness-check.cjs",
@@ -31,10 +35,13 @@
     "db:studio": "prisma studio",
     "dev:gateway": "npm run -w apps/gateway-server dev",
     "dev:client": "npm run -w apps/tunnel-client dev --",
+    "portivox:register": "npm run -w apps/tunnel-client dev -- register",
+    "portivox:open": "npm run -w apps/tunnel-client dev -- open",
     "start:gateway:win": "scripts\\start-gateway.cmd",
     "start:client:win": "scripts\\start-client.cmd",
     "start:gateway:linux": "bash ./scripts/start-gateway.sh",
-    "start:client:linux": "bash ./scripts/start-client.sh"
+    "start:client:linux": "bash ./scripts/start-client.sh",
+    "portivox": "node ./scripts/portivox-cli.cjs"
   },
   "dependencies": {
     "@prisma/client": "^6.8.2",
@@ -44,3 +51,4 @@
     "prisma": "^6.8.2"
   }
 }
+

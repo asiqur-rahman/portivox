@@ -1,7 +1,7 @@
-# Tunnelix API Lifecycle Policy
+﻿# Portivox API Lifecycle Policy
 
 ## Versioning
-- Tunnelix management/admin endpoints are versioned through `x-api-version`.
+- Portivox management/admin endpoints are versioned through `x-api-version`.
 - Current supported API version is controlled by `API_VERSION` (default `1`).
 - Requests to `/api/*` with a different `x-api-version` are rejected with:
   - HTTP `400`
@@ -33,3 +33,4 @@
   - `npm run openapi:export`
   - `npm run openapi:check-sdk-compat`
   - `npm run test:api-contract`
+

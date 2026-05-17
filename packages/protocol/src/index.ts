@@ -4,6 +4,9 @@ export type TunnelMessageType =
   | 'heartbeat'
   | 'http_request'
   | 'http_response'
+  | 'tcp_open'
+  | 'tcp_data'
+  | 'tcp_close'
   | 'stream_chunk'
   | 'stream_end'
   | 'error';
@@ -16,12 +19,16 @@ export interface BaseTunnelMessage {
 export interface RegisterTunnelMessage extends BaseTunnelMessage {
   type: 'register_tunnel';
   desiredSubdomain?: string;
+  tunnelType?: 'http' | 'tcp';
 }
 
 export interface TunnelRegisteredMessage extends BaseTunnelMessage {
   type: 'tunnel_registered';
   subdomain: string;
   publicUrl: string;
+  tunnelType?: 'http' | 'tcp';
+  publicTcpHost?: string;
+  publicTcpPort?: number;
 }
 
 export interface HeartbeatMessage extends BaseTunnelMessage {
@@ -46,6 +53,23 @@ export interface HttpResponseMessage extends BaseTunnelMessage {
   bodyBase64?: string;
 }
 
+export interface TcpOpenMessage extends BaseTunnelMessage {
+  type: 'tcp_open';
+  connectionId: string;
+}
+
+export interface TcpDataMessage extends BaseTunnelMessage {
+  type: 'tcp_data';
+  connectionId: string;
+  dataBase64: string;
+}
+
+export interface TcpCloseMessage extends BaseTunnelMessage {
+  type: 'tcp_close';
+  connectionId: string;
+  reason?: string;
+}
+
 export interface TunnelErrorMessage extends BaseTunnelMessage {
   type: 'error';
   streamId?: string;
@@ -58,6 +82,9 @@ export type TunnelMessage =
   | HeartbeatMessage
   | HttpRequestMessage
   | HttpResponseMessage
+  | TcpOpenMessage
+  | TcpDataMessage
+  | TcpCloseMessage
   | TunnelErrorMessage;
 
 export function encodeMessage(message: TunnelMessage): string {

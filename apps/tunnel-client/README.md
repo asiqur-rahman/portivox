@@ -1,4 +1,4 @@
-# Tunnelix Client
+﻿# Portivox Client
 
 The tunnel client establishes a persistent connection to the gateway server and forwards localhost traffic.
 
@@ -15,3 +15,4 @@ The tunnel client establishes a persistent connection to the gateway server and 
 ```bash
 npm run dev:client
 ```
+

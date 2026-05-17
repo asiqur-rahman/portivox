@@ -1,4 +1,4 @@
-const fs = require("node:fs/promises");
+﻿const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
@@ -51,8 +51,8 @@ async function deliverWithRetry({ webhookUrl, webhookSecret, timeoutMs, maxRetri
   const payload = JSON.stringify(event);
   const headers = { "content-type": "application/json" };
   const signature = signPayload(webhookSecret, payload);
-  if (signature) headers["x-tunnelix-signature"] = signature;
-  headers["x-tunnelix-idempotency-key"] = idempotencyKey;
+  if (signature) headers["x-portivox-signature"] = signature;
+  headers["x-portivox-idempotency-key"] = idempotencyKey;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
@@ -163,3 +163,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

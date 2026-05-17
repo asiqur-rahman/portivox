@@ -1,11 +1,11 @@
-export function buildOpenApiDocument(baseUrl?: string): Record<string, unknown> {
+﻿export function buildOpenApiDocument(baseUrl?: string): Record<string, unknown> {
   const serverUrl = baseUrl && baseUrl.trim() ? baseUrl : "http://localhost:8080";
   return {
     openapi: "3.0.3",
     info: {
-      title: "Tunnelix Gateway API",
+      title: "Portivox Gateway API",
       version: "0.1.0",
-      description: "Management, readiness, observability, and admin APIs for Tunnelix gateway.",
+      description: "Management, readiness, observability, and admin APIs for Portivox gateway.",
     },
     servers: [{ url: serverUrl }],
     components: {
@@ -166,3 +166,4 @@ export function buildOpenApiDocument(baseUrl?: string): Record<string, unknown> 
     },
   };
 }
+

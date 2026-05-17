@@ -1,4 +1,4 @@
-function parseInteger(name, fallback) {
+﻿function parseInteger(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;
@@ -93,7 +93,7 @@ function loadGatewayConfig() {
     authJwtSecret: parseString("AUTH_JWT_SECRET", ""),
     registryBackend: parseEnum("REGISTRY_BACKEND", "memory", ["memory", "redis"]),
     redisUrl: parseString("REDIS_URL", ""),
-    redisKeyPrefix: parseString("REDIS_KEY_PREFIX", "tunnelix:registry"),
+    redisKeyPrefix: parseString("REDIS_KEY_PREFIX", "portivox:registry"),
     registryLeaseTtlMs: parseInteger("REGISTRY_LEASE_TTL_MS", 30000),
     nodeId: parseString("GATEWAY_NODE_ID", ""),
     maxConcurrentStreamsPerTunnel: parseInteger("MAX_CONCURRENT_STREAMS_PER_TUNNEL", 200),
@@ -136,3 +136,4 @@ module.exports = {
   loadGatewayConfig,
   loadClientConfig,
 };
+

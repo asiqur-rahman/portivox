@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Tunnelix Gateway API",
+    "title": "Portivox Gateway API",
     "version": "0.1.0",
-    "description": "Management, readiness, observability, and admin APIs for Tunnelix gateway."
+    "description": "Management, readiness, observability, and admin APIs for Portivox gateway."
   },
   "servers": [
     {

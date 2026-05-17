@@ -1,4 +1,4 @@
-# Tunnelix MVP Roadmap
+﻿# Portivox MVP Roadmap
 
 ## Current Status
 
@@ -33,8 +33,9 @@ Success condition:
 
 ```text
 localhost:3000
-↓
+â†“
 public tunnel URL
-↓
+â†“
 remote browser access
 ```
+

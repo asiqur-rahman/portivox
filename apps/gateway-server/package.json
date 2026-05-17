@@ -1,5 +1,5 @@
 {
-  "name": "@tunnelix/gateway-server",
+  "name": "@portivox/gateway-server",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -12,10 +12,10 @@
     "@fastify/swagger-ui": "^4.2.0",
     "fastify": "^4.28.1",
     "ioredis": "^5.6.1",
-    "tunnelix-auth": "0.1.0",
-    "tunnelix-config": "0.1.0",
-    "tunnelix-errors": "0.1.0",
-    "tunnelix-logger": "0.1.0",
+    "portivox-auth": "0.1.0",
+    "portivox-config": "0.1.0",
+    "portivox-errors": "0.1.0",
+    "portivox-logger": "0.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -25,3 +25,4 @@
     "typescript": "^5.7.2"
   }
 }
+

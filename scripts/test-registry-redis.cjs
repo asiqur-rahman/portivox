@@ -1,4 +1,4 @@
-const { randomUUID } = require("node:crypto");
+﻿const { randomUUID } = require("node:crypto");
 const WebSocket = require("ws");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 
@@ -75,7 +75,7 @@ async function main() {
   let clientB;
   let clientB2;
 
-  const keyPrefix = `tunnelix:test:${randomUUID()}`;
+  const keyPrefix = `portivox:test:${randomUUID()}`;
 
   try {
     const gatewayPortA = await getFreePort();

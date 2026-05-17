@@ -1,4 +1,4 @@
-# Tunnelix 90-Day Execution Plan (World-Class / Industrial Track)
+﻿# Portivox 90-Day Execution Plan (World-Class / Industrial Track)
 
 ## Baseline (Current)
 - Working Phase-1 style MVP exists:
@@ -290,3 +290,4 @@ Local Service <-> Tunnel Client Agent <-> Gateway Cluster
 - Security implications documented.
 - Rollback strategy documented.
 - Runbook updated.
+

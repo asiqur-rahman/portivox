@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+﻿import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -6,8 +6,8 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import WebSocket, { WebSocketServer } from "ws";
 import { PrismaClient } from "@prisma/client";
-import { badRequest, gatewayTimeout, notFound, toErrorPayload } from "tunnelix-errors";
-import { hasScope, parseApiKeys, parseScopes, readBearerToken, validateApiKey, verifyAccessToken } from "tunnelix-auth";
+import { badRequest, gatewayTimeout, notFound, toErrorPayload } from "portivox-errors";
+import { hasScope, parseApiKeys, parseScopes, readBearerToken, validateApiKey, verifyAccessToken } from "portivox-auth";
 import { GatewayMetrics } from "./metrics";
 import { buildOpenApiDocument } from "./openapi";
 import { RateLimiter } from "./rate-limit";
@@ -154,7 +154,7 @@ class AuthStore {
         await this.prisma.user.create({
           data: {
             id: userId,
-            email: `${userId}@local.tunnelix`,
+            email: `${userId}@local.portivox`,
           },
         });
       }
@@ -361,7 +361,7 @@ class AuditStore {
     await this.prisma!.user.create({
       data: {
         id: userId,
-        email: `${userId}@local.tunnelix`,
+        email: `${userId}@local.portivox`,
       },
     });
   }
@@ -489,7 +489,7 @@ class AuditSink {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.webhookSecret) {
       const signature = createHash("sha256").update(`${this.webhookSecret}.${payload}`).digest("hex");
-      headers["x-tunnelix-signature"] = `sha256=${signature}`;
+      headers["x-portivox-signature"] = `sha256=${signature}`;
     }
     try {
       const response = await fetch(this.webhookUrl, {
@@ -1692,3 +1692,4 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     },
   };
 }
+

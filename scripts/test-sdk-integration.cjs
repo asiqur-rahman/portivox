@@ -1,4 +1,4 @@
-const { TunnelixClient } = require("../packages/sdk/index.js");
+﻿const { PortivoxClient } = require("../packages/sdk/index.js");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 
 function getFreePort() {
@@ -39,7 +39,7 @@ async function main() {
 
   try {
     await gateway.start();
-    const client = new TunnelixClient({ baseUrl: `http://127.0.0.1:${gatewayHttpPort}` });
+    const client = new PortivoxClient({ baseUrl: `http://127.0.0.1:${gatewayHttpPort}` });
 
     const health = await client.health();
     if (!health || health.status !== "ok") {
@@ -71,3 +71,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

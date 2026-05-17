@@ -1,12 +1,12 @@
-export type TunnelixClientConfig = {
+﻿export type PortivoxClientConfig = {
   baseUrl: string;
   apiKey?: string;
   bearerToken?: string;
   headers?: Record<string, string>;
 };
 
-export declare class TunnelixClient {
-  constructor(config: TunnelixClientConfig);
+export declare class PortivoxClient {
+  constructor(config: PortivoxClientConfig);
   setApiKey(apiKey?: string): void;
   setBearerToken(token?: string): void;
   health(): Promise<unknown>;
@@ -22,3 +22,4 @@ export declare class TunnelixClient {
   setAdminState(patch: { maintenanceMode?: boolean; draining?: boolean }): Promise<unknown>;
   chunkDiagnostics(): Promise<unknown>;
 }
+

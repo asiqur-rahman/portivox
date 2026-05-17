@@ -1,4 +1,4 @@
-const http = require("node:http");
+﻿const http = require("node:http");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 
 function getFreePort() {
@@ -50,7 +50,7 @@ function assert(condition, message) {
 async function main() {
   const gatewayHttpPort = await getFreePort();
   const gatewayWsPort = await getFreePort();
-  const allowedOrigin = "https://console.tunnelix.local";
+  const allowedOrigin = "https://console.portivox.local";
   const gateway = createGatewayServer({
     gatewayPort: gatewayHttpPort,
     wsPort: gatewayWsPort,
@@ -102,3 +102,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

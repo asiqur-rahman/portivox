@@ -1,5 +1,5 @@
 {
-  "name": "@tunnelix/tunnel-client",
+  "name": "@portivox/tunnel-client",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -8,8 +8,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "tunnelix-config": "0.1.0",
-    "tunnelix-logger": "0.1.0",
+    "portivox-config": "0.1.0",
+    "portivox-logger": "0.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -19,3 +19,4 @@
     "typescript": "^5.7.2"
   }
 }
+

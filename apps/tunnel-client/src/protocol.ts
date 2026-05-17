@@ -1,6 +1,6 @@
 type WireMessage =
-  | { type: "register_tunnel"; requestedSubdomain?: string }
-  | { type: "registered"; subdomain: string }
+  | { type: "register_tunnel"; requestedSubdomain?: string; tunnelType?: "http" | "tcp" }
+  | { type: "registered"; subdomain: string; tunnelType?: "http" | "tcp"; publicTcpHost?: string; publicTcpPort?: number }
   | {
       type: "http_request";
       streamId: string;
@@ -17,6 +17,20 @@ type WireMessage =
       headers: Record<string, string | string[] | number | undefined>;
       bodyBase64: string;
       meta?: StreamTransportMeta;
+    }
+  | {
+      type: "tcp_open";
+      connectionId: string;
+    }
+  | {
+      type: "tcp_data";
+      connectionId: string;
+      dataBase64: string;
+    }
+  | {
+      type: "tcp_close";
+      connectionId: string;
+      reason?: string;
     }
   | { type: "heartbeat"; at: number }
   | { type: "error"; message: string; streamId?: string };

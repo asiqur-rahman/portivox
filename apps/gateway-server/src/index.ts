@@ -1,5 +1,5 @@
-import { loadGatewayConfig } from "tunnelix-config";
-import { createLogger } from "tunnelix-logger";
+﻿import { loadGatewayConfig } from "portivox-config";
+import { createLogger } from "portivox-logger";
 import { createGatewayServer } from "./server";
 
 const logger = createLogger("gateway");

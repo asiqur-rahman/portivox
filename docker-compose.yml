@@ -1,11 +1,11 @@
-version: "3.9"
+﻿version: "3.9"
 
 services:
   gateway:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
-    container_name: tunnelix-gateway
+    container_name: portivox-gateway
     environment:
       GATEWAY_PORT: "8080"
       GATEWAY_WS_PORT: "7000"
@@ -15,7 +15,7 @@ services:
       WS_IDLE_TIMEOUT_MS: "30000"
       REGISTRY_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379"
-      REDIS_KEY_PREFIX: "tunnelix:registry"
+      REDIS_KEY_PREFIX: "portivox:registry"
       REGISTRY_LEASE_TTL_MS: "30000"
     ports:
       - "8080:8080"
@@ -33,7 +33,7 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
-    container_name: tunnelix-gateway-2
+    container_name: portivox-gateway-2
     profiles: ["scale"]
     environment:
       GATEWAY_PORT: "8081"
@@ -44,7 +44,7 @@ services:
       WS_IDLE_TIMEOUT_MS: "30000"
       REGISTRY_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379"
-      REDIS_KEY_PREFIX: "tunnelix:registry"
+      REDIS_KEY_PREFIX: "portivox:registry"
       REGISTRY_LEASE_TTL_MS: "30000"
       GATEWAY_NODE_ID: "gateway-2"
     ports:
@@ -56,14 +56,14 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: tunnelix-redis
+    container_name: portivox-redis
     command: ["redis-server", "--appendonly", "no"]
     ports:
       - "6379:6379"
 
   sample-local-app:
     image: hashicorp/http-echo:1.0.0
-    container_name: tunnelix-sample-local-app
+    container_name: portivox-sample-local-app
     command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
     expose:
       - "3000"
@@ -72,7 +72,7 @@ services:
     build:
       context: .
       dockerfile: apps/tunnel-client/Dockerfile
-    container_name: tunnelix-client
+    container_name: portivox-client
     environment:
       TUNNEL_GATEWAY_URL: "ws://gateway:7000/connect"
       TUNNEL_LOCAL_URL: "http://sample-local-app:3000"
@@ -87,4 +87,5 @@ services:
 
 networks:
   default:
-    name: tunnelix-network
+    name: portivox-network
+

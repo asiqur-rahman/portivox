@@ -10,6 +10,7 @@
 - [ ] `npm run test:security-cors-contract`
 - [ ] `npm run test:payload-validation-contract`
 - [ ] `npm run test:idempotency-contract`
+- [ ] `npm run test:audit-query-contract`
 - [ ] `npm run test:sdk`
 - [ ] `npm run test:auth`
 - [ ] `npm run openapi:export`

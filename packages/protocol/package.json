@@ -1,5 +1,6 @@
 {
-  "name": "tunnelix-protocol",
+  "name": "portivox-protocol",
   "version": "0.1.0",
   "main": "src/index.ts"
 }
+

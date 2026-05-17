@@ -5,6 +5,9 @@ export type WireMessage =
   | Registered
   | HttpRequest
   | HttpResponse
+  | TcpOpen
+  | TcpData
+  | TcpClose
   | Heartbeat
   | ErrorMessage;
 
@@ -24,11 +27,15 @@ export type StreamTransportMeta = {
 export type RegisterTunnel = {
   type: "register_tunnel";
   requestedSubdomain?: string;
+  tunnelType?: "http" | "tcp";
 };
 
 export type Registered = {
   type: "registered";
   subdomain: string;
+  tunnelType?: "http" | "tcp";
+  publicTcpHost?: string;
+  publicTcpPort?: number;
 };
 
 export type HttpRequest = {
@@ -48,6 +55,23 @@ export type HttpResponse = {
   headers: Record<string, string | string[] | number | undefined>;
   bodyBase64: string;
   meta?: StreamTransportMeta;
+};
+
+export type TcpOpen = {
+  type: "tcp_open";
+  connectionId: string;
+};
+
+export type TcpData = {
+  type: "tcp_data";
+  connectionId: string;
+  dataBase64: string;
+};
+
+export type TcpClose = {
+  type: "tcp_close";
+  connectionId: string;
+  reason?: string;
 };
 
 export type Heartbeat = {

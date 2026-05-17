@@ -1,4 +1,4 @@
-const fs = require("node:fs/promises");
+﻿const fs = require("node:fs/promises");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 function mkTmpDir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "tunnelix-audit-replay-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "portivox-audit-replay-"));
 }
 
 function getFreePort() {
@@ -61,8 +61,8 @@ async function testReplaySuccessAndCompaction(tmpDir) {
     req.on("data", (chunk) => body.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     req.on("end", () => {
       received.push({
-        signature: req.headers["x-tunnelix-signature"],
-        idempotency: req.headers["x-tunnelix-idempotency-key"],
+        signature: req.headers["x-portivox-signature"],
+        idempotency: req.headers["x-portivox-idempotency-key"],
         body: Buffer.concat(body).toString("utf8"),
       });
       res.writeHead(200).end("ok");
@@ -156,3 +156,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

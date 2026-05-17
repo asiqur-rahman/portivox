@@ -1,8 +1,8 @@
-import http from "node:http";
+﻿import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
 import WebSocket from "ws";
-import { createLogger } from "tunnelix-logger";
+import { createLogger } from "portivox-logger";
 import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protocol";
 
 export type TunnelClientConfig = {
@@ -262,3 +262,4 @@ function filterHopByHopHeaders<T extends Record<string, string | string[] | numb
   }
   return next as T;
 }
+

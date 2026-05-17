@@ -1,7 +1,7 @@
-class TunnelixClient {
+﻿class PortivoxClient {
   constructor(config) {
     if (!config || !config.baseUrl) {
-      throw new Error("TunnelixClient requires baseUrl");
+      throw new Error("PortivoxClient requires baseUrl");
     }
     this.baseUrl = String(config.baseUrl).replace(/\/+$/, "");
     this.apiKey = config.apiKey || "";
@@ -79,7 +79,7 @@ class TunnelixClient {
     const text = await response.text();
     const maybeJson = text ? tryParseJson(text) : null;
     if (!response.ok) {
-      const error = new Error(`Tunnelix request failed ${response.status}`);
+      const error = new Error(`Portivox request failed ${response.status}`);
       error.status = response.status;
       error.body = maybeJson ?? text;
       throw error;
@@ -91,7 +91,7 @@ class TunnelixClient {
     const response = await this.#fetch(method, path, options);
     const body = await response.text();
     if (!response.ok) {
-      const error = new Error(`Tunnelix request failed ${response.status}`);
+      const error = new Error(`Portivox request failed ${response.status}`);
       error.status = response.status;
       error.body = body;
       throw error;
@@ -131,5 +131,6 @@ function tryParseJson(raw) {
 }
 
 module.exports = {
-  TunnelixClient,
+  PortivoxClient,
 };
+

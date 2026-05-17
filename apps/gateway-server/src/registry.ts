@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+﻿import crypto from "node:crypto";
 import type WebSocket from "ws";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Redis = require("ioredis");
@@ -153,7 +153,7 @@ export class TunnelRegistry {
       if (!options.redisUrl) {
         throw new Error("REGISTRY_BACKEND=redis requires REDIS_URL");
       }
-      this.backend = new RedisRegistryBackend(options.redisUrl, options.redisKeyPrefix ?? "tunnelix:registry");
+      this.backend = new RedisRegistryBackend(options.redisUrl, options.redisKeyPrefix ?? "portivox:registry");
     } else {
       this.backend = new InMemoryRegistryBackend();
     }
@@ -265,3 +265,4 @@ function sanitizeSubdomain(input: string | undefined): string {
 
   return raw;
 }
+

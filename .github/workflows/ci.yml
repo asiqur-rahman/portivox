@@ -57,6 +57,9 @@ jobs:
       - name: Idempotency Contract Test
         run: npm run test:idempotency-contract
 
+      - name: Audit Query Contract Test
+        run: npm run test:audit-query-contract
+
       - name: SDK Integration Test
         run: npm run test:sdk
 
