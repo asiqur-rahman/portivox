@@ -60,6 +60,30 @@ async function waitForTunnel(timeoutMs = 45_000) {
   throw new Error("Timed out waiting for docker tunnel ingress response");
 }
 
+async function waitForGatewayHealthy(timeoutMs = 60_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      await run("docker", ["compose", "ps", "--status", "running", "gateway"]);
+      const result = await new Promise((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: 80, path: "/healthz", method: "GET", headers: { Host: "app.localtest.me" } },
+          (res) => resolve(res.statusCode || 0),
+        );
+        req.on("error", reject);
+        req.end();
+      });
+      if (result === 200) {
+        return;
+      }
+    } catch {
+      // retry
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error("Timed out waiting for gateway to become healthy");
+}
+
 async function cleanup() {
   try {
     await run("docker", ["rm", "-f", "portivox-client-smoke"]);
@@ -90,25 +114,37 @@ async function main() {
       await printLogsFor("gateway");
       throw error;
     }
-    try {
-      await run("docker", [
-        "compose",
-        "run",
-        "-d",
-        "--name",
-        "portivox-client-smoke",
-        "client",
-        "open",
-        "3000",
-        "--host",
-        "sample-local-app",
-        "--subdomain",
-        "demo",
-      ]);
-    } catch (error) {
+    await waitForGatewayHealthy();
+
+    let launched = false;
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await run("docker", [
+          "compose",
+          "run",
+          "-d",
+          "--name",
+          "portivox-client-smoke",
+          "client",
+          "open",
+          "3000",
+          "--host",
+          "sample-local-app",
+          "--subdomain",
+          "demo",
+        ]);
+        launched = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+      }
+    }
+    if (!launched) {
       await printLogsFor("client");
       await printLogsFor("gateway");
-      throw error;
+      throw lastError instanceof Error ? lastError : new Error("Failed to launch client smoke container");
     }
 
     await waitForTunnel();
