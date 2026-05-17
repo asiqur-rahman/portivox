@@ -1,0 +1,19 @@
+{
+  "name": "tunnelix",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted reverse tunneling platform MVP",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:gateway": "npm --workspace apps/gateway-server run dev",
+    "dev:client": "npm --workspace apps/tunnel-client run dev",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
