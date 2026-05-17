@@ -1,84 +1,34 @@
-import http from 'node:http';
-import WebSocket from 'ws';
+import { loadClientConfig } from "tunnelix-config";
+import { TunnelClient } from "./client";
 
-const gatewayUrl = process.env.GATEWAY_URL || 'ws://localhost:8080/connect';
-const localPort = Number(process.env.LOCAL_PORT || 3000);
+const args = process.argv.slice(2);
+const defaultConfig = loadClientConfig();
 
-function forwardRequest(message, socket) {
-  const request = http.request({
-    hostname: '127.0.0.1',
-    port: localPort,
-    path: '/',
-    method: message.method,
-    headers: message.headers
-  }, (response) => {
-    const chunks = [];
-
-    response.on('data', (chunk) => {
-      chunks.push(chunk);
-    });
-
-    response.on('end', () => {
-      const body = Buffer.concat(chunks).toString('base64');
-
-      socket.send(JSON.stringify({
-        type: 'http_response',
-        streamId: message.streamId,
-        statusCode: response.statusCode || 200,
-        headers: response.headers,
-        bodyBase64: body
-      }));
-    });
-  });
-
-  request.on('error', (error) => {
-    socket.send(JSON.stringify({
-      type: 'error',
-      streamId: message.streamId,
-      message: error.message
-    }));
-  });
-
-  request.end();
+function pickArg(argv: string[], name: string): string | undefined {
+  const idx = argv.indexOf(name);
+  if (idx < 0 || idx + 1 >= argv.length) {
+    return undefined;
+  }
+  return argv[idx + 1];
 }
 
-function connect() {
-  const socket = new WebSocket(gatewayUrl);
+const client = new TunnelClient({
+  gatewayUrl: pickArg(args, "--gateway") ?? defaultConfig.gatewayUrl,
+  localBase: pickArg(args, "--local") ?? defaultConfig.localUrl,
+  requestedSubdomain: pickArg(args, "--subdomain"),
+  localTimeoutMs: defaultConfig.localTimeoutMs,
+  maxResponseBodyBytes: defaultConfig.maxLocalResponseBodyBytes,
+  wsHeaders: process.env.TUNNEL_API_KEY ? { "x-api-key": process.env.TUNNEL_API_KEY } : undefined,
+});
 
-  socket.on('open', () => {
-    console.log('Connected to Tunnelix gateway');
+client.start();
 
-    setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'heartbeat',
-          timestamp: Date.now()
-        }));
-      }
-    }, 15000);
-  });
+process.on("SIGINT", () => {
+  client.stop();
+  process.exit(0);
+});
 
-  socket.on('message', (payload) => {
-    const message = JSON.parse(payload.toString());
-
-    console.log('Gateway message:', message.type);
-
-    if (message.type === 'http_request') {
-      forwardRequest(message, socket);
-    }
-  });
-
-  socket.on('close', () => {
-    console.log('Disconnected from gateway. Reconnecting...');
-
-    setTimeout(() => {
-      connect();
-    }, 3000);
-  });
-
-  socket.on('error', (error) => {
-    console.error('Tunnel client error', error);
-  });
-}
-
-connect();
+process.on("SIGTERM", () => {
+  client.stop();
+  process.exit(0);
+});

@@ -1,19 +1,32 @@
 {
-  "name": "tunnelix",
+  "name": "tunnel-platform",
   "private": true,
   "version": "0.1.0",
-  "description": "Self-hosted reverse tunneling platform MVP",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev:gateway": "npm --workspace apps/gateway-server run dev",
-    "dev:client": "npm --workspace apps/tunnel-client run dev",
-    "build": "npm run build --workspaces",
-    "typecheck": "npm run typecheck --workspaces"
+    "build": "npm run -w apps/gateway-server build && npm run -w apps/tunnel-client build",
+    "typecheck": "npm run build",
+    "test:smoke": "node ./scripts/smoke-e2e.cjs",
+    "test:auth": "node ./scripts/test-auth-integration.cjs",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "dev:gateway": "npm run -w apps/gateway-server dev",
+    "dev:client": "npm run -w apps/tunnel-client dev --",
+    "start:gateway:win": "scripts\\start-gateway.cmd",
+    "start:client:win": "scripts\\start-client.cmd",
+    "start:gateway:linux": "bash ./scripts/start-gateway.sh",
+    "start:client:linux": "bash ./scripts/start-client.sh"
   },
-  "engines": {
-    "node": ">=20"
+  "dependencies": {
+    "@prisma/client": "^6.8.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "prisma": "^6.8.2"
   }
 }

@@ -1,22 +1,51 @@
-version: '3.9'
+version: "3.9"
 
 services:
   gateway:
-    image: node:22
-    working_dir: /workspace
-    volumes:
-      - ./:/workspace
-    command: sh -c "npm install && npm run dev:gateway"
+    build:
+      context: .
+      dockerfile: apps/gateway-server/Dockerfile
+    container_name: tunnelix-gateway
+    environment:
+      GATEWAY_PORT: "8080"
+      GATEWAY_WS_PORT: "7000"
+      ROOT_DOMAIN: "localtest.me"
+      MAX_REQUEST_BODY_BYTES: "1048576"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "20000"
+      WS_IDLE_TIMEOUT_MS: "30000"
     ports:
-      - '8080:8080'
+      - "8080:8080"
+      - "7000:7000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  sample-local-app:
+    image: hashicorp/http-echo:1.0.0
+    container_name: tunnelix-sample-local-app
+    command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
+    expose:
+      - "3000"
 
   client:
-    image: node:22
-    working_dir: /workspace
-    volumes:
-      - ./:/workspace
+    build:
+      context: .
+      dockerfile: apps/tunnel-client/Dockerfile
+    container_name: tunnelix-client
     environment:
-      GATEWAY_URL: ws://gateway:8080/connect
-    command: sh -c "npm install && npm run dev:client"
+      TUNNEL_GATEWAY_URL: "ws://gateway:7000/connect"
+      TUNNEL_LOCAL_URL: "http://sample-local-app:3000"
+      TUNNEL_SUBDOMAIN: "demo"
+      LOCAL_REQUEST_TIMEOUT_MS: "15000"
+      MAX_LOCAL_RESPONSE_BODY_BYTES: "2097152"
     depends_on:
-      - gateway
+      gateway:
+        condition: service_healthy
+      sample-local-app:
+        condition: service_started
+
+networks:
+  default:
+    name: tunnelix-network

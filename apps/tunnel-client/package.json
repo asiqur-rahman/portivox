@@ -1,1 +1,21 @@
-{"name":"tunnel-client","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"tsx src/index.ts","build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit"},"dependencies":{"nanoid":"^5.0.9","ws":"^8.18.0"},"devDependencies":{"@types/node":"^22.10.5","tsx":"^4.19.2","typescript":"^5.7.2"}}
+{
+  "name": "@tunnelix/tunnel-client",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "tunnelix-config": "0.1.0",
+    "tunnelix-logger": "0.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}
