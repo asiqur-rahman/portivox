@@ -53,6 +53,25 @@ npm run docker:prod:up
 npm run docker:prod:down
 ```
 
+### Database Provider (PostgreSQL or MySQL)
+
+- Choose provider with `DB_PROVIDER` (`postgresql` default, or `mysql`).
+- Keep one DB connection entry only: `DATABASE_URL`.
+- Prisma commands auto-select schema by provider.
+
+```bash
+npm run db:generate
+npm run db:migrate
+npm run db:migrate:deploy
+```
+
+Provider-specific (optional):
+
+```bash
+npm run db:generate:postgresql
+npm run db:generate:mysql
+```
+
 Optional (global command):
 
 ```bash

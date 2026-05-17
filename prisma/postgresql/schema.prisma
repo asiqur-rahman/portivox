@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  apiKeys      ApiKey[]
+  tunnels      Tunnel[]
+  auditEvents  AuditEvent[]
+}
+
+model ApiKey {
+  id         String   @id @default(uuid())
+  userId     String
+  keyHash    String   @unique
+  name       String
+  scopes     String   @default("tunnel:create,tunnel:read,tunnel:delete")
+  revoked    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  revokedAt  DateTime?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Tunnel {
+  id          String          @id @default(uuid())
+  userId      String
+  subdomain   String          @unique
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  sessions    TunnelSession[]
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model TunnelSession {
+  id            String   @id @default(uuid())
+  tunnelId      String
+  connected     Boolean  @default(true)
+  lastHeartbeat DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tunnel        Tunnel   @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+
+  @@index([tunnelId])
+}
+
+model AuditEvent {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}

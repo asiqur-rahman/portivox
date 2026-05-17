@@ -7,7 +7,7 @@ This guide runs Portivox in a production-oriented Docker Compose topology.
 - `nginx` (public entry for app + API + websocket)
 - `gateway` (core Portivox server)
 - `redis` (tunnel registry backend)
-- external Postgres (managed or self-hosted), referenced only by `DATABASE_URL`
+- external PostgreSQL or MySQL (managed or self-hosted), referenced by `DATABASE_URL`
 
 ## Files
 
@@ -25,6 +25,7 @@ Edit `.env.production` and set real values:
 - `ROOT_DOMAIN`
 - `TCP_PUBLIC_HOST`
 - `AUTH_JWT_SECRET`
+- `DB_PROVIDER` (`postgresql` or `mysql`)
 - `DATABASE_URL`
 
 ## 2) DNS Requirements
