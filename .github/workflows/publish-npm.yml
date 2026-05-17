@@ -41,23 +41,23 @@ jobs:
         id: version_check
         shell: bash
         run: |
-        set -euo pipefail
-        PKG_NAME=$(node -p "require('./packages/portivox-client/package.json').name")
-        PKG_VERSION=$(node -p "require('./packages/portivox-client/package.json').version")
-        echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
-        echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./packages/portivox-client/package.json').name")
+          PKG_VERSION=$(node -p "require('./packages/portivox-client/package.json').version")
+          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
 
-        if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
-          echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          echo "Version already published: $PKG_NAME@$PKG_VERSION"
-        else
-          echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          echo "Version not published yet: $PKG_NAME@$PKG_VERSION"
-        fi
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version already published: $PKG_NAME@$PKG_VERSION"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "Version not published yet: $PKG_NAME@$PKG_VERSION"
+          fi
 
       - name: Publish portivox-client
         if: steps.version_check.outputs.should_publish == 'true'
-        run: npm publish --workspace packages/portivox-client --access public --provenance
+        run: npm publish --workspace packages/portivox-client --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -154,7 +154,7 @@ jobs:
 
       - name: Publish portivox-client
         if: steps.version_check.outputs.should_publish == 'true'
-        run: npm publish --workspace packages/portivox-client --access public --provenance
+        run: npm publish --workspace packages/portivox-client --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
