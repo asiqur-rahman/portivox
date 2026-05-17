@@ -18,6 +18,7 @@ const client = new TunnelClient({
   requestedSubdomain: pickArg(args, "--subdomain"),
   localTimeoutMs: defaultConfig.localTimeoutMs,
   maxResponseBodyBytes: defaultConfig.maxLocalResponseBodyBytes,
+  responseChunkBytes: defaultConfig.responseChunkBytes,
   wsHeaders: process.env.TUNNEL_API_KEY ? { "x-api-key": process.env.TUNNEL_API_KEY } : undefined,
 });
 

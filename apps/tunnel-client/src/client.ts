@@ -3,27 +3,7 @@ import https from "node:https";
 import { URL } from "node:url";
 import WebSocket from "ws";
 import { createLogger } from "tunnelix-logger";
-
-type WireMessage =
-  | { type: "register_tunnel"; requestedSubdomain?: string }
-  | { type: "registered"; subdomain: string }
-  | {
-      type: "http_request";
-      streamId: string;
-      method: string;
-      path: string;
-      headers: Record<string, string | string[] | undefined>;
-      bodyBase64: string;
-    }
-  | {
-      type: "http_response";
-      streamId: string;
-      statusCode: number;
-      headers: Record<string, string | string[] | number | undefined>;
-      bodyBase64: string;
-    }
-  | { type: "heartbeat"; at: number }
-  | { type: "error"; message: string; streamId?: string };
+import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protocol";
 
 export type TunnelClientConfig = {
   gatewayUrl: string;
@@ -31,6 +11,7 @@ export type TunnelClientConfig = {
   requestedSubdomain?: string;
   localTimeoutMs: number;
   maxResponseBodyBytes: number;
+  responseChunkBytes?: number;
   wsHeaders?: Record<string, string>;
 };
 
@@ -77,7 +58,7 @@ export class TunnelClient {
     this.socket.on("message", async (raw) => {
       let msg: WireMessage;
       try {
-        msg = JSON.parse(String(raw));
+        msg = decodeWireMessage(String(raw));
       } catch {
         return;
       }
@@ -93,8 +74,16 @@ export class TunnelClient {
       }
 
       if (msg.type === "http_request") {
-        const response = await this.proxyLocalRequest(msg);
-        this.send(response);
+        this.logger.info("Forwarding tunneled request", {
+          streamId: msg.streamId,
+          tunnelRequestId: typeof msg.headers["x-tunnel-request-id"] === "string" ? msg.headers["x-tunnel-request-id"] : null,
+          method: msg.method,
+          path: msg.path,
+        });
+        const responses = await this.proxyLocalRequest(msg);
+        for (const response of responses) {
+          this.send(response);
+        }
       }
     });
 
@@ -112,7 +101,7 @@ export class TunnelClient {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
     }
-    this.socket.send(JSON.stringify(msg));
+    this.socket.send(encodeWireMessage(msg));
   }
 
   private startHeartbeat(): void {
@@ -142,7 +131,7 @@ export class TunnelClient {
     }, delayMs);
   }
 
-  private async proxyLocalRequest(msg: Extract<WireMessage, { type: "http_request" }>): Promise<Extract<WireMessage, { type: "http_response" }>> {
+  private async proxyLocalRequest(msg: Extract<WireMessage, { type: "http_request" }>): Promise<Extract<WireMessage, { type: "http_response" }>[]> {
     const target = new URL(msg.path, this.config.localBase);
     const transport = target.protocol === "https:" ? https : http;
     const outboundHeaders = filterHopByHopHeaders(msg.headers);
@@ -169,13 +158,15 @@ export class TunnelClient {
             chunks.push(normalized);
           });
           res.on("end", () => {
-            resolve({
-              type: "http_response",
+            const body = Buffer.concat(chunks);
+            resolve(buildResponseFrames({
               streamId: msg.streamId,
               statusCode: res.statusCode ?? 502,
               headers: filterHopByHopHeaders(res.headers),
-              bodyBase64: Buffer.concat(chunks).toString("base64"),
-            });
+              body,
+              requestMeta: msg.meta,
+              chunkBytes: this.config.responseChunkBytes ?? 0,
+            }));
           });
         },
       );
@@ -185,13 +176,14 @@ export class TunnelClient {
       });
 
       req.on("error", (error) => {
-        resolve({
+        resolve([{
           type: "http_response",
           streamId: msg.streamId,
           statusCode: 502,
           headers: { "content-type": "application/json" },
           bodyBase64: Buffer.from(JSON.stringify({ error: error.message })).toString("base64"),
-        });
+          meta: msg.meta,
+        }]);
       });
 
       const body = Buffer.from(msg.bodyBase64, "base64");
@@ -201,6 +193,54 @@ export class TunnelClient {
       req.end();
     });
   }
+}
+
+function buildResponseFrames(args: {
+  streamId: string;
+  statusCode: number;
+  headers: Record<string, string | string[] | number | undefined>;
+  body: Buffer;
+  requestMeta?: Extract<WireMessage, { type: "http_request" }>["meta"];
+  chunkBytes: number;
+}): Extract<WireMessage, { type: "http_response" }>[] {
+  const { streamId, statusCode, headers, body, requestMeta, chunkBytes } = args;
+  if (chunkBytes <= 0 || body.length <= chunkBytes) {
+    const meta = requestMeta ? { ...requestMeta } : undefined;
+    if (meta && "chunk" in meta) {
+      delete meta.chunk;
+    }
+    return [{
+      type: "http_response",
+      streamId,
+      statusCode,
+      headers,
+      bodyBase64: body.toString("base64"),
+      meta,
+    }];
+  }
+
+  const chunks: Extract<WireMessage, { type: "http_response" }>[] = [];
+  const total = Math.ceil(body.length / chunkBytes);
+  for (let index = 0; index < total; index += 1) {
+    const offset = index * chunkBytes;
+    const segment = body.subarray(offset, offset + chunkBytes);
+    chunks.push({
+      type: "http_response",
+      streamId,
+      statusCode,
+      headers,
+      bodyBase64: segment.toString("base64"),
+      meta: {
+        ...(requestMeta ?? {}),
+        chunk: {
+          index,
+          total,
+          final: index === total - 1,
+        },
+      },
+    });
+  }
+  return chunks;
 }
 
 function filterHopByHopHeaders<T extends Record<string, string | string[] | number | undefined>>(headers: T): T {

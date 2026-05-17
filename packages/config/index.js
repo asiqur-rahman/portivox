@@ -12,6 +12,20 @@ function parseInteger(name, fallback) {
   return parsed;
 }
 
+function parseNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid non-negative integer env ${name}=${raw}`);
+  }
+
+  return parsed;
+}
+
 function parseString(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") {
@@ -53,6 +67,18 @@ function parseBoolean(name, fallback) {
   throw new Error(`Invalid boolean env ${name}=${raw}`);
 }
 
+function parseEnum(name, fallback, allowedValues) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const value = raw.trim().toLowerCase();
+  if (!allowedValues.includes(value)) {
+    throw new Error(`Invalid enum env ${name}=${raw}. Allowed: ${allowedValues.join(",")}`);
+  }
+  return value;
+}
+
 function loadGatewayConfig() {
   return {
     gatewayPort: parseInteger("GATEWAY_PORT", 8080),
@@ -65,6 +91,34 @@ function loadGatewayConfig() {
     authApiKeys: parseString("AUTH_API_KEYS", ""),
     authApiKeyScopes: parseString("AUTH_API_KEY_SCOPES", "tunnel:create,tunnel:read,tunnel:delete,key:manage"),
     authJwtSecret: parseString("AUTH_JWT_SECRET", ""),
+    registryBackend: parseEnum("REGISTRY_BACKEND", "memory", ["memory", "redis"]),
+    redisUrl: parseString("REDIS_URL", ""),
+    redisKeyPrefix: parseString("REDIS_KEY_PREFIX", "tunnelix:registry"),
+    registryLeaseTtlMs: parseInteger("REGISTRY_LEASE_TTL_MS", 30000),
+    nodeId: parseString("GATEWAY_NODE_ID", ""),
+    maxConcurrentStreamsPerTunnel: parseInteger("MAX_CONCURRENT_STREAMS_PER_TUNNEL", 200),
+    streamIdleTimeoutMs: parseInteger("STREAM_IDLE_TIMEOUT_MS", 15000),
+    maintenanceMode: parseBoolean("MAINTENANCE_MODE", false),
+    startupGraceMs: parseInteger("STARTUP_GRACE_MS", 0),
+    auditExportJsonlPath: parseString("AUDIT_EXPORT_JSONL_PATH", ""),
+    auditExportWebhookUrl: parseString("AUDIT_EXPORT_WEBHOOK_URL", ""),
+    auditExportWebhookTimeoutMs: parseInteger("AUDIT_EXPORT_WEBHOOK_TIMEOUT_MS", 3000),
+    auditExportWebhookSecret: parseString("AUDIT_EXPORT_WEBHOOK_SECRET", ""),
+    auditExportWebhookMaxRetries: parseInteger("AUDIT_EXPORT_WEBHOOK_MAX_RETRIES", 3),
+    auditExportWebhookRetryBaseMs: parseInteger("AUDIT_EXPORT_WEBHOOK_RETRY_BASE_MS", 250),
+    auditExportDeadLetterJsonlPath: parseString("AUDIT_EXPORT_DEAD_LETTER_JSONL_PATH", ""),
+    apiVersion: parseString("API_VERSION", "1"),
+    apiDeprecationEnabled: parseBoolean("API_DEPRECATION_ENABLED", false),
+    apiSunsetDate: parseString("API_SUNSET_DATE", ""),
+    apiRateLimitReadPerMin: parseInteger("API_RATE_LIMIT_READ_PER_MIN", 600),
+    apiRateLimitWritePerMin: parseInteger("API_RATE_LIMIT_WRITE_PER_MIN", 300),
+    apiRateLimitAdminPerMin: parseInteger("API_RATE_LIMIT_ADMIN_PER_MIN", 120),
+    ingressRateLimitPerMin: parseInteger("INGRESS_RATE_LIMIT_PER_MIN", 1200),
+    corsAllowedOrigins: parseString("CORS_ALLOWED_ORIGINS", ""),
+    corsAllowCredentials: parseBoolean("CORS_ALLOW_CREDENTIALS", false),
+    securityHeadersEnabled: parseBoolean("SECURITY_HEADERS_ENABLED", true),
+    idempotencyEnabled: parseBoolean("IDEMPOTENCY_ENABLED", true),
+    idempotencyTtlMs: parseInteger("IDEMPOTENCY_TTL_MS", 300000),
   };
 }
 
@@ -74,6 +128,7 @@ function loadClientConfig() {
     localUrl: parseUrl("TUNNEL_LOCAL_URL", "http://localhost:3000"),
     localTimeoutMs: parseInteger("LOCAL_REQUEST_TIMEOUT_MS", 15000),
     maxLocalResponseBodyBytes: parseInteger("MAX_LOCAL_RESPONSE_BODY_BYTES", 2097152),
+    responseChunkBytes: parseNonNegativeInteger("RESPONSE_CHUNK_BYTES", 0),
   };
 }
 

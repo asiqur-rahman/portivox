@@ -13,6 +13,10 @@ services:
       MAX_REQUEST_BODY_BYTES: "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "20000"
       WS_IDLE_TIMEOUT_MS: "30000"
+      REGISTRY_BACKEND: "redis"
+      REDIS_URL: "redis://redis:6379"
+      REDIS_KEY_PREFIX: "tunnelix:registry"
+      REGISTRY_LEASE_TTL_MS: "30000"
     ports:
       - "8080:8080"
       - "7000:7000"
@@ -21,6 +25,41 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    depends_on:
+      redis:
+        condition: service_started
+
+  gateway-2:
+    build:
+      context: .
+      dockerfile: apps/gateway-server/Dockerfile
+    container_name: tunnelix-gateway-2
+    profiles: ["scale"]
+    environment:
+      GATEWAY_PORT: "8081"
+      GATEWAY_WS_PORT: "7001"
+      ROOT_DOMAIN: "localtest.me"
+      MAX_REQUEST_BODY_BYTES: "1048576"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "20000"
+      WS_IDLE_TIMEOUT_MS: "30000"
+      REGISTRY_BACKEND: "redis"
+      REDIS_URL: "redis://redis:6379"
+      REDIS_KEY_PREFIX: "tunnelix:registry"
+      REGISTRY_LEASE_TTL_MS: "30000"
+      GATEWAY_NODE_ID: "gateway-2"
+    ports:
+      - "8081:8081"
+      - "7001:7001"
+    depends_on:
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    container_name: tunnelix-redis
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
 
   sample-local-app:
     image: hashicorp/http-echo:1.0.0

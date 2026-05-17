@@ -9,6 +9,34 @@ export type GatewayConfig = {
   authApiKeys: string;
   authApiKeyScopes: string;
   authJwtSecret: string;
+  registryBackend: "memory" | "redis";
+  redisUrl: string;
+  redisKeyPrefix: string;
+  registryLeaseTtlMs: number;
+  nodeId: string;
+  maxConcurrentStreamsPerTunnel: number;
+  streamIdleTimeoutMs: number;
+  maintenanceMode: boolean;
+  startupGraceMs: number;
+  auditExportJsonlPath: string;
+  auditExportWebhookUrl: string;
+  auditExportWebhookTimeoutMs: number;
+  auditExportWebhookSecret: string;
+  auditExportWebhookMaxRetries: number;
+  auditExportWebhookRetryBaseMs: number;
+  auditExportDeadLetterJsonlPath: string;
+  apiVersion: string;
+  apiDeprecationEnabled: boolean;
+  apiSunsetDate: string;
+  apiRateLimitReadPerMin: number;
+  apiRateLimitWritePerMin: number;
+  apiRateLimitAdminPerMin: number;
+  ingressRateLimitPerMin: number;
+  corsAllowedOrigins: string;
+  corsAllowCredentials: boolean;
+  securityHeadersEnabled: boolean;
+  idempotencyEnabled: boolean;
+  idempotencyTtlMs: number;
 };
 
 export type ClientConfig = {
@@ -16,6 +44,7 @@ export type ClientConfig = {
   localUrl: string;
   localTimeoutMs: number;
   maxLocalResponseBodyBytes: number;
+  responseChunkBytes: number;
 };
 
 export function loadGatewayConfig(): GatewayConfig;

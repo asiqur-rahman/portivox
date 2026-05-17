@@ -70,6 +70,7 @@ async function main() {
     const jwtSecret = "integration-secret";
     const userToken = signAccessToken({ sub: "user-alpha", scopes: ["key:manage", "tunnel:read", "tunnel:create", "tunnel:delete"] }, jwtSecret, "2h");
     const otherToken = signAccessToken({ sub: "user-beta" }, jwtSecret, "2h");
+    const viewerToken = signAccessToken({ sub: "user-viewer", role: "viewer", scopes: ["key:manage", "tunnel:read"] }, jwtSecret, "2h");
 
     server = createGatewayServer({
       gatewayPort,
@@ -97,6 +98,39 @@ async function main() {
       throw new Error(`api key create failed: ${createKeyRes.statusCode} ${JSON.stringify(createKeyRes.body)}`);
     }
     const issuedApiKey = createKeyRes.body.apiKey.token;
+
+    const viewerDeniedKeyCreate = await requestJson({
+      port: gatewayPort,
+      path: "/api/keys",
+      method: "POST",
+      headers: { authorization: `Bearer ${viewerToken}` },
+      body: { name: "viewer-should-fail" },
+    });
+    if (viewerDeniedKeyCreate.statusCode !== 403) {
+      throw new Error(`role check failed: expected 403 got ${viewerDeniedKeyCreate.statusCode}`);
+    }
+
+    const viewerDeniedAdminState = await requestJson({
+      port: gatewayPort,
+      path: "/api/admin/state",
+      method: "POST",
+      headers: { authorization: `Bearer ${viewerToken}` },
+      body: { maintenanceMode: true },
+    });
+    if (viewerDeniedAdminState.statusCode !== 403) {
+      throw new Error(`admin state role check failed: expected 403 got ${viewerDeniedAdminState.statusCode}`);
+    }
+
+    const ownerAdminState = await requestJson({
+      port: gatewayPort,
+      path: "/api/admin/state",
+      method: "POST",
+      headers: { authorization: `Bearer ${userToken}` },
+      body: { maintenanceMode: false, draining: false },
+    });
+    if (ownerAdminState.statusCode !== 200) {
+      throw new Error(`admin state update failed: ${ownerAdminState.statusCode}`);
+    }
 
     const readOnlyKeyRes = await requestJson({
       port: gatewayPort,

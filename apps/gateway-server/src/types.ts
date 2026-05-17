@@ -8,6 +8,19 @@ export type WireMessage =
   | Heartbeat
   | ErrorMessage;
 
+export type StreamTransportMeta = {
+  flags?: string[];
+  chunk?: {
+    index: number;
+    total?: number;
+    final?: boolean;
+  };
+  window?: {
+    credit?: number;
+    ackedBytes?: number;
+  };
+};
+
 export type RegisterTunnel = {
   type: "register_tunnel";
   requestedSubdomain?: string;
@@ -25,6 +38,7 @@ export type HttpRequest = {
   path: string;
   headers: IncomingHttpHeaders;
   bodyBase64: string;
+  meta?: StreamTransportMeta;
 };
 
 export type HttpResponse = {
@@ -33,6 +47,7 @@ export type HttpResponse = {
   statusCode: number;
   headers: Record<string, string | string[] | number | undefined>;
   bodyBase64: string;
+  meta?: StreamTransportMeta;
 };
 
 export type Heartbeat = {

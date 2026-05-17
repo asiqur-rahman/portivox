@@ -27,8 +27,38 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: OpenAPI Export
+        run: npm run openapi:export
+
+      - name: OpenAPI SDK Compatibility Check
+        run: npm run openapi:check-sdk-compat
+
       - name: Smoke Test
         run: npm run test:smoke
+
+      - name: Chunk Integration Test
+        run: npm run test:chunk
+
+      - name: Audit Replay Integration Test
+        run: npm run test:audit-replay
+
+      - name: API Contract Test
+        run: npm run test:api-contract
+
+      - name: Rate Limit Contract Test
+        run: npm run test:rate-limit-contract
+
+      - name: Security CORS Contract Test
+        run: npm run test:security-cors-contract
+
+      - name: Payload Validation Contract Test
+        run: npm run test:payload-validation-contract
+
+      - name: Idempotency Contract Test
+        run: npm run test:idempotency-contract
+
+      - name: SDK Integration Test
+        run: npm run test:sdk
 
       - name: Auth Integration Test
         run: npm run test:auth
