@@ -67,7 +67,7 @@ async function waitForGatewayHealthy(timeoutMs = 60_000) {
       await run("docker", ["compose", "ps", "--status", "running", "gateway"]);
       const result = await new Promise((resolve, reject) => {
         const req = http.request(
-          { host: "127.0.0.1", port: 80, path: "/healthz", method: "GET", headers: { Host: "app.localtest.me" } },
+          { host: "127.0.0.1", port: 8080, path: "/healthz", method: "GET" },
           (res) => resolve(res.statusCode || 0),
         );
         req.on("error", reject);
