@@ -75,7 +75,7 @@ async function main() {
     server = createGatewayServer({
       gatewayPort,
       wsPort,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 10000,
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
@@ -199,3 +199,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

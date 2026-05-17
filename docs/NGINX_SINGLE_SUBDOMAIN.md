@@ -4,17 +4,17 @@ This project now includes an NGINX reverse proxy to run the user app, API, webso
 
 ## Domain Model
 
-- App domain (UI + API + WS): `app.localtest.me`
-- Tunnel domains: `*.app.localtest.me` (example: `demo.app.localtest.me`)
+- App domain (UI + API + WS): `portivox.braintechsolution.com`
+- Tunnel domains: `*.portivox.braintechsolution.com` (example: `demo.portivox.braintechsolution.com`)
 
 ## Routing Rules
 
-On `app.localtest.me`:
+On `portivox.braintechsolution.com`:
 - `/` -> Frontend (React build)
 - `/api/*` -> Gateway HTTP API
 - `/connect` -> Gateway WebSocket endpoint
 
-On `*.app.localtest.me`:
+On `*.portivox.braintechsolution.com`:
 - `/*` -> Gateway tunnel ingress
 
 ## Docker Compose
@@ -31,8 +31,8 @@ Public entrypoint is NGINX on port `80`.
 
 Add these for local testing:
 
-- `127.0.0.1 app.localtest.me`
-- `127.0.0.1 demo.app.localtest.me`
+- `127.0.0.1 portivox.braintechsolution.com`
+- `127.0.0.1 demo.portivox.braintechsolution.com`
 
 ## Files
 
@@ -44,3 +44,4 @@ Add these for local testing:
 
 - Tunnel clients still connect to gateway websocket on `ws://localhost:7000/connect` in local docker setup.
 - For production, place TLS in front of NGINX (or terminate at NGINX with certs) and use `wss://` for client websocket.
+

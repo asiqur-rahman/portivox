@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 GATEWAY_WS_PORT="${GATEWAY_WS_PORT:-7000}"
-ROOT_DOMAIN="${ROOT_DOMAIN:-localtest.me}"
+ROOT_DOMAIN="${ROOT_DOMAIN:-portivox.braintechsolution.com}"
 
 export GATEWAY_PORT
 export GATEWAY_WS_PORT

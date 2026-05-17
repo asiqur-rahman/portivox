@@ -1,4 +1,4 @@
-﻿function parseInteger(name, fallback) {
+function parseInteger(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;
@@ -83,7 +83,7 @@ function loadGatewayConfig() {
   return {
     gatewayPort: parseInteger("GATEWAY_PORT", 8080),
     wsPort: parseInteger("GATEWAY_WS_PORT", 7000),
-    rootDomain: parseRootDomain("ROOT_DOMAIN", "localtest.me"),
+    rootDomain: parseRootDomain("ROOT_DOMAIN", "portivox.braintechsolution.com"),
     tunnelResponseTimeoutMs: parseInteger("TUNNEL_RESPONSE_TIMEOUT_MS", 20000),
     wsIdleTimeoutMs: parseInteger("WS_IDLE_TIMEOUT_MS", 30000),
     maxRequestBodyBytes: parseInteger("MAX_REQUEST_BODY_BYTES", 1048576),
@@ -141,4 +141,5 @@ module.exports = {
   loadGatewayConfig,
   loadClientConfig,
 };
+
 

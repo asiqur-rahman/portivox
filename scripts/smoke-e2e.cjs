@@ -49,7 +49,7 @@ function requestTunnel(gatewayHttpPort) {
         port: gatewayHttpPort,
         path: "/",
         method: "GET",
-        headers: { Host: "demo.localtest.me" },
+        headers: { Host: "demo.portivox.braintechsolution.com" },
       },
       (res) => {
         const chunks = [];
@@ -76,7 +76,7 @@ async function main() {
     const gatewayConfig = {
       gatewayPort: gatewayHttpPort,
       wsPort: gatewayWsPort,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 20000,
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
@@ -121,3 +121,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

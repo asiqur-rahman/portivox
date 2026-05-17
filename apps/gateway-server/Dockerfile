@@ -16,7 +16,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV GATEWAY_PORT=8080
 ENV GATEWAY_WS_PORT=7000
-ENV ROOT_DOMAIN=localtest.me
+ENV ROOT_DOMAIN=portivox.braintechsolution.com
 ENV MAX_REQUEST_BODY_BYTES=1048576
 ENV TUNNEL_RESPONSE_TIMEOUT_MS=20000
 ENV WS_IDLE_TIMEOUT_MS=30000
@@ -30,3 +30,4 @@ COPY --from=builder /app/package.json ./package.json
 
 EXPOSE 8080 7000
 CMD ["node", "apps/gateway-server/dist/index.js"]
+

@@ -1,4 +1,4 @@
-﻿const { randomUUID } = require("node:crypto");
+const { randomUUID } = require("node:crypto");
 const WebSocket = require("ws");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 
@@ -86,7 +86,7 @@ async function main() {
     gatewayA = createGatewayServer({
       gatewayPort: gatewayPortA,
       wsPort: wsPortA,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 10000,
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
@@ -101,7 +101,7 @@ async function main() {
     gatewayB = createGatewayServer({
       gatewayPort: gatewayPortB,
       wsPort: wsPortB,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 10000,
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
@@ -149,3 +149,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

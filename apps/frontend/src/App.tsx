@@ -229,7 +229,7 @@ export function App() {
                   {tunnels.map((tunnel) => (
                     <tr key={tunnel.id}>
                       <td>{tunnel.subdomain}</td>
-                      <td>{`http://${tunnel.subdomain}.app.localtest.me`}</td>
+                      <td>{`http://${tunnel.subdomain}.portivox.braintechsolution.com`}</td>
                       <td>{new Date(tunnel.createdAt).toLocaleString()}</td>
                       <td><button className="danger" disabled={loading} onClick={() => void deleteTunnel(tunnel.id)}>Delete</button></td>
                     </tr>
@@ -317,3 +317,4 @@ export function App() {
     </main>
   );
 }
+

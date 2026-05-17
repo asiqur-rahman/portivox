@@ -1,4 +1,4 @@
-﻿const { PortivoxClient } = require("../packages/sdk/index.js");
+const { PortivoxClient } = require("../packages/sdk/index.js");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 
 function getFreePort() {
@@ -30,7 +30,7 @@ async function main() {
   const gateway = createGatewayServer({
     gatewayPort: gatewayHttpPort,
     wsPort: gatewayWsPort,
-    rootDomain: "localtest.me",
+    rootDomain: "portivox.braintechsolution.com",
     tunnelResponseTimeoutMs: 8000,
     wsIdleTimeoutMs: 30000,
     maxRequestBodyBytes: 1048576,
@@ -71,4 +71,5 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+
 

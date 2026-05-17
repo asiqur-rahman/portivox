@@ -30,12 +30,12 @@ Edit `.env.production` and set real values:
 ## 2) DNS Requirements
 
 Create DNS records:
-- `app.<your-domain>` -> gateway host/LB
-- `* .app.<your-domain>` wildcard -> same host/LB
+- `portivox.braintechsolution.com` -> gateway host/LB
+- `* .portivox.braintechsolution.com` wildcard -> same host/LB
 
 Example:
-- `app.example.com`
-- `*.app.example.com`
+- `portivox.braintechsolution.com`
+- `*.portivox.braintechsolution.com`
 
 ## 3) Start Stack
 
@@ -57,7 +57,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.production logs -f gat
 ```
 
 App/API should be reachable on:
-- `http://app.<your-domain>` (or HTTPS behind TLS)
+- `http://portivox.braintechsolution.com` (or HTTPS behind TLS)
 
 ## TLS Recommendation
 
@@ -65,7 +65,7 @@ For real production, terminate TLS on:
 - external load balancer (recommended), or
 - NGINX with certificate config.
 
-Tunnel clients should use `wss://app.<your-domain>/connect` when TLS is enabled.
+Tunnel clients should use `wss://portivox.braintechsolution.com/connect` when TLS is enabled.
 
 ## TCP Tunnel Ports
 
@@ -80,3 +80,4 @@ Open that range in firewall/security groups.
 - Rotate API keys and JWT secret on schedule.
 - Back up `postgres_data` and `redis_data` volumes.
 - Keep Docker images patched and pinned in release process.
+

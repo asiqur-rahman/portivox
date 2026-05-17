@@ -28,7 +28,7 @@ function requestGateway() {
         port: 80,
         path: "/",
         method: "GET",
-        headers: { Host: "demo.app.localtest.me" },
+        headers: { Host: "demo.portivox.braintechsolution.com" },
       },
       (res) => {
         const chunks = [];
@@ -184,3 +184,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+

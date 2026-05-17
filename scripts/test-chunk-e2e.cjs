@@ -42,7 +42,7 @@ function startLocalApp(port, payload) {
   });
 }
 
-function requestTunnel({ gatewayHttpPort, hostHeader = "demo.localtest.me", path = "/" }) {
+function requestTunnel({ gatewayHttpPort, hostHeader = "demo.portivox.braintechsolution.com", path = "/" }) {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -78,7 +78,7 @@ async function runChunkReassemblyHappyPath() {
     gateway = createGatewayServer({
       gatewayPort: gatewayHttpPort,
       wsPort: gatewayWsPort,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 8000,
       streamIdleTimeoutMs: 5000,
       wsIdleTimeoutMs: 30000,
@@ -118,7 +118,7 @@ async function runChunkIncompleteTimeoutPath() {
     gateway = createGatewayServer({
       gatewayPort: gatewayHttpPort,
       wsPort: gatewayWsPort,
-      rootDomain: "localtest.me",
+      rootDomain: "portivox.braintechsolution.com",
       tunnelResponseTimeoutMs: 3000,
       streamIdleTimeoutMs: 1200,
       wsIdleTimeoutMs: 30000,
@@ -176,3 +176,4 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+
