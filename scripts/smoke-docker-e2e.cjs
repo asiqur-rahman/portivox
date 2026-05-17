@@ -64,16 +64,25 @@ async function waitForGatewayHealthy(timeoutMs = 60_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
-      await run("docker", ["compose", "ps", "--status", "running", "gateway"]);
-      const result = await new Promise((resolve, reject) => {
-        const req = http.request(
-          { host: "127.0.0.1", port: 8080, path: "/healthz", method: "GET" },
-          (res) => resolve(res.statusCode || 0),
-        );
-        req.on("error", reject);
-        req.end();
+      const status = await new Promise((resolve, reject) => {
+        const child = spawn("docker", ["inspect", "-f", "{{.State.Health.Status}}", "portivox-gateway"], {
+          stdio: ["ignore", "pipe", "pipe"],
+          shell: process.platform === "win32",
+        });
+        let out = "";
+        child.stdout.on("data", (chunk) => {
+          out += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("exit", (code) => {
+          if (code === 0) {
+            resolve(out.trim());
+          } else {
+            reject(new Error("docker inspect failed"));
+          }
+        });
       });
-      if (result === 200) {
+      if (status === "healthy") {
         return;
       }
     } catch {
