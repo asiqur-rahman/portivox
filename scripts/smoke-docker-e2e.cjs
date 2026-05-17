@@ -46,9 +46,13 @@ function requestGateway() {
 
 async function waitForTunnel(timeoutMs = 45_000) {
   const started = Date.now();
+  let lastStatus = 0;
+  let lastBody = "";
   while (Date.now() - started < timeoutMs) {
     try {
       const result = await requestGateway();
+      lastStatus = result.statusCode;
+      lastBody = result.body;
       if (result.statusCode === 200 && result.body.includes("hello-from-docker-local-app")) {
         return;
       }
@@ -57,7 +61,8 @@ async function waitForTunnel(timeoutMs = 45_000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 1200));
   }
-  throw new Error("Timed out waiting for docker tunnel ingress response");
+  const snippet = (lastBody || "").slice(0, 300);
+  throw new Error(`Timed out waiting for docker tunnel ingress response (lastStatus=${lastStatus}, lastBody=${JSON.stringify(snippet)})`);
 }
 
 async function waitForGatewayHealthy(timeoutMs = 60_000) {
@@ -159,7 +164,14 @@ async function main() {
       throw lastError instanceof Error ? lastError : new Error("Failed to launch client smoke container");
     }
 
-    await waitForTunnel();
+    try {
+      await waitForTunnel();
+    } catch (error) {
+      await printLogsFor("client");
+      await printLogsFor("gateway");
+      await printLogsFor("nginx");
+      throw error;
+    }
     console.log("Docker smoke tunnel test passed");
   } finally {
     await cleanup();
