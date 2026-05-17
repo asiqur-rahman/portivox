@@ -80,13 +80,13 @@ docker compose up --build
 ```
 
 By default (with NGINX):
-- App UI + API: `http://app.localtest.me`
+- App UI + API: `http://portivox.braintechsolution.com`
 - Gateway WS (for tunnel client): `ws://localhost:7000/connect`
-- Tunnel ingress host pattern: `http://<subdomain>.app.localtest.me`
+- Tunnel ingress host pattern: `http://<subdomain>.portivox.braintechsolution.com`
 
 For local testing, add hosts entries:
-- `127.0.0.1 app.localtest.me`
-- `127.0.0.1 demo.app.localtest.me` (or any tunnel subdomain you test)
+- `127.0.0.1 portivox.braintechsolution.com`
+- `127.0.0.1 demo.portivox.braintechsolution.com` (or any tunnel subdomain you test)
 
 ## Frontend Console (React + Vite)
 
@@ -135,7 +135,7 @@ npm run portivox:register -- tk_your_api_key
 Optional custom gateway:
 
 ```bash
-npm run portivox:register -- tk_your_api_key --gateway ws://your-gateway:7000/connect
+npm run portivox:register -- tk_your_api_key --gateway wss://portivox.braintechsolution.com/connect
 ```
 
 Saved config path:
@@ -164,7 +164,7 @@ Optional:
   ```
 - Custom gateway:
   ```bash
-  npm run portivox:open -- 3000 --gateway ws://your-gateway:7000/connect
+  npm run portivox:open -- 3000 --gateway wss://portivox.braintechsolution.com/connect
   ```
 
 When connected, the client prints the assigned subdomain/session details.
@@ -189,16 +189,16 @@ Use that host/port from remote machine to connect over SSH/RDP/TCP client.
 
 ## 5) Access Your Exposed App
 
-If your root domain is `app.localtest.me` and assigned subdomain is `demo`, access:
+If your root domain is `portivox.braintechsolution.com` and assigned subdomain is `demo`, access:
 
 ```text
-http://demo.app.localtest.me
+http://demo.portivox.braintechsolution.com
 ```
 
 In local testing (without DNS), you can simulate host routing:
 
 ```bash
-curl -H "Host: demo.app.localtest.me" http://localhost/
+curl -H "Host: demo.portivox.braintechsolution.com" http://localhost/
 ```
 
 ---
@@ -271,3 +271,4 @@ Configure gateway for TCP public listeners:
 - `TCP_PUBLIC_HOST=your.public.ip.or.dns`
 - `TCP_PUBLIC_PORT_START=19000`
 - `TCP_PUBLIC_PORT_END=19999`
+
