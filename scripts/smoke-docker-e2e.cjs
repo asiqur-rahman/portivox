@@ -118,9 +118,10 @@ async function main() {
   try {
     await run("docker", ["compose", "down", "--remove-orphans"]);
     try {
-      await run("docker", ["compose", "up", "-d", "--build", "redis", "gateway", "sample-local-app"]);
+      await run("docker", ["compose", "up", "-d", "--build", "redis", "gateway", "sample-local-app", "nginx"]);
     } catch (error) {
       await printLogsFor("gateway");
+      await printLogsFor("nginx");
       throw error;
     }
     await waitForGatewayHealthy();
