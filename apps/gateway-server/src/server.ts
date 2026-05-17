@@ -105,7 +105,7 @@ class TunnelStore {
   async list(userId: string): Promise<TunnelRecord[]> {
     if (this.prisma) {
       const rows = await this.prisma.tunnel.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
-      return rows.map((row) => ({ id: row.id, userId: row.userId, subdomain: row.subdomain, createdAt: row.createdAt.toISOString() }));
+      return rows.map((row: { id: string; userId: string; subdomain: string; createdAt: Date }) => ({ id: row.id, userId: row.userId, subdomain: row.subdomain, createdAt: row.createdAt.toISOString() }));
     }
 
     return [...this.memory.values()].filter((item) => item.userId === userId);
@@ -180,7 +180,7 @@ class AuthStore {
   async listApiKeys(userId: string): Promise<ApiKeyRecord[]> {
     if (this.prisma) {
       const rows = await this.prisma.apiKey.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
-      return rows.map((row) => ({ id: row.id, name: row.name, createdAt: row.createdAt.toISOString(), revoked: row.revoked, keyHash: row.keyHash, scopes: parseScopes((row as unknown as { scopes?: string }).scopes, []) }));
+      return rows.map((row: { id: string; name: string; createdAt: Date; revoked: boolean; keyHash: string; scopes?: string }) => ({ id: row.id, name: row.name, createdAt: row.createdAt.toISOString(), revoked: row.revoked, keyHash: row.keyHash, scopes: parseScopes((row as unknown as { scopes?: string }).scopes, []) }));
     }
     return [...(this.memory.get(userId) ?? [])];
   }
@@ -322,7 +322,7 @@ class AuditStore {
 
       const hasMore = rows.length > limit;
       const sliced = hasMore ? rows.slice(0, limit) : rows;
-      const items = sliced.map((row) => ({
+      const items = sliced.map((row: { id: string; createdAt: Date; userId: string | null; action: string; resource: string; resourceId: string | null; metadata: unknown }) => ({
         id: row.id,
         at: row.createdAt.toISOString(),
         userId: row.userId,
