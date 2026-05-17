@@ -131,12 +131,14 @@ async function main() {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         await run("docker", [
-          "compose",
-          "run",
-          "-d",
-          "--name",
-          "portivox-client-smoke",
-          "client",
+        "compose",
+        "run",
+        "-d",
+        "-e",
+        "TUNNEL_API_KEY=ci_smoke_key",
+        "--name",
+        "portivox-client-smoke",
+        "client",
           "open",
           "3000",
           "--host",
