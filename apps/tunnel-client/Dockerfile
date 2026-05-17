@@ -20,7 +20,7 @@ ENV LOCAL_REQUEST_TIMEOUT_MS=15000
 ENV MAX_LOCAL_RESPONSE_BODY_BYTES=2097152
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/tunnel-client/node_modules ./apps/tunnel-client/node_modules
+COPY --from=deps /app/apps/tunnel-client ./apps/tunnel-client
 COPY --from=builder /app/apps/tunnel-client/dist ./apps/tunnel-client/dist
 COPY --from=builder /app/apps/tunnel-client/package.json ./apps/tunnel-client/package.json
 COPY --from=builder /app/packages ./packages

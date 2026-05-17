@@ -22,7 +22,7 @@ ENV TUNNEL_RESPONSE_TIMEOUT_MS=20000
 ENV WS_IDLE_TIMEOUT_MS=30000
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/gateway-server/node_modules ./apps/gateway-server/node_modules
+COPY --from=deps /app/apps/gateway-server ./apps/gateway-server
 COPY --from=builder /app/apps/gateway-server/dist ./apps/gateway-server/dist
 COPY --from=builder /app/apps/gateway-server/package.json ./apps/gateway-server/package.json
 COPY --from=builder /app/packages ./packages
