@@ -1,6 +1,11 @@
 # Portivox
 
-Portivox lets you expose a local app (any HTTP port) to a public URL.
+Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP ready).
+
+## Security Documentation
+
+- Customer-facing summary: `docs/SECURITY_SUMMARY.md`
+- Full technical details: `docs/FEATURES_SECURITY.md`
 
 ## What You Need
 - Node.js 22+
@@ -82,6 +87,7 @@ Saved config path:
 
 ## 4) Expose Any Local Port
 
+### HTTP tunnel
 Expose local port `3000`:
 
 ```bash
@@ -103,6 +109,22 @@ Optional:
   ```
 
 When connected, the client prints the assigned subdomain/session details.
+
+### TCP tunnel (SSH/RDP/DB)
+Expose local port `22` as a raw TCP tunnel:
+
+```bash
+npm run portivox:open -- 22 --tcp
+```
+
+Custom TCP example for RDP:
+
+```bash
+npm run portivox:open -- 3389 --tcp --host 127.0.0.1
+```
+
+When connected, client prints `TCP endpoint: <host>:<port>`.  
+Use that host/port from remote machine to connect over SSH/RDP/TCP client.
 
 ---
 
@@ -170,9 +192,23 @@ npm run start:client:linux
 - Local app not reachable through tunnel  
   Check local app is running on the same port you opened.
 
+## Validation
+
+Run smoke tests:
+
+```bash
+npm run test:smoke
+npm run test:smoke:tcp
+npm run test:smoke:docker
+```
+
 ---
 
-## Important Note
+## TCP Gateway Settings
 
-Current Portivox tunnel data path is HTTP-oriented.  
-Raw TCP/SSH forwarding (for `open 22`) is not implemented yet.
+Configure gateway for TCP public listeners:
+- `TCP_TUNNEL_ENABLED=true`
+- `TCP_TUNNEL_BIND_HOST=0.0.0.0`
+- `TCP_PUBLIC_HOST=your.public.ip.or.dns`
+- `TCP_PUBLIC_PORT_START=19000`
+- `TCP_PUBLIC_PORT_END=19999`

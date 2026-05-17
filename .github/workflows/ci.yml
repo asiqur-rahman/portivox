@@ -1,4 +1,4 @@
-name: tunnelix-ci
+name: portivox-ci
 
 on:
   push:
@@ -36,6 +36,9 @@ jobs:
       - name: Smoke Test
         run: npm run test:smoke
 
+      - name: TCP Smoke Test
+        run: npm run test:smoke:tcp
+
       - name: Chunk Integration Test
         run: npm run test:chunk
 
@@ -65,3 +68,23 @@ jobs:
 
       - name: Auth Integration Test
         run: npm run test:auth
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Docker Smoke Test
+        run: npm run test:smoke:docker

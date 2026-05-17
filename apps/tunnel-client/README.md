@@ -8,6 +8,7 @@ The tunnel client establishes a persistent connection to the gateway server and 
 - Send heartbeat frames
 - Register tunnels
 - Forward local HTTP traffic
+- Forward raw TCP traffic
 - Reconnect automatically
 
 ## Planned Runtime

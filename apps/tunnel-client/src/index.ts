@@ -40,7 +40,7 @@ function printUsage(): void {
     [
       "Portivox client commands:",
       "  register <apiKey> [--gateway ws://host:7000/connect]",
-      "  open <port> [--gateway ws://host:7000/connect] [--subdomain myname] [--host 127.0.0.1]",
+      "  open <port> [--gateway ws://host:7000/connect] [--subdomain myname] [--host 127.0.0.1] [--tcp]",
       "",
       "Examples:",
       "  npm run -w apps/tunnel-client dev -- register tk_xxx",
@@ -53,16 +53,25 @@ function startClient({
   gatewayUrl,
   localBase,
   requestedSubdomain,
+  tunnelType,
+  localTcpHost,
+  localTcpPort,
   apiKey,
 }: {
   gatewayUrl: string;
   localBase: string;
   requestedSubdomain?: string;
+  tunnelType?: "http" | "tcp";
+  localTcpHost?: string;
+  localTcpPort?: number;
   apiKey?: string;
 }): void {
   const client = new TunnelClient({
     gatewayUrl,
     localBase,
+    tunnelType,
+    localTcpHost,
+    localTcpPort,
     requestedSubdomain,
     localTimeoutMs: defaultConfig.localTimeoutMs,
     maxResponseBodyBytes: defaultConfig.maxLocalResponseBodyBytes,
@@ -113,10 +122,7 @@ function run(): void {
       console.error("Missing/invalid port. Usage: open <port>");
       process.exit(1);
     }
-    if (port === 22) {
-      // eslint-disable-next-line no-console
-      console.warn("Note: current Portivox transport is HTTP-oriented; raw TCP/SSH tunneling is not implemented yet.");
-    }
+    const tcpMode = args.includes("--tcp");
     const saved = readSavedConfig();
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
@@ -131,8 +137,16 @@ function run(): void {
     }
 
     // eslint-disable-next-line no-console
-    console.log(`Opening tunnel: ${gatewayUrl} => ${localBase}`);
-    startClient({ gatewayUrl, localBase, requestedSubdomain, apiKey });
+    console.log(`Opening ${tcpMode ? "TCP" : "HTTP"} tunnel: ${gatewayUrl} => ${localBase}`);
+    startClient({
+      gatewayUrl,
+      localBase,
+      requestedSubdomain,
+      tunnelType: tcpMode ? "tcp" : "http",
+      localTcpHost: host,
+      localTcpPort: port,
+      apiKey,
+    });
     return;
   }
 

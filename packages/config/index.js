@@ -119,6 +119,11 @@ function loadGatewayConfig() {
     securityHeadersEnabled: parseBoolean("SECURITY_HEADERS_ENABLED", true),
     idempotencyEnabled: parseBoolean("IDEMPOTENCY_ENABLED", true),
     idempotencyTtlMs: parseInteger("IDEMPOTENCY_TTL_MS", 300000),
+    tcpTunnelEnabled: parseBoolean("TCP_TUNNEL_ENABLED", true),
+    tcpTunnelBindHost: parseString("TCP_TUNNEL_BIND_HOST", "0.0.0.0"),
+    tcpPublicHost: parseString("TCP_PUBLIC_HOST", ""),
+    tcpPublicPortStart: parseInteger("TCP_PUBLIC_PORT_START", 19000),
+    tcpPublicPortEnd: parseInteger("TCP_PUBLIC_PORT_END", 19999),
   };
 }
 

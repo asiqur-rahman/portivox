@@ -37,6 +37,11 @@ export type GatewayConfig = {
   securityHeadersEnabled: boolean;
   idempotencyEnabled: boolean;
   idempotencyTtlMs: number;
+  tcpTunnelEnabled: boolean;
+  tcpTunnelBindHost: string;
+  tcpPublicHost: string;
+  tcpPublicPortStart: number;
+  tcpPublicPortEnd: number;
 };
 
 export type ClientConfig = {

@@ -15,6 +15,8 @@
     "openapi:check-sdk-compat": "node ./scripts/check-sdk-openapi-compat.cjs",
     "typecheck": "npm run build",
     "test:smoke": "node ./scripts/smoke-e2e.cjs",
+    "test:smoke:tcp": "node ./scripts/smoke-tcp-e2e.cjs",
+    "test:smoke:docker": "node ./scripts/smoke-docker-e2e.cjs",
     "test:chunk": "node ./scripts/test-chunk-e2e.cjs",
     "test:auth": "node ./scripts/test-auth-integration.cjs",
     "test:audit-replay": "node ./scripts/test-audit-replay.cjs",

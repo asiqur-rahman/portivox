@@ -60,6 +60,7 @@ async function interactiveMenu() {
 
   if (choice === "2") {
     const port = await ask("Local port to expose (e.g. 3000): ");
+    const mode = (await ask("Tunnel mode http/tcp (default http): ")).toLowerCase();
     const gateway = await ask("Gateway URL (optional): ");
     const subdomain = await ask("Subdomain (optional): ");
     const host = await ask("Host (optional, default 127.0.0.1): ");
@@ -72,6 +73,7 @@ async function interactiveMenu() {
     if (gateway) args.push("--gateway", gateway);
     if (subdomain) args.push("--subdomain", subdomain);
     if (host) args.push("--host", host);
+    if (mode === "tcp") args.push("--tcp");
     await runNpm(args);
     return;
   }
@@ -118,7 +120,7 @@ async function main() {
   if (command === "open") {
     if (!rest[0]) {
       // eslint-disable-next-line no-console
-      console.error("Usage: portivox open <port> [--gateway <url>] [--subdomain <name>] [--host <host>]");
+      console.error("Usage: portivox open <port> [--gateway <url>] [--subdomain <name>] [--host <host>] [--tcp]");
       process.exit(1);
     }
     await runNpm(["run", "portivox:open", "--", ...rest]);

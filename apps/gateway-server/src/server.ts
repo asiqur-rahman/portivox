@@ -1,6 +1,7 @@
 ﻿import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import net from "node:net";
 import Fastify, { type FastifyInstance } from "fastify";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -55,6 +56,11 @@ export type GatewayRuntimeConfig = {
   securityHeadersEnabled?: boolean;
   idempotencyEnabled?: boolean;
   idempotencyTtlMs?: number;
+  tcpTunnelEnabled?: boolean;
+  tcpTunnelBindHost?: string;
+  tcpPublicHost?: string;
+  tcpPublicPortStart?: number;
+  tcpPublicPortEnd?: number;
 };
 
 type Principal = {
@@ -567,6 +573,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   };
   const socketSubdomain = new WeakMap<object, string>();
   const activeStreamsBySocket = new WeakMap<object, Set<string>>();
+  const tcpBindingsBySubdomain = new Map<string, { server: net.Server; publicPort: number }>();
+  const tcpConnectionsById = new Map<string, net.Socket>();
+  const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
+  const usedTcpPorts = new Set<number>();
 
   const ownershipBySubdomain = new Map<string, string>();
   let isReady = false;
@@ -745,6 +755,114 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return Object.keys(body).every((key) => allowed.has(key));
   }
 
+  function isPortInRange(port: number): boolean {
+    const start = config.tcpPublicPortStart ?? 19000;
+    const end = config.tcpPublicPortEnd ?? 19999;
+    return Number.isInteger(port) && port >= start && port <= end;
+  }
+
+  function allocateTcpPort(): number | null {
+    const start = config.tcpPublicPortStart ?? 19000;
+    const end = config.tcpPublicPortEnd ?? 19999;
+    for (let port = start; port <= end; port += 1) {
+      if (!usedTcpPorts.has(port)) {
+        return port;
+      }
+    }
+    return null;
+  }
+
+  function resolveTcpPublicHost(): string {
+    const host = (config.tcpPublicHost ?? "").trim();
+    return host || config.rootDomain;
+  }
+
+  async function bindTcpTunnel(subdomain: string, socket: WebSocket): Promise<{ publicPort: number; publicHost: string }> {
+    if (!(config.tcpTunnelEnabled ?? true)) {
+      throw new Error("TCP_TUNNEL_DISABLED");
+    }
+    if (tcpBindingsBySubdomain.has(subdomain)) {
+      const existing = tcpBindingsBySubdomain.get(subdomain)!;
+      return { publicPort: existing.publicPort, publicHost: resolveTcpPublicHost() };
+    }
+
+    const port = allocateTcpPort();
+    if (!port || !isPortInRange(port)) {
+      throw new Error("TCP_PORT_EXHAUSTED");
+    }
+
+    const connectionIds = new Set<string>();
+    tcpConnectionsBySocket.set(socket, connectionIds);
+
+    const server = net.createServer((conn) => {
+      const connectionId = randomUUID();
+      tcpConnectionsById.set(connectionId, conn);
+      connectionIds.add(connectionId);
+
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(serializeWireMessage({ type: "tcp_open", connectionId }));
+      } else {
+        conn.destroy();
+        return;
+      }
+
+      conn.on("data", (chunk) => {
+        if (socket.readyState !== WebSocket.OPEN) {
+          conn.destroy();
+          return;
+        }
+        socket.send(serializeWireMessage({
+          type: "tcp_data",
+          connectionId,
+          dataBase64: Buffer.from(chunk).toString("base64"),
+        }));
+      });
+
+      const closeConnection = (reason?: string): void => {
+        if (!tcpConnectionsById.has(connectionId)) {
+          return;
+        }
+        tcpConnectionsById.delete(connectionId);
+        connectionIds.delete(connectionId);
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(serializeWireMessage({ type: "tcp_close", connectionId, reason }));
+        }
+      };
+
+      conn.on("error", (error) => {
+        closeConnection(error.message);
+      });
+      conn.on("close", () => {
+        closeConnection("closed");
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error): void => reject(error);
+      server.once("error", onError);
+      server.listen(port, config.tcpTunnelBindHost ?? "0.0.0.0", () => {
+        server.off("error", onError);
+        resolve();
+      });
+    });
+
+    tcpBindingsBySubdomain.set(subdomain, { server, publicPort: port });
+    usedTcpPorts.add(port);
+    return { publicPort: port, publicHost: resolveTcpPublicHost() };
+  }
+
+  async function releaseTcpTunnelBySubdomain(subdomain: string): Promise<void> {
+    const binding = tcpBindingsBySubdomain.get(subdomain);
+    if (!binding) {
+      return;
+    }
+    tcpBindingsBySubdomain.delete(subdomain);
+    usedTcpPorts.delete(binding.publicPort);
+    await new Promise<void>((resolve) => {
+      binding.server.close(() => resolve());
+    });
+  }
+
   function parseCreateTunnelBody(rawBody: unknown): { subdomain: string } | null {
     if (!isPlainObject(rawBody) || !hasOnlyAllowedKeys(rawBody, ["subdomain"])) {
       return null;
@@ -876,7 +994,25 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             metrics.setGauge("gateway_active_tunnels", registry.count());
             registered = true;
             void auditStore.log(principal.userId, "ws_tunnel_registered", "tunnel_session", subdomain, { authType: principal.authType });
-            socket.send(serializeWireMessage({ type: "registered", subdomain }));
+            if (requestMessage.tunnelType === "tcp") {
+              try {
+                const tcpBinding = await bindTcpTunnel(subdomain, socket);
+                socket.send(serializeWireMessage({
+                  type: "registered",
+                  subdomain,
+                  tunnelType: "tcp",
+                  publicTcpHost: tcpBinding.publicHost,
+                  publicTcpPort: tcpBinding.publicPort,
+                }));
+              } catch {
+                socket.send(createGatewayError("Failed to allocate TCP tunnel port"));
+                registry.removeBySocket(socket);
+                metrics.setGauge("gateway_active_tunnels", registry.count());
+                registered = false;
+              }
+            } else {
+              socket.send(serializeWireMessage({ type: "registered", subdomain, tunnelType: "http" }));
+            }
           } catch {
             socket.send(createGatewayError("Failed to allocate tunnel subdomain"));
           }
@@ -971,6 +1107,24 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               });
             }
           }
+          return;
+        }
+
+        if (msg.type === "tcp_data") {
+          const conn = tcpConnectionsById.get(msg.connectionId);
+          if (conn) {
+            conn.write(Buffer.from(msg.dataBase64, "base64"));
+          }
+          return;
+        }
+
+        if (msg.type === "tcp_close") {
+          const conn = tcpConnectionsById.get(msg.connectionId);
+          if (conn) {
+            tcpConnectionsById.delete(msg.connectionId);
+            conn.destroy();
+          }
+          return;
         }
       });
 
@@ -1001,6 +1155,19 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }
       }
 
+        if (subdomain) {
+          void releaseTcpTunnelBySubdomain(subdomain);
+        }
+        const connectionIds = tcpConnectionsBySocket.get(socket);
+        if (connectionIds) {
+          for (const connectionId of connectionIds) {
+            const conn = tcpConnectionsById.get(connectionId);
+            if (conn) {
+              conn.destroy();
+            }
+            tcpConnectionsById.delete(connectionId);
+          }
+        }
         registry.removeBySocket(socket);
         metrics.setGauge("gateway_active_tunnels", registry.count());
       });

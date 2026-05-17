@@ -1,5 +1,6 @@
-﻿import http from "node:http";
+import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import { URL } from "node:url";
 import WebSocket from "ws";
 import { createLogger } from "portivox-logger";
@@ -8,6 +9,9 @@ import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protoc
 export type TunnelClientConfig = {
   gatewayUrl: string;
   localBase: string;
+  tunnelType?: "http" | "tcp";
+  localTcpHost?: string;
+  localTcpPort?: number;
   requestedSubdomain?: string;
   localTimeoutMs: number;
   maxResponseBodyBytes: number;
@@ -21,6 +25,7 @@ export class TunnelClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private stopped = false;
+  private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createLogger("client");
 
   constructor(private readonly config: TunnelClientConfig) {}
@@ -37,6 +42,9 @@ export class TunnelClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    for (const connectionId of this.tcpConnections.keys()) {
+      this.closeTcpConnection(connectionId, "client_stop");
+    }
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.close(1000, "client_stop");
     }
@@ -46,12 +54,17 @@ export class TunnelClient {
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       localBase: this.config.localBase,
       requestedSubdomain: this.config.requestedSubdomain ?? null,
+      tunnelType: this.config.tunnelType ?? "http",
     });
     this.socket = new WebSocket(this.config.gatewayUrl, { headers: this.config.wsHeaders });
 
     this.socket.on("open", () => {
       this.reconnectAttempt = 0;
-      this.send({ type: "register_tunnel", requestedSubdomain: this.config.requestedSubdomain });
+      this.send({
+        type: "register_tunnel",
+        requestedSubdomain: this.config.requestedSubdomain,
+        tunnelType: this.config.tunnelType ?? "http",
+      });
       this.startHeartbeat();
     });
 
@@ -65,6 +78,9 @@ export class TunnelClient {
 
       if (msg.type === "registered") {
         this.logger.info(`Tunnel active: ${msg.subdomain}`);
+        if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
+          this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
+        }
         return;
       }
 
@@ -84,11 +100,32 @@ export class TunnelClient {
         for (const response of responses) {
           this.send(response);
         }
+        return;
+      }
+
+      if (msg.type === "tcp_open") {
+        this.openTcpConnection(msg.connectionId);
+        return;
+      }
+
+      if (msg.type === "tcp_data") {
+        const conn = this.tcpConnections.get(msg.connectionId);
+        if (conn) {
+          conn.write(Buffer.from(msg.dataBase64, "base64"));
+        }
+        return;
+      }
+
+      if (msg.type === "tcp_close") {
+        this.closeTcpConnection(msg.connectionId, msg.reason);
       }
     });
 
     this.socket.on("close", () => {
       this.stopHeartbeat();
+      for (const connectionId of this.tcpConnections.keys()) {
+        this.closeTcpConnection(connectionId, "gateway_disconnected");
+      }
       this.scheduleReconnect();
     });
 
@@ -131,7 +168,7 @@ export class TunnelClient {
     }, delayMs);
   }
 
-  private async proxyLocalRequest(msg: Extract<WireMessage, { type: "http_request" }>): Promise<Extract<WireMessage, { type: "http_response" }>[]> {
+  private async proxyLocalRequest(msg: Extract<WireMessage, { type: "http_request" }>): Promise<Extract<WireMessage, { type: "http_response" }>[] > {
     const target = new URL(msg.path, this.config.localBase);
     const transport = target.protocol === "https:" ? https : http;
     const outboundHeaders = filterHopByHopHeaders(msg.headers);
@@ -192,6 +229,52 @@ export class TunnelClient {
       }
       req.end();
     });
+  }
+
+  private openTcpConnection(connectionId: string): void {
+    const host = this.config.localTcpHost ?? "127.0.0.1";
+    const port = this.config.localTcpPort ?? Number(new URL(this.config.localBase).port || "0");
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      this.send({ type: "tcp_close", connectionId, reason: "invalid_local_tcp_port" });
+      return;
+    }
+
+    const conn = net.createConnection({ host, port }, () => {
+      this.logger.info("TCP tunnel connected", { connectionId, host, port });
+    });
+    this.tcpConnections.set(connectionId, conn);
+
+    conn.on("data", (chunk) => {
+      this.send({
+        type: "tcp_data",
+        connectionId,
+        dataBase64: Buffer.from(chunk).toString("base64"),
+      });
+    });
+
+    conn.on("error", (error) => {
+      this.send({ type: "tcp_close", connectionId, reason: error.message });
+      this.closeTcpConnection(connectionId, error.message);
+    });
+
+    conn.on("close", () => {
+      if (this.tcpConnections.has(connectionId)) {
+        this.send({ type: "tcp_close", connectionId, reason: "closed" });
+        this.tcpConnections.delete(connectionId);
+      }
+    });
+  }
+
+  private closeTcpConnection(connectionId: string, reason?: string): void {
+    const conn = this.tcpConnections.get(connectionId);
+    if (!conn) {
+      return;
+    }
+    this.tcpConnections.delete(connectionId);
+    conn.destroy();
+    if (reason) {
+      this.logger.warn("TCP tunnel closed", { connectionId, reason });
+    }
   }
 }
 
@@ -262,4 +345,3 @@ function filterHopByHopHeaders<T extends Record<string, string | string[] | numb
   }
   return next as T;
 }
-
