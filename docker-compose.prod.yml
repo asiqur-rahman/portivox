@@ -16,6 +16,8 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
+      args:
+        DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
     container_name: portivox-gateway
     restart: unless-stopped
     environment:

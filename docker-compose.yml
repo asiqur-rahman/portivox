@@ -15,6 +15,8 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
+      args:
+        DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
     container_name: portivox-gateway
     environment:
       GATEWAY_PORT: "8080"
@@ -42,6 +44,8 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
+      args:
+        DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
     container_name: portivox-gateway-2
     profiles: ["scale"]
     environment:

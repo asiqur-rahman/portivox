@@ -9,6 +9,9 @@ RUN npm ci
 
 FROM deps AS builder
 COPY . .
+ARG DB_PROVIDER=postgresql
+ENV DB_PROVIDER=${DB_PROVIDER}
+RUN npm run db:generate
 RUN npm run -w apps/gateway-server build
 
 FROM node:22-alpine AS runner
@@ -21,7 +24,7 @@ ENV MAX_REQUEST_BODY_BYTES=1048576
 ENV TUNNEL_RESPONSE_TIMEOUT_MS=20000
 ENV WS_IDLE_TIMEOUT_MS=30000
 
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=deps /app/apps/gateway-server ./apps/gateway-server
 COPY --from=builder /app/apps/gateway-server/dist ./apps/gateway-server/dist
 COPY --from=builder /app/apps/gateway-server/package.json ./apps/gateway-server/package.json
