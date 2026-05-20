@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "bin": {
-    "portivox": "scripts/portivox-cli.cjs"
+    "portivox": "apps/tunnel-client/dist/index.js"
   },
   "workspaces": [
     "apps/*",

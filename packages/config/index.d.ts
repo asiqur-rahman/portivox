@@ -42,6 +42,9 @@ export type GatewayConfig = {
   tcpPublicHost: string;
   tcpPublicPortStart: number;
   tcpPublicPortEnd: number;
+  ipProtectionDefault: boolean;
+  tcpConnectionRateLimit: number;
+  gatewayPublicBaseUrl: string;
 };
 
 export type ClientConfig = {
@@ -50,6 +53,7 @@ export type ClientConfig = {
   localTimeoutMs: number;
   maxLocalResponseBodyBytes: number;
   responseChunkBytes: number;
+  heartbeatIntervalMs: number;
 };
 
 export function loadGatewayConfig(): GatewayConfig;

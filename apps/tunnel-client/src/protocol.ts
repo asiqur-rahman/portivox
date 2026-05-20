@@ -1,6 +1,6 @@
 type WireMessage =
-  | { type: "register_tunnel"; requestedSubdomain?: string; tunnelType?: "http" | "tcp" }
-  | { type: "registered"; subdomain: string; tunnelType?: "http" | "tcp"; publicTcpHost?: string; publicTcpPort?: number }
+  | { type: "register_tunnel"; requestedSubdomain?: string; tunnelType?: "http" | "tcp"; localPort?: number; ipProtection?: boolean; redirectToken?: string }
+  | { type: "registered"; subdomain?: string; tunnelType?: "http" | "tcp"; publicTcpHost?: string; publicTcpPort?: number; accessLink?: string; redirectToken?: string; redirectUrl?: string }
   | {
       type: "http_request";
       streamId: string;
@@ -33,6 +33,7 @@ type WireMessage =
       reason?: string;
     }
   | { type: "heartbeat"; at: number }
+  | { type: "heartbeat_ack" }
   | { type: "error"; message: string; streamId?: string };
 
 type StreamTransportMeta = {

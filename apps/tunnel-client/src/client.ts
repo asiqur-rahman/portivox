@@ -6,6 +6,16 @@ import WebSocket from "ws";
 import { createLogger } from "portivox-logger";
 import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protocol";
 
+export type RegisteredInfo = {
+  subdomain?: string;
+  tunnelType?: "http" | "tcp";
+  publicTcpPort?: number;
+  publicTcpHost?: string;
+  accessLink?: string;
+  redirectToken?: string;
+  redirectUrl?: string;
+};
+
 export type TunnelClientConfig = {
   gatewayUrl: string;
   localBase: string;
@@ -17,6 +27,15 @@ export type TunnelClientConfig = {
   maxResponseBodyBytes: number;
   responseChunkBytes?: number;
   wsHeaders?: Record<string, string>;
+  /** Whether to request IP link protection (default: true for TCP tunnels). */
+  ipProtection?: boolean;
+  /** Heartbeat interval in ms (default: 5000). */
+  heartbeatIntervalMs?: number;
+  /** Exit the process with code 1 if the tunnel has not connected within this many ms. */
+  exitAfterMs?: number;
+  /** Called once when the gateway confirms tunnel registration. Used by the CLI
+   *  to write session info to ~/.portivox/sessions.json. */
+  onRegistered?: (info: RegisteredInfo) => void;
 };
 
 export class TunnelClient {
@@ -25,19 +44,35 @@ export class TunnelClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private stopped = false;
+  /** Timestamp of the last frame received from the gateway (used for liveness check). */
+  private lastActivityAt = 0;
   private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createLogger("client");
+  /** Stable redirect token from the gateway — sent back on reconnect to reuse the same /r/:token URL. */
+  private redirectToken: string | null = null;
+  /** Exit-on-failure timer — cleared when the tunnel successfully registers. */
+  private exitTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: TunnelClientConfig) {}
 
   start(): void {
     this.stopped = false;
+    if (this.config.exitAfterMs && this.config.exitAfterMs > 0) {
+      this.exitTimer = setTimeout(() => {
+        this.logger.error(`Tunnel failed to connect within ${this.config.exitAfterMs}ms — exiting`);
+        process.exit(1);
+      }, this.config.exitAfterMs);
+    }
     this.connect();
   }
 
   stop(): void {
     this.stopped = true;
     this.stopHeartbeat();
+    if (this.exitTimer) {
+      clearTimeout(this.exitTimer);
+      this.exitTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -60,27 +95,67 @@ export class TunnelClient {
 
     this.socket.on("open", () => {
       this.reconnectAttempt = 0;
+      const isTcp = this.config.tunnelType === "tcp";
       this.send({
         type: "register_tunnel",
         requestedSubdomain: this.config.requestedSubdomain,
         tunnelType: this.config.tunnelType ?? "http",
+        // Tell the gateway which local port we're forwarding so it can apply
+        // any admin-configured fixed public port mapping for this port.
+        localPort: this.config.localTcpPort,
+        // Request IP link protection (TCP only; default true unless opted out).
+        ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
+        // Send back the stable redirect token on reconnect so the gateway can
+        // reuse the same /r/:token URL.
+        redirectToken: this.redirectToken ?? undefined,
       });
       this.startHeartbeat();
     });
 
     this.socket.on("message", async (raw) => {
+      // Update liveness timestamp on every frame received from the gateway
+      this.lastActivityAt = Date.now();
+
       let msg: WireMessage;
       try {
         msg = decodeWireMessage(String(raw));
-      } catch {
+      } catch (err) {
+        this.logger.warn("Received unparseable gateway frame", { err: String(err) });
         return;
       }
 
       if (msg.type === "registered") {
-        this.logger.info(`Tunnel active: ${msg.subdomain}`);
+        // Clear the exit-on-failure timer — we're connected.
+        if (this.exitTimer) {
+          clearTimeout(this.exitTimer);
+          this.exitTimer = null;
+        }
+        // Persist the stable redirect token so it can be sent back on reconnect.
+        if (msg.redirectToken) {
+          this.redirectToken = msg.redirectToken;
+        }
+        if (msg.subdomain) {
+          this.logger.info(`Tunnel active: ${msg.subdomain}`);
+        }
         if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
           this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
         }
+        if (msg.accessLink) {
+          this.logger.info(`Access link (click to whitelist your IP): ${msg.accessLink}`);
+        }
+        if (msg.redirectUrl) {
+          this.logger.info(`Redirect URL (stable status page): ${msg.redirectUrl}`);
+        }
+        // Notify the CLI so it can write session info to ~/.portivox/sessions.json.
+        this.config.onRegistered?.({
+          subdomain: msg.subdomain,
+          tunnelType: msg.tunnelType,
+          publicTcpPort: msg.publicTcpPort,
+          publicTcpHost: msg.publicTcpHost,
+          accessLink: msg.accessLink,
+          redirectToken: msg.redirectToken,
+          redirectUrl: msg.redirectUrl,
+        });
         return;
       }
 
@@ -143,9 +218,22 @@ export class TunnelClient {
 
   private startHeartbeat(): void {
     this.stopHeartbeat();
+    this.lastActivityAt = Date.now(); // reset on each new connection
+    const intervalMs = this.config.heartbeatIntervalMs ?? 5000;
+    const livenessThresholdMs = intervalMs * 2;
     this.heartbeatTimer = setInterval(() => {
-      this.send({ type: "heartbeat", at: Date.now() });
-    }, 5000);
+      const now = Date.now();
+      // Liveness check: if no frame has been received for 2× the heartbeat interval
+      // the gateway is likely unreachable (network partition). Trigger reconnect.
+      if (this.lastActivityAt > 0 && now - this.lastActivityAt > livenessThresholdMs) {
+        this.logger.warn(`Gateway silent for ${livenessThresholdMs}ms — reconnecting`);
+        this.stopHeartbeat();
+        this.socket?.terminate();
+        this.scheduleReconnect();
+        return;
+      }
+      this.send({ type: "heartbeat", at: now });
+    }, intervalMs);
   }
 
   private stopHeartbeat(): void {

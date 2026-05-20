@@ -9,6 +9,7 @@ export type WireMessage =
   | TcpData
   | TcpClose
   | Heartbeat
+  | HeartbeatAck
   | ErrorMessage;
 
 export type StreamTransportMeta = {
@@ -28,14 +29,35 @@ export type RegisterTunnel = {
   type: "register_tunnel";
   requestedSubdomain?: string;
   tunnelType?: "http" | "tcp";
+  /** The local port the client is forwarding (e.g. 22 for SSH). Used by the
+   *  gateway to look up admin-configured fixed public port mappings. */
+  localPort?: number;
+  /** Whether to enable IP link protection for this TCP tunnel. When true (the
+   *  default for TCP), the public TCP port is dark until a caller clicks the
+   *  access link to whitelist their IP for 24 hours. Set to false to disable. */
+  ipProtection?: boolean;
+  /** Stable redirect token from a previous session. The gateway reuses the
+   *  same /r/:token URL on reconnect instead of minting a fresh one. */
+  redirectToken?: string;
 };
 
 export type Registered = {
   type: "registered";
-  subdomain: string;
+  /** Subdomain assigned to this tunnel. Omitted for fixed-port TCP tunnels
+   *  that are reachable via domain:publicPort rather than a subdomain. */
+  subdomain?: string;
   tunnelType?: "http" | "tcp";
   publicTcpHost?: string;
   publicTcpPort?: number;
+  /** Click-to-whitelist URL (TCP tunnels with IP protection enabled). Visiting
+   *  this link adds the caller's IP to the 24-hour allowlist. */
+  accessLink?: string;
+  /** Opaque token the client should send back in register_tunnel on reconnect
+   *  so the same /r/:token stable URL is preserved. */
+  redirectToken?: string;
+  /** Full stable status URL (/r/:token) — survives reconnects, suitable for
+   *  bookmarks and automation scripts. */
+  redirectUrl?: string;
 };
 
 export type HttpRequest = {
@@ -77,6 +99,10 @@ export type TcpClose = {
 export type Heartbeat = {
   type: "heartbeat";
   at: number;
+};
+
+export type HeartbeatAck = {
+  type: "heartbeat_ack";
 };
 
 export type ErrorMessage = {

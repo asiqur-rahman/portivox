@@ -1,0 +1,73 @@
+# Development overrides — automatically merged by `docker compose up`
+#
+# Provides a working dev environment with zero configuration:
+#   - Auth is disabled (no JWT secret required)
+#   - Dev-safe DB passwords baked in (no .env needed)
+#   - Sample echo app + auto-tunnel client included for quick smoke tests
+#   - Restart policies disabled (containers stay dead on crash so errors are visible)
+#
+# Do NOT use in production.
+
+services:
+  nginx:
+    restart: "no"
+
+  gateway:
+    restart: "no"
+    environment:
+      NODE_ENV: "development"
+      AUTH_REQUIRED: "false"
+      AUTH_JWT_SECRET: "dev-secret-change-in-production"
+      DATABASE_URL: "postgresql://portivox:devpass@postgres:5432/portivox?schema=public"
+      GATEWAY_PUBLIC_BASE_URL: "http://localhost"
+      CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:3000"
+
+  redis:
+    restart: "no"
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  postgres:
+    restart: "no"
+    environment:
+      POSTGRES_PASSWORD: "devpass"
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  # ── Demo: local HTTP echo server ─────────────────────────────
+  sample-local-app:
+    image: hashicorp/http-echo:1.0.0
+    container_name: portivox-sample-local-app
+    command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
+    expose:
+      - "3000"
+
+  # ── Demo: auto-tunnel client pointing at sample app ──────────
+  client:
+    build:
+      context: .
+      dockerfile: apps/tunnel-client/Dockerfile
+    container_name: portivox-client
+    restart: "no"
+    # Run: portivox open 3000 --gateway ws://gateway:7000/connect --no-ip-protection --subdomain demo
+    command:
+      - "node"
+      - "apps/tunnel-client/dist/index.js"
+      - "open"
+      - "3000"
+      - "--gateway"
+      - "ws://gateway:7000/connect"
+      - "--local"
+      - "http://sample-local-app:3000"
+      - "--subdomain"
+      - "demo"
+      - "--no-ip-protection"
+    environment:
+      TUNNEL_API_KEY: "dev-key"
+      LOCAL_REQUEST_TIMEOUT_MS: "15000"
+      MAX_LOCAL_RESPONSE_BODY_BYTES: "2097152"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      sample-local-app:
+        condition: service_started

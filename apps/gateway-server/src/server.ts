@@ -61,6 +61,12 @@ export type GatewayRuntimeConfig = {
   tcpPublicHost?: string;
   tcpPublicPortStart?: number;
   tcpPublicPortEnd?: number;
+  /** Default IP protection mode for TCP tunnels (default: true). */
+  ipProtectionDefault?: boolean;
+  /** Max new TCP connections per IP per minute before the connection is dropped (default: 10). */
+  tcpConnectionRateLimit?: number;
+  /** Public-facing base URL used to build access links and redirect URLs (e.g. https://portivox.example.com). */
+  gatewayPublicBaseUrl?: string;
 };
 
 type Principal = {
@@ -78,6 +84,28 @@ type IdempotencyReplay = {
   body: unknown;
   contentType: string;
   storedAt: number;
+};
+
+/** Per-token IP allowlist for TCP link protection. */
+type IpAccessEntry = {
+  tunnelKey: string;
+  /** ip → expiresAt timestamp (ms). */
+  allowedIps: Map<string, number>;
+  tokenCreatedAt: number;
+};
+
+/** Stable tunnel status record keyed by the /r/:token URL. */
+type RedirectEntry = {
+  tunnelKey: string;
+  tunnelType: "http" | "tcp";
+  subdomain?: string;
+  publicTcpPort?: number;
+  publicTcpHost?: string;
+  accessLink?: string;
+  connected: boolean;
+  createdAt: number;
+  lastSeenAt: number;
+  disconnectedAt?: number;
 };
 
 class TunnelStore {
@@ -564,6 +592,111 @@ class AuditSink {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TcpPortMappingStore — admin-managed local→public port mappings
+// ---------------------------------------------------------------------------
+
+type TcpPortMappingRecord = {
+  id: string;
+  name: string;
+  localPort: number;
+  publicPort: number;
+  description: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+class TcpPortMappingStore {
+  private readonly prisma: PrismaClient | null;
+  /** id → record (in-memory fallback when DATABASE_URL is absent) */
+  private readonly memory = new Map<string, TcpPortMappingRecord>();
+
+  constructor() {
+    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private get db(): any { return this.prisma; }
+
+  async findByLocalPort(localPort: number): Promise<TcpPortMappingRecord | null> {
+    if (this.prisma) {
+      const row = await this.db.tcpPortMapping.findFirst({ where: { localPort } });
+      return row ? this.toRecord(row) : null;
+    }
+    for (const rec of this.memory.values()) {
+      if (rec.localPort === localPort) return rec;
+    }
+    return null;
+  }
+
+  async list(): Promise<TcpPortMappingRecord[]> {
+    if (this.prisma) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows: any[] = await this.db.tcpPortMapping.findMany({ orderBy: { createdAt: "asc" } });
+      return rows.map((r) => this.toRecord(r));
+    }
+    return [...this.memory.values()];
+  }
+
+  async create(input: Omit<TcpPortMappingRecord, "id" | "createdAt" | "updatedAt">): Promise<TcpPortMappingRecord> {
+    if (this.prisma) {
+      const row = await this.db.tcpPortMapping.create({ data: { ...input } });
+      return this.toRecord(row);
+    }
+    const now = new Date().toISOString();
+    const rec: TcpPortMappingRecord = { id: randomUUID(), ...input, createdAt: now, updatedAt: now };
+    this.memory.set(rec.id, rec);
+    return rec;
+  }
+
+  async update(
+    id: string,
+    patch: { enabled?: boolean; name?: string; description?: string },
+  ): Promise<TcpPortMappingRecord | null> {
+    if (this.prisma) {
+      try {
+        const row = await this.db.tcpPortMapping.update({ where: { id }, data: { ...patch, updatedAt: new Date() } });
+        return this.toRecord(row);
+      } catch {
+        return null;
+      }
+    }
+    const rec = this.memory.get(id);
+    if (!rec) return null;
+    const updated = { ...rec, ...patch, updatedAt: new Date().toISOString() };
+    this.memory.set(id, updated);
+    return updated;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    if (this.prisma) {
+      try {
+        await this.db.tcpPortMapping.delete({ where: { id } });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return this.memory.delete(id);
+  }
+
+  async close(): Promise<void> {
+    if (this.prisma) await this.prisma.$disconnect();
+  }
+
+  private toRecord(row: {
+    id: string; name: string; localPort: number; publicPort: number;
+    description: string | null; enabled: boolean; createdAt: Date; updatedAt: Date;
+  }): TcpPortMappingRecord {
+    return {
+      id: row.id, name: row.name, localPort: row.localPort, publicPort: row.publicPort,
+      description: row.description, enabled: row.enabled,
+      createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+}
+
 export type GatewayServer = {
   app: FastifyInstance;
   start: () => Promise<void>;
@@ -593,6 +726,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const store = new TunnelStore();
   const authStore = new AuthStore();
   const userAuthStore = new UserAuthStore();
+  const tcpPortMappingStore = new TcpPortMappingStore();
   const auditStore = new AuditStore(new AuditSink({
     jsonlPath: config.auditExportJsonlPath,
     webhookUrl: config.auditExportWebhookUrl,
@@ -632,6 +766,24 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
   const usedTcpPorts = new Set<number>();
 
+  // ── IP Link Protection ──────────────────────────────────────────────────────
+  // Keyed by the random accessToken. Each entry tracks which IPs have been
+  // whitelisted via a /l/:token click (with 24-hour per-IP TTL).
+  const ipAccessByToken = new Map<string, IpAccessEntry>();
+  // Reverse map: tunnelKey → accessToken (used during cleanup on disconnect).
+  const ipTokenByTunnelKey = new Map<string, string>();
+
+  // ── Stable Redirect URLs ─────────────────────────────────────────────────────
+  // Keyed by the redirectToken. Entries persist across reconnects so that the
+  // /r/:token URL remains stable even while the tunnel is briefly offline.
+  const redirectByToken = new Map<string, RedirectEntry>();
+  // Reverse map: tunnelKey → redirectToken (used during cleanup and reconnect).
+  const redirectTokenByTunnelKey = new Map<string, string>();
+
+  // Per-IP rate limiter for new TCP connections — defends fixed public ports
+  // against brute-force scanners.
+  const tcpConnLimiter = new RateLimiter(config.tcpConnectionRateLimit ?? 10, 60_000);
+
   const ownershipBySubdomain = new Map<string, string>();
   let isReady = false;
   let isDraining = false;
@@ -648,6 +800,30 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const idempotencyEnabled = config.idempotencyEnabled ?? true;
   const idempotencyTtlMs = config.idempotencyTtlMs ?? 300_000;
   const idempotencyStore = new Map<string, IdempotencyReplay>();
+
+  // Periodically evict expired idempotency entries to prevent unbounded memory growth.
+  // Lazy deletion inside readIdempotencyReplay only removes entries that are actually
+  // looked up; this sweep catches entries that are never retried.
+  const idempotencySweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of idempotencyStore) {
+      if (now - v.storedAt > idempotencyTtlMs) idempotencyStore.delete(k);
+    }
+  }, idempotencyTtlMs);
+  idempotencySweep.unref();
+
+  // Periodically evict redirect entries that have been disconnected for > 24h
+  // so stale stable-URL records don't accumulate unboundedly.
+  const redirectSweep = setInterval(() => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [token, entry] of redirectByToken) {
+      if (!entry.connected && (entry.disconnectedAt ?? 0) < cutoff) {
+        redirectByToken.delete(token);
+        redirectTokenByTunnelKey.delete(entry.tunnelKey);
+      }
+    }
+  }, 60 * 60 * 1000);  // run every hour
+  redirectSweep.unref();
 
   app.addHook("onRequest", async (req, reply) => {
     if (req.method === "OPTIONS" && req.url.startsWith("/api/")) {
@@ -828,6 +1004,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return Object.keys(body).every((key) => allowed.has(key));
   }
 
+  /** Builds a public-facing URL using GATEWAY_PUBLIC_BASE_URL or falls back to
+   *  http://<rootDomain>. Used for access links and redirect URLs. */
+  function buildPublicUrl(path: string): string {
+    const base = (config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}`;
+    return `${base}${path}`;
+  }
+
   function isPortInRange(port: number): boolean {
     const start = config.tcpPublicPortStart ?? 19000;
     const end = config.tcpPublicPortEnd ?? 19999;
@@ -850,17 +1033,26 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return host || config.rootDomain;
   }
 
-  async function bindTcpTunnel(subdomain: string, socket: WebSocket): Promise<{ publicPort: number; publicHost: string }> {
+  async function bindTcpTunnel(
+    key: string,
+    socket: WebSocket,
+    /** When provided, binds to this exact port instead of allocating from the pool. */
+    fixedPort?: number,
+    /** When provided, incoming TCP connections must have their IP whitelisted in
+     *  ipAccessByToken[accessToken] before being forwarded to the tunnel client. */
+    accessToken?: string,
+  ): Promise<{ publicPort: number; publicHost: string }> {
     if (!(config.tcpTunnelEnabled ?? true)) {
       throw new Error("TCP_TUNNEL_DISABLED");
     }
-    if (tcpBindingsBySubdomain.has(subdomain)) {
-      const existing = tcpBindingsBySubdomain.get(subdomain)!;
+    if (tcpBindingsBySubdomain.has(key)) {
+      const existing = tcpBindingsBySubdomain.get(key)!;
       return { publicPort: existing.publicPort, publicHost: resolveTcpPublicHost() };
     }
 
-    const port = allocateTcpPort();
-    if (!port || !isPortInRange(port)) {
+    // Fixed-port tunnels bypass the random pool; dynamic tunnels must be in range.
+    const port = fixedPort ?? allocateTcpPort();
+    if (!port || (!fixedPort && !isPortInRange(port))) {
       throw new Error("TCP_PORT_EXHAUSTED");
     }
 
@@ -868,6 +1060,26 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     tcpConnectionsBySocket.set(socket, connectionIds);
 
     const server = net.createServer((conn) => {
+      // Normalize IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 → 1.2.3.4)
+      const remoteIp = (conn.remoteAddress ?? "").replace(/^::ffff:/, "");
+
+      // Brute-force protection: rate-limit new connections per source IP.
+      if (!tcpConnLimiter.take(`tcp_conn:${remoteIp}`).allowed) {
+        conn.destroy();
+        return;
+      }
+
+      // IP link protection: reject unless the caller's IP has been whitelisted
+      // by a recent click on the access link (/l/:token).
+      if (accessToken) {
+        const ipEntry = ipAccessByToken.get(accessToken);
+        const allowedUntil = ipEntry?.allowedIps.get(remoteIp) ?? 0;
+        if (Date.now() > allowedUntil) {
+          conn.destroy();
+          return;
+        }
+      }
+
       const connectionId = randomUUID();
       tcpConnectionsById.set(connectionId, conn);
       connectionIds.add(connectionId);
@@ -919,7 +1131,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       });
     });
 
-    tcpBindingsBySubdomain.set(subdomain, { server, publicPort: port });
+    tcpBindingsBySubdomain.set(key, { server, publicPort: port });
     usedTcpPorts.add(port);
     return { publicPort: port, publicHost: resolveTcpPublicHost() };
   }
@@ -1079,6 +1291,114 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
         if (msg.type === "register_tunnel") {
           const requestMessage = msg as RegisterTunnel;
+          const isTcp = requestMessage.tunnelType === "tcp";
+
+          // Check whether admin has configured a fixed public port for this local port.
+          let fixedMapping: TcpPortMappingRecord | null = null;
+          if (isTcp && requestMessage.localPort && requestMessage.localPort > 0) {
+            try {
+              fixedMapping = await tcpPortMappingStore.findByLocalPort(requestMessage.localPort);
+            } catch {
+              // non-fatal — fall through to normal allocation
+            }
+          }
+
+          const useFixedPort =
+            fixedMapping !== null &&
+            fixedMapping.enabled &&
+            !usedTcpPorts.has(fixedMapping.publicPort);
+
+          if (isTcp && useFixedPort && fixedMapping) {
+            // ── FIXED-PORT PATH ──────────────────────────────────────────────
+            // The tunnel is reachable via domain:publicPort — no subdomain needed.
+            // We store a synthetic key so the close handler can clean up the TCP
+            // server binding without any changes to that logic.
+            const syntheticKey = `__tcp_port_${fixedMapping.publicPort}__`;
+            socketSubdomain.set(socket, syntheticKey);
+            // NOTE: do NOT add to registry (no HTTP subdomain routing required)
+            // NOTE: do NOT set ownershipBySubdomain (synthetic key, not a real subdomain)
+            registered = true;
+            metrics.setGauge("gateway_active_tunnels", registry.count());
+
+            // ── IP link protection ───────────────────────────────────────────
+            const ipProtection =
+              requestMessage.ipProtection !== false &&
+              (config.ipProtectionDefault !== false);
+            let accessToken: string | undefined;
+            let accessLink: string | undefined;
+            if (ipProtection) {
+              accessToken = randomBytes(24).toString("base64url");
+              accessLink = buildPublicUrl(`/l/${accessToken}`);
+              ipAccessByToken.set(accessToken, {
+                tunnelKey: syntheticKey,
+                allowedIps: new Map(),
+                tokenCreatedAt: Date.now(),
+              });
+              ipTokenByTunnelKey.set(syntheticKey, accessToken);
+            }
+
+            // ── Stable redirect URL ──────────────────────────────────────────
+            // If the client is reconnecting and sends back its previous token, reuse
+            // the same /r/:token entry so bookmarks/scripts stay valid.
+            let redirectToken: string;
+            const incomingRToken = requestMessage.redirectToken;
+            if (incomingRToken && redirectByToken.has(incomingRToken)) {
+              redirectToken = incomingRToken;
+              const existing = redirectByToken.get(redirectToken)!;
+              existing.connected = false;  // will be marked true after bind
+              existing.disconnectedAt = undefined;
+              existing.accessLink = accessLink;
+            } else {
+              redirectToken = randomBytes(16).toString("base64url");
+            }
+            const redirectUrl = buildPublicUrl(`/r/${redirectToken}`);
+
+            void auditStore.log(principal.userId, "ws_tunnel_registered_fixed_port", "tcp_port_session",
+              String(fixedMapping.publicPort), {
+                authType: principal.authType,
+                localPort: requestMessage.localPort,
+                publicPort: fixedMapping.publicPort,
+                ipProtection,
+              });
+            try {
+              const tcpBinding = await bindTcpTunnel(syntheticKey, socket, fixedMapping.publicPort, accessToken);
+
+              // Store/update the redirect entry after we have the public host.
+              const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
+                tunnelKey: syntheticKey,
+                tunnelType: "tcp",
+                createdAt: Date.now(),
+                connected: false,
+                lastSeenAt: Date.now(),
+              };
+              rEntry.publicTcpPort = tcpBinding.publicPort;
+              rEntry.publicTcpHost = tcpBinding.publicHost;
+              rEntry.accessLink = accessLink;
+              rEntry.connected = true;
+              rEntry.lastSeenAt = Date.now();
+              redirectByToken.set(redirectToken, rEntry);
+              redirectTokenByTunnelKey.set(syntheticKey, redirectToken);
+
+              socket.send(serializeWireMessage({
+                type: "registered",
+                tunnelType: "tcp",
+                publicTcpHost: tcpBinding.publicHost,
+                publicTcpPort: tcpBinding.publicPort,
+                // subdomain intentionally omitted — access is via domain:port
+                accessLink,
+                redirectToken,
+                redirectUrl,
+              }));
+            } catch {
+              socket.send(createGatewayError("Failed to bind fixed TCP port"));
+              // Clean up partially-created tokens on failure
+              if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(syntheticKey); }
+              registered = false;
+            }
+            return;
+          }
+
+          // ── NORMAL PATH (HTTP tunnel, or TCP with no/busy mapping) ─────────
           try {
             const subdomain = await registry.assign(requestMessage.requestedSubdomain, socket);
             socketSubdomain.set(socket, subdomain);
@@ -1086,24 +1406,89 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             metrics.setGauge("gateway_active_tunnels", registry.count());
             registered = true;
             void auditStore.log(principal.userId, "ws_tunnel_registered", "tunnel_session", subdomain, { authType: principal.authType });
-            if (requestMessage.tunnelType === "tcp") {
+
+            // ── Stable redirect URL (all tunnel types) ──────────────────────
+            let redirectToken: string;
+            const incomingRToken = requestMessage.redirectToken;
+            if (incomingRToken && redirectByToken.has(incomingRToken)) {
+              redirectToken = incomingRToken;
+              const existing = redirectByToken.get(redirectToken)!;
+              existing.connected = false;
+              existing.disconnectedAt = undefined;
+            } else {
+              redirectToken = randomBytes(16).toString("base64url");
+            }
+            const redirectUrl = buildPublicUrl(`/r/${redirectToken}`);
+
+            if (isTcp) {
+              // IP link protection for random-port TCP tunnels
+              const ipProtection =
+                requestMessage.ipProtection !== false &&
+                (config.ipProtectionDefault !== false);
+              let accessToken: string | undefined;
+              let accessLink: string | undefined;
+              if (ipProtection) {
+                accessToken = randomBytes(24).toString("base64url");
+                accessLink = buildPublicUrl(`/l/${accessToken}`);
+                ipAccessByToken.set(accessToken, {
+                  tunnelKey: subdomain,
+                  allowedIps: new Map(),
+                  tokenCreatedAt: Date.now(),
+                });
+                ipTokenByTunnelKey.set(subdomain, accessToken);
+              }
               try {
-                const tcpBinding = await bindTcpTunnel(subdomain, socket);
+                const tcpBinding = await bindTcpTunnel(subdomain, socket, undefined, accessToken);
+
+                const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
+                  tunnelKey: subdomain,
+                  tunnelType: "tcp",
+                  createdAt: Date.now(),
+                  connected: false,
+                  lastSeenAt: Date.now(),
+                };
+                rEntry.subdomain = subdomain;
+                rEntry.publicTcpPort = tcpBinding.publicPort;
+                rEntry.publicTcpHost = tcpBinding.publicHost;
+                rEntry.accessLink = accessLink;
+                rEntry.connected = true;
+                rEntry.lastSeenAt = Date.now();
+                redirectByToken.set(redirectToken, rEntry);
+                redirectTokenByTunnelKey.set(subdomain, redirectToken);
+
                 socket.send(serializeWireMessage({
                   type: "registered",
                   subdomain,
                   tunnelType: "tcp",
                   publicTcpHost: tcpBinding.publicHost,
                   publicTcpPort: tcpBinding.publicPort,
+                  accessLink,
+                  redirectToken,
+                  redirectUrl,
                 }));
               } catch {
                 socket.send(createGatewayError("Failed to allocate TCP tunnel port"));
+                if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(subdomain); }
                 registry.removeBySocket(socket);
                 metrics.setGauge("gateway_active_tunnels", registry.count());
                 registered = false;
               }
             } else {
-              socket.send(serializeWireMessage({ type: "registered", subdomain, tunnelType: "http" }));
+              // HTTP tunnel — redirect URL only, no IP protection
+              const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
+                tunnelKey: subdomain,
+                tunnelType: "http",
+                createdAt: Date.now(),
+                connected: false,
+                lastSeenAt: Date.now(),
+              };
+              rEntry.subdomain = subdomain;
+              rEntry.connected = true;
+              rEntry.lastSeenAt = Date.now();
+              redirectByToken.set(redirectToken, rEntry);
+              redirectTokenByTunnelKey.set(subdomain, redirectToken);
+
+              socket.send(serializeWireMessage({ type: "registered", subdomain, tunnelType: "http", redirectToken, redirectUrl }));
             }
           } catch {
             socket.send(createGatewayError("Failed to allocate tunnel subdomain"));
@@ -1116,6 +1501,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           if (subdomain) {
             registry.heartbeat(subdomain);
           }
+          // Acknowledge so the client's liveness timer doesn't trigger on idle tunnels
+          socket.send(JSON.stringify({ type: "heartbeat_ack" }));
           return;
         }
 
@@ -1221,14 +1608,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       });
 
       socket.on("close", () => {
-      if (socketIdleTimer) {
-        clearTimeout(socketIdleTimer);
-      }
+        if (socketIdleTimer) {
+          clearTimeout(socketIdleTimer);
+        }
 
-      const subdomain = socketSubdomain.get(socket);
-      if (subdomain) {
-        ownershipBySubdomain.delete(subdomain);
-      }
+        const subdomain = socketSubdomain.get(socket);
+        if (subdomain) {
+          ownershipBySubdomain.delete(subdomain);
+        }
 
         const activeStreamIds = activeStreamsBySocket.get(socket);
         if (activeStreamIds) {
@@ -1242,10 +1629,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             if (waiter) {
               responseWaiters.delete(streamId);
               responseChunksByStream.delete(streamId);
-            waiter({ type: "http_response", streamId, statusCode: 502, headers: { "content-type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ error: "Tunnel disconnected" })).toString("base64") });
+              waiter({ type: "http_response", streamId, statusCode: 502, headers: { "content-type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ error: "Tunnel disconnected" })).toString("base64") });
+            }
           }
         }
-      }
 
         if (subdomain) {
           void releaseTcpTunnelBySubdomain(subdomain);
@@ -1260,6 +1647,26 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             tcpConnectionsById.delete(connectionId);
           }
         }
+        // ── Stable redirect URL: mark as disconnected (do NOT delete the entry
+        //    so the /r/:token URL stays valid during reconnect windows).
+        if (subdomain) {
+          const rToken = redirectTokenByTunnelKey.get(subdomain);
+          if (rToken) {
+            const rEntry = redirectByToken.get(rToken);
+            if (rEntry) {
+              rEntry.connected = false;
+              rEntry.lastSeenAt = Date.now();
+              rEntry.disconnectedAt = Date.now();
+            }
+          }
+          // ── IP access cleanup: remove whitelist on disconnect.
+          const aToken = ipTokenByTunnelKey.get(subdomain);
+          if (aToken) {
+            ipAccessByToken.delete(aToken);
+            ipTokenByTunnelKey.delete(subdomain);
+          }
+        }
+
         registry.removeBySocket(socket);
         metrics.setGauge("gateway_active_tunnels", registry.count());
       });
@@ -1831,6 +2238,252 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Admin: TCP port mapping CRUD
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/admin/tcp-port-mappings", async (req, reply) => {
+    const endpoint = "/api/admin/tcp-port-mappings";
+    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+    const mappings = await tcpPortMappingStore.list();
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({ mappings });
+  });
+
+  app.post("/api/admin/tcp-port-mappings", async (req, reply) => {
+    const endpoint = "/api/admin/tcp-port-mappings";
+    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+
+    // Validate body
+    const body = req.body as Record<string, unknown> | null;
+    if (!isPlainObject(body)) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "Request body must be a JSON object" } });
+    }
+    const { name, localPort, publicPort, description } = body as Record<string, unknown>;
+    if (typeof name !== "string" || !name.trim()) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "name is required (non-empty string)" } });
+    }
+    const lp = Number(localPort);
+    const pp = Number(publicPort);
+    if (!Number.isInteger(lp) || lp < 1 || lp > 65535) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "localPort must be an integer 1–65535" } });
+    }
+    if (!Number.isInteger(pp) || pp < 1 || pp > 65535) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "publicPort must be an integer 1–65535" } });
+    }
+
+    // Conflict check — publicPort must be globally unique across all mappings
+    const existing = await tcpPortMappingStore.list();
+    if (existing.some((m) => m.publicPort === pp)) {
+      return reply.status(409).send({ error: { code: "CONFLICT", message: `publicPort ${pp} is already reserved by another mapping` } });
+    }
+    if (existing.some((m) => m.localPort === lp)) {
+      return reply.status(409).send({ error: { code: "CONFLICT", message: `A mapping for localPort ${lp} already exists` } });
+    }
+
+    const mapping = await tcpPortMappingStore.create({
+      name: String(name).trim(),
+      localPort: lp,
+      publicPort: pp,
+      description: typeof description === "string" && description.trim() ? description.trim() : null,
+      enabled: true,
+    });
+    void auditStore.log(principal.userId, "tcp_port_mapping_created", "tcp_port_mapping", mapping.id, {
+      localPort: lp, publicPort: pp,
+    });
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
+    return reply.status(201).send({ mapping });
+  });
+
+  app.patch("/api/admin/tcp-port-mappings/:id", async (req, reply) => {
+    const endpoint = "/api/admin/tcp-port-mappings/:id";
+    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+
+    const { id } = req.params as { id: string };
+    const body = req.body as Record<string, unknown> | null;
+    if (!isPlainObject(body)) {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "Request body must be a JSON object" } });
+    }
+    const patch: { enabled?: boolean; name?: string; description?: string } = {};
+    if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+    if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
+    if (typeof body.description === "string") patch.description = body.description.trim() || "";
+
+    const updated = await tcpPortMappingStore.update(id, patch);
+    if (!updated) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "TCP port mapping not found" } });
+    }
+    void auditStore.log(principal.userId, "tcp_port_mapping_updated", "tcp_port_mapping", id, patch);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "2xx" });
+    return reply.status(200).send({ mapping: updated });
+  });
+
+  app.delete("/api/admin/tcp-port-mappings/:id", async (req, reply) => {
+    const endpoint = "/api/admin/tcp-port-mappings/:id";
+    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+
+    const { id } = req.params as { id: string };
+    const deleted = await tcpPortMappingStore.delete(id);
+    if (!deleted) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "TCP port mapping not found" } });
+    }
+    void auditStore.log(principal.userId, "tcp_port_mapping_deleted", "tcp_port_mapping", id);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
+    return reply.status(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // IP Link Protection: whitelist caller's IP via one-time access link.
+  // Unauthenticated — the token itself is the credential. Rate-limited via the
+  // public ingress limiter to prevent token-scanning brute force.
+  // ---------------------------------------------------------------------------
+  app.get("/l/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const ipLimit = tunnelIngressLimiter.take(`access_link:${req.ip}`);
+    applyRateLimitHeaders(reply, ipLimit);
+    if (!ipLimit.allowed) {
+      return reply.status(429).send({ error: { code: "RATE_LIMITED", message: "Too many requests" } });
+    }
+
+    const entry = ipAccessByToken.get(token);
+    if (!entry) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Invalid or expired access token" } });
+    }
+
+    // Normalize IPv4-mapped IPv6 addresses.
+    const ip = req.ip.replace(/^::ffff:/, "");
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;  // 24 hours
+    entry.allowedIps.set(ip, expiresAt);
+
+    return reply.status(200).send({
+      whitelisted: true,
+      ip,
+      expiresAt: new Date(expiresAt).toISOString(),
+      message: `IP ${ip} has been whitelisted for 24 hours. You may now connect.`,
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stable Redirect URL: returns current tunnel status as JSON.
+  // Survives reconnects — the token is stable for the lifetime of the tunnel.
+  // ---------------------------------------------------------------------------
+  app.get("/r/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const ipLimit = tunnelIngressLimiter.take(`redirect:${req.ip}`);
+    applyRateLimitHeaders(reply, ipLimit);
+    if (!ipLimit.allowed) {
+      return reply.status(429).send({ error: { code: "RATE_LIMITED", message: "Too many requests" } });
+    }
+
+    const entry = redirectByToken.get(token);
+    if (!entry) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Unknown redirect token" } });
+    }
+
+    return reply.status(200).send({
+      connected: entry.connected,
+      tunnelType: entry.tunnelType,
+      subdomain: entry.subdomain ?? null,
+      publicTcpPort: entry.publicTcpPort ?? null,
+      publicTcpHost: entry.publicTcpHost ?? null,
+      accessLink: entry.accessLink ?? null,
+      lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
+      disconnectedAt: entry.disconnectedAt ? new Date(entry.disconnectedAt).toISOString() : null,
+    });
+  });
+
   app.all("/*", async (req, reply) => {
     if (!isReady || isDraining || maintenanceMode) {
       metrics.increment("gateway_request_errors_total");
@@ -2010,12 +2663,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     async stop(): Promise<void> {
       isDraining = true;
       isReady = false;
+      clearInterval(idempotencySweep);
+      clearInterval(redirectSweep);
       await app.close();
       wsServer.close();
       await store.close();
       await authStore.close();
       await userAuthStore.close();
       await auditStore.close();
+      await tcpPortMappingStore.close();
     },
   };
 }

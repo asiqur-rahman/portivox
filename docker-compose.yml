@@ -1,16 +1,32 @@
+# Portivox Docker Compose
+#
+# Dev  : `docker compose up --build`
+#        Auto-merges docker-compose.override.yml — no .env needed.
+#
+# Prod : Copy .env.example → .env, fill in secrets, then:
+#        `docker compose --env-file .env up -d --build`
+#
+# First-time DB migration (prod):
+#        `docker compose run --rm gateway node -e "require('child_process').execSync('npm run db:migrate:deploy', {stdio:'inherit'})"`
 
 services:
+
+  # ── Nginx — reverse proxy + frontend SPA ─────────────────────
   nginx:
     build:
       context: .
       dockerfile: infra/nginx/Dockerfile
     container_name: portivox-nginx
+    restart: unless-stopped
+    environment:
+      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
     ports:
       - "80:80"
     depends_on:
       gateway:
         condition: service_healthy
 
+  # ── Gateway — HTTP API + WebSocket control plane ──────────────
   gateway:
     build:
       context: .
@@ -18,28 +34,53 @@ services:
       args:
         DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
     container_name: portivox-gateway
+    restart: unless-stopped
     environment:
+      NODE_ENV: "production"
       GATEWAY_PORT: "8080"
       GATEWAY_WS_PORT: "7000"
-      ROOT_DOMAIN: "portivox.braintechsolution.com"
+      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
+      GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
+      AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
+      AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
+      DATABASE_URL: "${DATABASE_URL}"
       MAX_REQUEST_BODY_BYTES: "1048576"
-      TUNNEL_RESPONSE_TIMEOUT_MS: "20000"
-      WS_IDLE_TIMEOUT_MS: "30000"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
+      WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
       REGISTRY_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379"
       REDIS_KEY_PREFIX: "portivox:registry"
-      REGISTRY_LEASE_TTL_MS: "30000"
+      REGISTRY_LEASE_TTL_MS: "${REGISTRY_LEASE_TTL_MS:-30000}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"
+      CORS_ALLOW_CREDENTIALS: "true"
+      SECURITY_HEADERS_ENABLED: "true"
+      IDEMPOTENCY_ENABLED: "true"
+      TCP_TUNNEL_ENABLED: "true"
+      TCP_TUNNEL_BIND_HOST: "0.0.0.0"
+      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.example.com}"
+      TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
+      TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
+      IP_PROTECTION_DEFAULT: "${IP_PROTECTION_DEFAULT:-true}"
+      TCP_CONNECTION_RATE_LIMIT: "${TCP_CONNECTION_RATE_LIMIT:-10}"
+      API_RATE_LIMIT_READ_PER_MIN: "${API_RATE_LIMIT_READ_PER_MIN:-600}"
+      API_RATE_LIMIT_WRITE_PER_MIN: "${API_RATE_LIMIT_WRITE_PER_MIN:-300}"
+      HEARTBEAT_INTERVAL_MS: "${HEARTBEAT_INTERVAL_MS:-5000}"
     ports:
       - "7000:7000"
+      - "${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}:${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}"
     healthcheck:
       test: ["CMD", "node", "-e", "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
 
+  # ── Gateway node 2 — optional horizontal scale ───────────────
   gateway-2:
     build:
       context: .
@@ -48,57 +89,80 @@ services:
         DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
     container_name: portivox-gateway-2
     profiles: ["scale"]
+    restart: unless-stopped
     environment:
+      NODE_ENV: "production"
       GATEWAY_PORT: "8081"
       GATEWAY_WS_PORT: "7001"
-      ROOT_DOMAIN: "portivox.braintechsolution.com"
+      GATEWAY_NODE_ID: "gateway-2"
+      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
+      GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
+      AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
+      AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
+      DATABASE_URL: "${DATABASE_URL}"
       MAX_REQUEST_BODY_BYTES: "1048576"
-      TUNNEL_RESPONSE_TIMEOUT_MS: "20000"
-      WS_IDLE_TIMEOUT_MS: "30000"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
+      WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
       REGISTRY_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379"
       REDIS_KEY_PREFIX: "portivox:registry"
-      REGISTRY_LEASE_TTL_MS: "30000"
-      GATEWAY_NODE_ID: "gateway-2"
+      REGISTRY_LEASE_TTL_MS: "${REGISTRY_LEASE_TTL_MS:-30000}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"
+      CORS_ALLOW_CREDENTIALS: "true"
+      SECURITY_HEADERS_ENABLED: "true"
+      IDEMPOTENCY_ENABLED: "true"
+      TCP_TUNNEL_ENABLED: "true"
+      TCP_TUNNEL_BIND_HOST: "0.0.0.0"
+      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.example.com}"
+      TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
+      TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
     ports:
       - "7001:7001"
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
 
+  # ── Redis — tunnel registry backend ──────────────────────────
   redis:
     image: redis:7-alpine
     container_name: portivox-redis
-    command: ["redis-server", "--appendonly", "no"]
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    # No host port binding — gateway connects via Docker network.
+    # Add "ports: - 127.0.0.1:6379:6379" in docker-compose.override.yml for local GUI access.
 
-  sample-local-app:
-    image: hashicorp/http-echo:1.0.0
-    container_name: portivox-sample-local-app
-    command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
-    expose:
-      - "3000"
-
-  client:
-    build:
-      context: .
-      dockerfile: apps/tunnel-client/Dockerfile
-    container_name: portivox-client
+  # ── PostgreSQL — auth + tunnel metadata ──────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: portivox-postgres
+    restart: unless-stopped
     environment:
-      TUNNEL_GATEWAY_URL: "ws://gateway:7000/connect"
-      TUNNEL_LOCAL_URL: "http://sample-local-app:3000"
-      TUNNEL_SUBDOMAIN: "demo"
-      LOCAL_REQUEST_TIMEOUT_MS: "15000"
-      MAX_LOCAL_RESPONSE_BODY_BYTES: "2097152"
-    depends_on:
-      gateway:
-        condition: service_healthy
-      sample-local-app:
-        condition: service_started
+      POSTGRES_DB: "${POSTGRES_DB:-portivox}"
+      POSTGRES_USER: "${POSTGRES_USER:-portivox}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-portivox} -d ${POSTGRES_DB:-portivox}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No host port binding — gateway connects via Docker network.
+    # Add "ports: - 127.0.0.1:5432:5432" in docker-compose.override.yml for local DB client access.
+
+volumes:
+  redis_data:
+  postgres_data:
 
 networks:
   default:
     name: portivox-network
-
-

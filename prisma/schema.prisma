@@ -70,3 +70,20 @@ model AuditEvent {
   @@index([action])
   @@index([createdAt])
 }
+
+/// Admin-configured mapping from a client's local port to a fixed public port.
+/// When a tunnel client declares localPort=22, the gateway checks this table and
+/// binds that tunnel to publicPort (e.g. 9876) instead of a random ephemeral port.
+model TcpPortMapping {
+  id          String   @id @default(uuid())
+  name        String
+  localPort   Int      // client's local port to match (e.g. 22 for SSH)
+  publicPort  Int      @unique  // reserved public port exposed to the internet (e.g. 9876)
+  description String?
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([localPort])
+  @@index([enabled])
+}

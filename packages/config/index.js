@@ -80,7 +80,7 @@ function parseEnum(name, fallback, allowedValues) {
 }
 
 function loadGatewayConfig() {
-  return {
+  const config = {
     gatewayPort: parseInteger("GATEWAY_PORT", 8080),
     wsPort: parseInteger("GATEWAY_WS_PORT", 7000),
     rootDomain: parseRootDomain("ROOT_DOMAIN", "portivox.braintechsolution.com"),
@@ -124,7 +124,24 @@ function loadGatewayConfig() {
     tcpPublicHost: parseString("TCP_PUBLIC_HOST", ""),
     tcpPublicPortStart: parseInteger("TCP_PUBLIC_PORT_START", 19000),
     tcpPublicPortEnd: parseInteger("TCP_PUBLIC_PORT_END", 19999),
+    // IP link protection — TCP ports are dark by default until IP is whitelisted
+    ipProtectionDefault: parseBoolean("IP_PROTECTION_DEFAULT", true),
+    // Per-IP new-connection rate limit for TCP tunnels (per minute). Defends
+    // against port scanners hitting fixed public ports.
+    tcpConnectionRateLimit: parseInteger("TCP_CONNECTION_RATE_LIMIT", 10),
+    // Base URL used in access links and redirect URLs sent to clients. Set to
+    // your public-facing URL, e.g. https://portivox.example.com
+    gatewayPublicBaseUrl: parseString("GATEWAY_PUBLIC_BASE_URL", ""),
   };
+
+  if (config.authRequired && !config.authJwtSecret) {
+    throw new Error(
+      "AUTH_JWT_SECRET must be set when AUTH_REQUIRED=true. " +
+      "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+    );
+  }
+
+  return config;
 }
 
 function loadClientConfig() {
@@ -134,6 +151,9 @@ function loadClientConfig() {
     localTimeoutMs: parseInteger("LOCAL_REQUEST_TIMEOUT_MS", 15000),
     maxLocalResponseBodyBytes: parseInteger("MAX_LOCAL_RESPONSE_BODY_BYTES", 2097152),
     responseChunkBytes: parseNonNegativeInteger("RESPONSE_CHUNK_BYTES", 0),
+    // How often the client sends a heartbeat frame (ms). Also controls the
+    // liveness-check window (2× this value before reconnect is triggered).
+    heartbeatIntervalMs: parseInteger("HEARTBEAT_INTERVAL_MS", 5000),
   };
 }
 

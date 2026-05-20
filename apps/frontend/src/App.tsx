@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { GatewayApi, type ApiKeyRecord, type AuditItem, type ChunkDiagnostics, type TunnelRecord } from "./api";
 import "./styles.css";
 
-const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "http://localhost:8080";
+const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "";
 
 type ViewTab = "customer" | "admin";
 

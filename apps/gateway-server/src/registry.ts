@@ -79,14 +79,13 @@ class RedisRegistryBackend implements RegistryBackend {
   private readonly keyPrefix: string;
 
   constructor(redisUrl: string, keyPrefix: string) {
-    this.redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 2 });
+    this.redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 });
     this.keyPrefix = keyPrefix;
   }
 
   async claim(subdomain: string, record: SessionRecord, ttlMs: number): Promise<SessionLease | null> {
     const leaseToken = crypto.randomUUID();
     const key = this.keyFor(subdomain);
-    await this.redis.connect();
 
     const payload = JSON.stringify({ leaseToken, ...record });
     const setResult = await this.redis.set(key, payload, "PX", ttlMs, "NX");
@@ -97,7 +96,6 @@ class RedisRegistryBackend implements RegistryBackend {
   }
 
   async heartbeat(subdomain: string, leaseToken: string, ttlMs: number): Promise<boolean> {
-    await this.redis.connect();
     const key = this.keyFor(subdomain);
     const script = `
       local raw = redis.call('GET', KEYS[1])
@@ -113,7 +111,6 @@ class RedisRegistryBackend implements RegistryBackend {
   }
 
   async release(subdomain: string, leaseToken: string): Promise<void> {
-    await this.redis.connect();
     const key = this.keyFor(subdomain);
     const script = `
       local raw = redis.call('GET', KEYS[1])
@@ -182,7 +179,16 @@ export class TunnelRegistry {
   }
 
   findBySubdomain(subdomain: string): LocalTunnelEntry | undefined {
-    return this.bySubdomain.get(subdomain);
+    const entry = this.bySubdomain.get(subdomain);
+    if (!entry) return undefined;
+    // Evict locally if the lease has not been heartbeated for 2× TTL
+    // (guards against stale-session routing when Redis evicts the key but
+    // the local map hasn't been cleaned up yet)
+    if (Date.now() - entry.lastHeartbeatAt > this.leaseTtlMs * 2) {
+      this.bySubdomain.delete(subdomain);
+      return undefined;
+    }
+    return entry;
   }
 
   heartbeat(subdomain: string): void {
@@ -192,8 +198,10 @@ export class TunnelRegistry {
     }
     session.lastHeartbeatAt = Date.now();
 
-    void this.backend.heartbeat(subdomain, session.leaseToken, this.leaseTtlMs).catch(() => {
-      // best-effort heartbeat refresh; request path remains available via local map
+    void this.backend.heartbeat(subdomain, session.leaseToken, this.leaseTtlMs).catch((err) => {
+      // best-effort heartbeat refresh; request path remains available via local map,
+      // but log failures so backend divergence is observable
+      console.warn("[registry] backend heartbeat failed", { subdomain, err: String(err) });
     });
   }
 
