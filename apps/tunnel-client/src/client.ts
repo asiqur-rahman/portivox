@@ -36,6 +36,9 @@ export type TunnelClientConfig = {
   /** Called once when the gateway confirms tunnel registration. Used by the CLI
    *  to write session info to ~/.portivox/sessions.json. */
   onRegistered?: (info: RegisteredInfo) => void;
+  /** When true, the client exits instead of reconnecting after a disconnect.
+   *  Used by the CLI when reconnectMode is "once". */
+  noReconnect?: boolean;
 };
 
 export class TunnelClient {
@@ -246,6 +249,10 @@ export class TunnelClient {
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) {
       return;
+    }
+    if (this.config.noReconnect) {
+      this.logger.info("Tunnel disconnected — exiting (reconnect mode is 'once').");
+      process.exit(0);
     }
     this.reconnectAttempt += 1;
     const delayMs = Math.min(30_000, 1_000 * (2 ** Math.min(this.reconnectAttempt, 5)));

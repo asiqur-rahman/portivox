@@ -1,7 +1,8 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
+import { createInterface } from "node:readline";
 import { loadClientConfig } from "portivox-config";
 import { TunnelClient, type RegisteredInfo } from "./client";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -12,9 +13,15 @@ const PORTIVOX_DIR = join(homedir(), ".portivox");
 const CONFIG_PATH = join(PORTIVOX_DIR, "client.json");
 const SESSIONS_PATH = join(PORTIVOX_DIR, "sessions.json");
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type SavedClientConfig = {
-  apiKey?: string;
   gatewayUrl?: string;
+  apiKey?: string;
+  defaultPort?: number;
+  defaultTunnelType?: "http" | "tcp";
+  reconnectMode?: "always" | "once" | "ask";
+  heartbeatIntervalMs?: number;
 };
 
 type SessionEntry = {
@@ -29,13 +36,7 @@ type SessionEntry = {
   startedAt: string;
 };
 
-function pickArg(argv: string[], name: string): string | undefined {
-  const idx = argv.indexOf(name);
-  if (idx < 0 || idx + 1 >= argv.length) {
-    return undefined;
-  }
-  return argv[idx + 1];
-}
+// ── Config helpers ────────────────────────────────────────────────────────────
 
 function readSavedConfig(): SavedClientConfig {
   try {
@@ -49,6 +50,8 @@ function writeSavedConfig(next: SavedClientConfig): void {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
 }
+
+// ── Session helpers ───────────────────────────────────────────────────────────
 
 function readSessions(): SessionEntry[] {
   try {
@@ -73,18 +76,80 @@ function removeSession(id: string): void {
   writeSessions(readSessions().filter((s) => s.id !== id));
 }
 
+// ── Prompter helpers ──────────────────────────────────────────────────────────
+
+async function ask(question: string, defaultVal = ""): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    const prompt = defaultVal ? `${question} [${defaultVal}]: ` : `${question}: `;
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer.trim() || defaultVal);
+    });
+  });
+}
+
+async function choose(question: string, options: string[], defaultIdx = 0): Promise<string> {
+  // eslint-disable-next-line no-console
+  console.log(`\n${question}`);
+  options.forEach((o, i) =>
+    // eslint-disable-next-line no-console
+    console.log(`  ${i + 1}) ${o}${i === defaultIdx ? "  (default)" : ""}`)
+  );
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(`Select [1-${options.length}]: `, (answer) => {
+      rl.close();
+      const n = Number(answer.trim());
+      resolve(options[Number.isInteger(n) && n >= 1 && n <= options.length ? n - 1 : defaultIdx]);
+    });
+  });
+}
+
+async function confirm(question: string, defaultYes = true): Promise<boolean> {
+  const hint = defaultYes ? "Y/n" : "y/N";
+  const answer = await ask(`${question} [${hint}]`);
+  if (!answer) return defaultYes;
+  return answer.toLowerCase().startsWith("y");
+}
+
+function maskApiKey(key: string): string {
+  if (key.length <= 8) return "••••••••";
+  return `${key.slice(0, 4)}${"•".repeat(Math.max(4, key.length - 8))}${key.slice(-4)}`;
+}
+
+function pickArg(argv: string[], name: string): string | undefined {
+  const idx = argv.indexOf(name);
+  if (idx < 0 || idx + 1 >= argv.length) {
+    return undefined;
+  }
+  return argv[idx + 1];
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────────
+
 function printUsage(): void {
   // eslint-disable-next-line no-console
   console.log(
     [
       "Portivox client commands:",
-      "  register <apiKey> [--gateway ws://host:7000/connect]",
-      "  open <port> [--gateway url] [--subdomain name] [--host 127.0.0.1] [--tcp]",
-      "              [--no-ip-protection] [--exit-after <seconds>] [--heartbeat <ms>]",
+      "  config                    Interactive setup wizard",
+      "  config --show             Print saved configuration",
+      "  config <key> <value>      Set a single config field",
+      "  config --reset            Delete saved configuration",
+      "  register <apiKey> [--gateway url]   (deprecated — use config instead)",
+      "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
+      "       [--tcp] [--http] [--no-ip-protection]",
+      "       [--exit-after <seconds>] [--heartbeat <ms>]",
       "  list",
       "",
+      "Config keys: gatewayUrl, apiKey, defaultPort, defaultTunnelType,",
+      "             reconnectMode, heartbeatIntervalMs",
+      "",
       "Examples:",
-      "  portivox register tk_xxx",
+      "  portivox config",
+      "  portivox config --show",
+      "  portivox config defaultPort 8080",
       "  portivox open 3000",
       "  portivox open 22 --tcp",
       "  portivox open 22 --tcp --no-ip-protection",
@@ -93,6 +158,202 @@ function printUsage(): void {
     ].join("\n"),
   );
 }
+
+// ── Config wizard ─────────────────────────────────────────────────────────────
+
+async function runConfigWizard(): Promise<void> {
+  const saved = readSavedConfig();
+  // eslint-disable-next-line no-console
+  console.log("\n┌─────────────────────────────────────────────────┐");
+  // eslint-disable-next-line no-console
+  console.log("│  Portivox Setup Wizard                          │");
+  // eslint-disable-next-line no-console
+  console.log("│  Press Enter to keep the [current / default]    │");
+  // eslint-disable-next-line no-console
+  console.log("└─────────────────────────────────────────────────┘\n");
+
+  // Step 1 — Gateway URL
+  // eslint-disable-next-line no-console
+  console.log("Step 1/6  Gateway URL");
+  const gatewayUrl = await ask(
+    "  Gateway URL",
+    saved.gatewayUrl ?? defaultConfig.gatewayUrl,
+  );
+
+  // Step 2 — API Key
+  // eslint-disable-next-line no-console
+  console.log("\nStep 2/6  API Key");
+  // eslint-disable-next-line no-console
+  console.log("  Leave blank to keep current / skip");
+  const apiKeyDefault = saved.apiKey ? maskApiKey(saved.apiKey) : "";
+  const apiKeyInput = await ask("  API Key", apiKeyDefault);
+  // If the user typed what looks like the masked value, keep the original
+  const apiKey =
+    saved.apiKey && apiKeyInput === maskApiKey(saved.apiKey)
+      ? saved.apiKey
+      : apiKeyInput || saved.apiKey;
+
+  // Step 3 — Default local port
+  // eslint-disable-next-line no-console
+  console.log("\nStep 3/6  Default Local Port");
+  const defaultPortRaw = await ask("  Default local port", String(saved.defaultPort ?? 3000));
+  const defaultPort = Number(defaultPortRaw);
+
+  // Step 4 — Default tunnel type
+  const typeChoice = await choose(
+    "Step 4/6  Default Tunnel Type",
+    ["HTTP (expose a web server)", "TCP (raw socket, SSH, etc.)"],
+    saved.defaultTunnelType === "tcp" ? 1 : 0,
+  );
+  const defaultTunnelType: "http" | "tcp" = typeChoice.startsWith("TCP") ? "tcp" : "http";
+
+  // Step 5 — Reconnect mode
+  const reconnectChoice = await choose(
+    "Step 5/6  Reconnect Behaviour",
+    [
+      "Always reconnect on disconnect",
+      "Connect once, exit on disconnect",
+      "Ask before each reconnect",
+    ],
+    saved.reconnectMode === "once" ? 1 : saved.reconnectMode === "ask" ? 2 : 0,
+  );
+  const reconnectMode: "always" | "once" | "ask" = reconnectChoice.includes("once")
+    ? "once"
+    : reconnectChoice.includes("Ask")
+      ? "ask"
+      : "always";
+
+  // Step 6 — Heartbeat interval
+  // eslint-disable-next-line no-console
+  console.log("\nStep 6/6  Heartbeat Interval");
+  const heartbeatRaw = await ask(
+    "  Heartbeat interval ms",
+    String(saved.heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs ?? 5000),
+  );
+  const heartbeatIntervalMs = Math.max(500, Number(heartbeatRaw) || 5000);
+
+  // Summary
+  // eslint-disable-next-line no-console
+  console.log("\n──────────────────────────────────────────────────");
+  // eslint-disable-next-line no-console
+  console.log("  Summary");
+  // eslint-disable-next-line no-console
+  console.log(`  gateway        ${gatewayUrl}`);
+  // eslint-disable-next-line no-console
+  console.log(`  apiKey         ${apiKey ? maskApiKey(apiKey) : "(none)"}`);
+  // eslint-disable-next-line no-console
+  console.log(`  defaultPort    ${Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000}`);
+  // eslint-disable-next-line no-console
+  console.log(`  tunnelType     ${defaultTunnelType}`);
+  // eslint-disable-next-line no-console
+  console.log(`  reconnect      ${reconnectMode}`);
+  // eslint-disable-next-line no-console
+  console.log(`  heartbeat      ${heartbeatIntervalMs} ms`);
+  // eslint-disable-next-line no-console
+  console.log("──────────────────────────────────────────────────");
+
+  const save = await confirm("\nSave configuration?", true);
+  if (!save) {
+    // eslint-disable-next-line no-console
+    console.log("Aborted — no changes saved.");
+    return;
+  }
+
+  const next: SavedClientConfig = {
+    gatewayUrl,
+    ...(apiKey ? { apiKey } : {}),
+    defaultPort: Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000,
+    defaultTunnelType,
+    reconnectMode,
+    heartbeatIntervalMs,
+  };
+  writeSavedConfig(next);
+  // eslint-disable-next-line no-console
+  console.log(`\n✔ Config saved to ${CONFIG_PATH}`);
+}
+
+// ── Config sub-commands (--show, --reset, key value) ─────────────────────────
+
+function runConfigShow(): void {
+  const saved = readSavedConfig();
+  if (Object.keys(saved).length === 0) {
+    // eslint-disable-next-line no-console
+    console.log("No saved config. Run `portivox config` to set up.");
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log(`\nSaved config (${CONFIG_PATH}):\n`);
+  const display: Record<string, unknown> = { ...saved };
+  if (typeof saved.apiKey === "string" && saved.apiKey) {
+    display.apiKey = maskApiKey(saved.apiKey);
+  }
+  for (const [k, v] of Object.entries(display)) {
+    // eslint-disable-next-line no-console
+    console.log(`  ${k.padEnd(20)} ${String(v)}`);
+  }
+  // eslint-disable-next-line no-console
+  console.log();
+}
+
+function runConfigReset(): void {
+  if (existsSync(CONFIG_PATH)) {
+    rmSync(CONFIG_PATH);
+    // eslint-disable-next-line no-console
+    console.log(`Config deleted: ${CONFIG_PATH}`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log("No config file found — nothing to reset.");
+  }
+}
+
+const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
+  gatewayUrl: (v) => v,
+  apiKey: (v) => v,
+  defaultPort: (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0 || n > 65535) throw new Error("defaultPort must be 1–65535");
+    return n;
+  },
+  defaultTunnelType: (v) => {
+    if (v !== "http" && v !== "tcp") throw new Error("defaultTunnelType must be 'http' or 'tcp'");
+    return v;
+  },
+  reconnectMode: (v) => {
+    if (v !== "always" && v !== "once" && v !== "ask")
+      throw new Error("reconnectMode must be 'always', 'once', or 'ask'");
+    return v;
+  },
+  heartbeatIntervalMs: (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 500) throw new Error("heartbeatIntervalMs must be >= 500");
+    return n;
+  },
+};
+
+function runConfigSet(key: string, value: string): void {
+  const validator = CONFIG_KEY_VALIDATORS[key];
+  if (!validator) {
+    // eslint-disable-next-line no-console
+    console.error(`Unknown config key: ${key}`);
+    // eslint-disable-next-line no-console
+    console.error(`Valid keys: ${Object.keys(CONFIG_KEY_VALIDATORS).join(", ")}`);
+    process.exit(1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = validator(value);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`Invalid value: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const saved = readSavedConfig();
+  writeSavedConfig({ ...saved, [key]: parsed });
+  // eslint-disable-next-line no-console
+  console.log(`✔ Set ${key} = ${String(parsed)}`);
+}
+
+// ── Client runner ─────────────────────────────────────────────────────────────
 
 function startClient({
   gatewayUrl,
@@ -105,6 +366,7 @@ function startClient({
   ipProtection,
   exitAfterMs,
   heartbeatIntervalMs,
+  noReconnect,
 }: {
   gatewayUrl: string;
   localBase: string;
@@ -116,6 +378,7 @@ function startClient({
   ipProtection?: boolean;
   exitAfterMs?: number;
   heartbeatIntervalMs?: number;
+  noReconnect?: boolean;
 }): void {
   const sessionId = randomUUID();
 
@@ -133,6 +396,7 @@ function startClient({
     ipProtection,
     exitAfterMs,
     heartbeatIntervalMs: heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs,
+    noReconnect,
     onRegistered: (info: RegisteredInfo) => {
       addSession({
         id: sessionId,
@@ -166,7 +430,9 @@ function startClient({
   });
 }
 
-function run(): void {
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+async function run(): Promise<void> {
   const command = args[0];
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
@@ -174,7 +440,41 @@ function run(): void {
     return;
   }
 
+  // ── config ───────────────────────────────────────────────────────────────
+  if (command === "config") {
+    const sub = args[1];
+
+    if (sub === "--show") {
+      runConfigShow();
+      return;
+    }
+
+    if (sub === "--reset") {
+      runConfigReset();
+      return;
+    }
+
+    // config <key> <value>
+    if (sub && !sub.startsWith("--")) {
+      const value = args[2];
+      if (!value) {
+        // eslint-disable-next-line no-console
+        console.error(`Usage: portivox config <key> <value>`);
+        process.exit(1);
+      }
+      runConfigSet(sub, value);
+      return;
+    }
+
+    // interactive wizard
+    await runConfigWizard();
+    return;
+  }
+
+  // ── register (deprecated) ───────────────────────────────────────────────
   if (command === "register") {
+    // eslint-disable-next-line no-console
+    console.warn("⚠  `register` is deprecated. Use `portivox config` instead.");
     const apiKey = args[1]?.trim();
     if (!apiKey) {
       // eslint-disable-next-line no-console
@@ -188,6 +488,7 @@ function run(): void {
     return;
   }
 
+  // ── list ─────────────────────────────────────────────────────────────────
   if (command === "list") {
     const sessions = readSessions();
     if (sessions.length === 0) {
@@ -225,17 +526,26 @@ function run(): void {
     return;
   }
 
+  // ── open ──────────────────────────────────────────────────────────────────
   if (command === "open") {
-    const rawPort = args[1];
-    const port = Number(rawPort);
+    const saved = readSavedConfig();
+    const rawPort = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 0);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       // eslint-disable-next-line no-console
-      console.error("Missing/invalid port. Usage: open <port>");
+      console.error(
+        rawPort
+          ? `Invalid port "${rawPort}". Usage: open <port>`
+          : "No port specified and no defaultPort saved. Run `portivox config` or pass a port.",
+      );
       process.exit(1);
     }
-    const tcpMode = args.includes("--tcp");
+
+    // --tcp flag overrides saved type; --http flag forces http
+    const tcpMode =
+      args.includes("--tcp") || (!args.includes("--http") && saved.defaultTunnelType === "tcp");
     const noIpProtection = args.includes("--no-ip-protection");
-    const saved = readSavedConfig();
+
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
     const localBase = pickArg(args, "--local") ?? `http://${host}:${port}`;
@@ -246,11 +556,18 @@ function run(): void {
     const exitAfterMs = exitAfterRaw ? Number(exitAfterRaw) * 1000 : undefined;
 
     const heartbeatRaw = pickArg(args, "--heartbeat");
-    const heartbeatIntervalMs = heartbeatRaw ? Number(heartbeatRaw) : undefined;
+    const heartbeatIntervalMs = heartbeatRaw
+      ? Number(heartbeatRaw)
+      : (saved.heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs);
+
+    const reconnectMode = saved.reconnectMode ?? "always";
+    const noReconnect = reconnectMode === "once";
 
     if (!apiKey) {
       // eslint-disable-next-line no-console
-      console.error("No API key found. Run register <apiKey> first, or set TUNNEL_API_KEY.");
+      console.error(
+        "No API key found. Run `portivox config` to set one, or set TUNNEL_API_KEY env var.",
+      );
       process.exit(1);
     }
 
@@ -260,6 +577,11 @@ function run(): void {
       // eslint-disable-next-line no-console
       console.log("IP link protection is ON — TCP port is dark until you click the access link.");
     }
+    if (reconnectMode === "once") {
+      // eslint-disable-next-line no-console
+      console.log("Reconnect mode: once — will exit on disconnect.");
+    }
+
     startClient({
       gatewayUrl,
       localBase,
@@ -271,10 +593,12 @@ function run(): void {
       ipProtection: tcpMode ? !noIpProtection : false,
       exitAfterMs,
       heartbeatIntervalMs,
+      noReconnect,
     });
     return;
   }
 
+  // ── legacy: no subcommand (env-driven mode) ───────────────────────────────
   const saved = readSavedConfig();
   const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
   const localBase = pickArg(args, "--local") ?? defaultConfig.localUrl;
@@ -283,5 +607,8 @@ function run(): void {
   startClient({ gatewayUrl, localBase, requestedSubdomain, apiKey });
 }
 
-run();
-
+run().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error((err as Error).message ?? String(err));
+  process.exit(1);
+});
