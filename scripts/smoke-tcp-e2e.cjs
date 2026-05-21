@@ -106,6 +106,7 @@ async function main() {
       requestedSubdomain: "demotcp",
       localTimeoutMs: 15000,
       maxResponseBodyBytes: 2097152,
+      ipProtection: false,
     });
     client.start();
 
