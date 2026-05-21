@@ -28,8 +28,7 @@ function requestGateway() {
         port: 80,
         path: "/",
         method: "GET",
-        // Must match ROOT_DOMAIN default in docker-compose.yml (portivox.example.com)
-        headers: { Host: "demo.portivox.example.com" },
+        headers: { Host: "demo.portivox.braintechsolution.com" },
       },
       (res) => {
         const chunks = [];

@@ -18,8 +18,6 @@ services:
       dockerfile: infra/nginx/Dockerfile
     container_name: portivox-nginx
     restart: unless-stopped
-    environment:
-      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
     ports:
       - "80:80"
     depends_on:
@@ -39,7 +37,7 @@ services:
       NODE_ENV: "production"
       GATEWAY_PORT: "8080"
       GATEWAY_WS_PORT: "7000"
-      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
+      ROOT_DOMAIN: "portivox.braintechsolution.com"
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
@@ -57,7 +55,7 @@ services:
       IDEMPOTENCY_ENABLED: "true"
       TCP_TUNNEL_ENABLED: "true"
       TCP_TUNNEL_BIND_HOST: "0.0.0.0"
-      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.example.com}"
+      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
       TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
       TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
       IP_PROTECTION_DEFAULT: "${IP_PROTECTION_DEFAULT:-true}"
@@ -96,7 +94,7 @@ services:
       GATEWAY_PORT: "8081"
       GATEWAY_WS_PORT: "7001"
       GATEWAY_NODE_ID: "gateway-2"
-      ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.example.com}"
+      ROOT_DOMAIN: "portivox.braintechsolution.com"
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
@@ -114,7 +112,7 @@ services:
       IDEMPOTENCY_ENABLED: "true"
       TCP_TUNNEL_ENABLED: "true"
       TCP_TUNNEL_BIND_HOST: "0.0.0.0"
-      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.example.com}"
+      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
       TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
       TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
     depends_on:
