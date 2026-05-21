@@ -41,7 +41,9 @@ services:
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      DATABASE_URL: "${DATABASE_URL}"
+      # If DATABASE_URL is set in .env (e.g. MySQL) it wins; otherwise the
+      # PostgreSQL URL is constructed automatically from POSTGRES_PASSWORD.
+      DATABASE_URL: "${DATABASE_URL:-postgresql://portivox:${POSTGRES_PASSWORD}@postgres:5432/portivox?schema=public}"
       MAX_REQUEST_BODY_BYTES: "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
       WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
@@ -64,8 +66,6 @@ services:
       API_RATE_LIMIT_WRITE_PER_MIN: "${API_RATE_LIMIT_WRITE_PER_MIN:-300}"
       HEARTBEAT_INTERVAL_MS: "${HEARTBEAT_INTERVAL_MS:-5000}"
     ports:
-      # Port 7000 (WS) is NOT bound on the host — CLI clients connect via nginx (/connect).
-      # TCP tunnel ports ARE bound so remote TCP clients can reach them directly.
       - "${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}:${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}"
     healthcheck:
       test: ["CMD", "node", "-e", "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"]
@@ -98,7 +98,7 @@ services:
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      DATABASE_URL: "${DATABASE_URL}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://portivox:${POSTGRES_PASSWORD}@postgres:5432/portivox?schema=public}"
       MAX_REQUEST_BODY_BYTES: "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
       WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
