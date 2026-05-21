@@ -28,7 +28,8 @@ function requestGateway() {
         port: 80,
         path: "/",
         method: "GET",
-        headers: { Host: "demo.portivox.braintechsolution.com" },
+        // Must match ROOT_DOMAIN default in docker-compose.yml (portivox.example.com)
+        headers: { Host: "demo.portivox.example.com" },
       },
       (res) => {
         const chunks = [];
@@ -136,22 +137,17 @@ async function main() {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         await run("docker", [
-        "compose",
-        "run",
-        "-d",
-        "-e",
-        "TUNNEL_API_KEY=ci_smoke_key",
-        "--name",
-        "portivox-client-smoke",
-        "client",
-        "node",
-        "apps/tunnel-client/dist/index.js",
-        "open",
-        "3000",
-        "--host",
-          "sample-local-app",
-          "--subdomain",
-          "demo",
+          "compose",
+          "run",
+          "-d",
+          "-e", "TUNNEL_API_KEY=ci_smoke_key",
+          "--name", "portivox-client-smoke",
+          "client",
+          "node", "apps/tunnel-client/dist/index.js",
+          "open", "3000",
+          "--gateway", "ws://gateway:7000/connect",
+          "--host", "sample-local-app",
+          "--subdomain", "demo",
         ]);
         launched = true;
         break;
