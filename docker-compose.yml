@@ -19,7 +19,7 @@ services:
     container_name: portivox-nginx
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "${NGINX_PORT:-80}:80"
     depends_on:
       gateway:
         condition: service_healthy
