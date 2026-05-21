@@ -792,6 +792,19 @@ a:hover{text-decoration:underline}
 .btn-save:hover { background:var(--accent-h);transform:translateY(-1px); }
 .btn-save i { font-size:16px; }
 
+.btn-danger {
+  padding:8px 16px;background:var(--red);color:#fff;
+  border:none;border-radius:var(--r-md);font-size:13px;
+  font-weight:500;cursor:pointer;display:inline-flex;
+  align-items:center;gap:6px;font-family:var(--font);
+  transition:filter var(--ease),transform var(--ease);
+}
+.btn-danger:hover { filter:brightness(1.1);transform:translateY(-1px); }
+.btn-danger:disabled { opacity:.55;cursor:not-allowed;transform:none; }
+
+@keyframes spin { to { transform:rotate(360deg); } }
+.spin { animation:spin 0.7s linear infinite;display:inline-block; }
+
 /* ── BILLING ── */
 .billing-plan-row {
   display:flex;align-items:center;justify-content:space-between;

@@ -69,10 +69,11 @@ export class GatewayApi {
   }
 
   async createTunnel(subdomain: string): Promise<TunnelRecord> {
-    return this.request<TunnelRecord>("/api/tunnels", {
+    const result = await this.request<{ tunnel: TunnelRecord }>("/api/tunnels", {
       method: "POST",
       body: JSON.stringify({ subdomain }),
     });
+    return result.tunnel;
   }
 
   async deleteTunnel(id: string): Promise<void> {
@@ -93,6 +94,13 @@ export class GatewayApi {
 
   async revokeApiKey(id: string): Promise<void> {
     await this.request(`/api/keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await this.request("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
   }
 
   async getReadyz(): Promise<{ ready: boolean; draining: boolean; maintenanceMode: boolean; activeTunnels: number }> {

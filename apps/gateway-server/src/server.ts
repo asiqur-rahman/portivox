@@ -301,6 +301,26 @@ class UserAuthStore {
     return [...this.memory.values()].find((item) => item.email === email) ?? null;
   }
 
+  async findById(id: string): Promise<UserAuthRecord | null> {
+    if (this.prisma) {
+      const row = await this.prisma.user.findUnique({ where: { id } });
+      if (!row || !row.passwordHash) return null;
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash, createdAt: row.createdAt.toISOString() };
+    }
+    return this.memory.get(id) ?? null;
+  }
+
+  async updatePassword(id: string, passwordHash: string): Promise<void> {
+    if (this.prisma) {
+      await this.prisma.user.update({ where: { id }, data: { passwordHash } });
+      return;
+    }
+    const existing = this.memory.get(id);
+    if (existing) {
+      this.memory.set(id, { ...existing, passwordHash });
+    }
+  }
+
   async close(): Promise<void> {
     if (this.prisma) {
       await this.prisma.$disconnect();
@@ -925,9 +945,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   }
 
   async function resolvePrincipal(headers: Record<string, unknown>): Promise<Principal | null> {
-    if (!config.authRequired) {
-      return { userId: "anonymous", authType: "anonymous", scopes: ["*"], role: "admin" };
-    }
+    // Always try explicit credentials first, regardless of AUTH_REQUIRED.
+    // This allows registered users to authenticate (e.g. change-password) even in dev mode.
 
     const apiKeyHeader = headers["x-api-key"];
     const apiKey = Array.isArray(apiKeyHeader) ? String(apiKeyHeader[0]) : apiKeyHeader ? String(apiKeyHeader) : undefined;
@@ -956,8 +975,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           return { userId: payload.sub, authType: "jwt", scopes: tokenScopes, role };
         }
       } catch {
-        return null;
+        // Invalid/expired token — when auth is required this is a hard failure;
+        // in dev mode fall through to anonymous.
+        if (config.authRequired) return null;
       }
+    }
+
+    // Fall back to anonymous when auth is not required and no valid credentials were provided.
+    if (!config.authRequired) {
+      return { userId: "anonymous", authType: "anonymous", scopes: ["*"], role: "admin" };
     }
 
     return null;
@@ -1762,6 +1788,41 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     });
   });
 
+  app.post("/api/auth/change-password", async (req, reply) => {
+    const endpoint = "/api/auth/change-password";
+    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Authentication required" } });
+    }
+    if (principal.authType !== "jwt") {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "JWT authentication required to change password" } });
+    }
+    const limit = apiWriteLimiter.take(`api:write:${principal.userId}`);
+    applyRateLimitHeaders(reply, limit);
+    if (!limit.allowed) {
+      return reply.header("retry-after", Math.ceil(limit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "Too many requests" } });
+    }
+    const body = req.body as { currentPassword?: unknown; newPassword?: unknown };
+    if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "currentPassword and newPassword are required" } });
+    }
+    if (body.newPassword.length < 8) {
+      return reply.status(400).send({ error: { code: "PASSWORD_TOO_SHORT", message: "New password must be at least 8 characters" } });
+    }
+    const user = await userAuthStore.findById(principal.userId);
+    if (!user) {
+      return reply.status(404).send({ error: { code: "USER_NOT_FOUND", message: "User not found" } });
+    }
+    if (!verifyPassword(body.currentPassword, user.passwordHash)) {
+      return reply.status(401).send({ error: { code: "INVALID_PASSWORD", message: "Current password is incorrect" } });
+    }
+    await userAuthStore.updatePassword(principal.userId, hashPassword(body.newPassword));
+    await auditStore.log(principal.userId, "password_changed", "user", principal.userId);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
+    return reply.status(200).send({ ok: true });
+  });
+
   app.get("/api/tunnels", async (req, reply) => {
     const endpoint = "/api/tunnels";
     const principal = await requirePrincipal(req.headers as Record<string, unknown>);
@@ -1928,7 +1989,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         .status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (principal.authType !== "jwt") {
+    // Allow JWT principals (normal auth) and anonymous principal (AUTH_REQUIRED=false dev mode).
+    // API-key principals are intentionally blocked: using a key to mint more keys is a privilege escalation risk.
+    if (principal.authType !== "jwt" && principal.authType !== "anonymous") {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "JWT_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "JWT principal required for API key issuance" } });

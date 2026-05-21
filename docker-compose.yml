@@ -66,7 +66,8 @@ services:
       API_RATE_LIMIT_WRITE_PER_MIN: "${API_RATE_LIMIT_WRITE_PER_MIN:-300}"
       HEARTBEAT_INTERVAL_MS: "${HEARTBEAT_INTERVAL_MS:-5000}"
     ports:
-      - "7000:7000"
+      # Port 7000 (WS) is NOT bound on the host — CLI clients connect via nginx (/connect).
+      # TCP tunnel ports ARE bound so remote TCP clients can reach them directly.
       - "${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}:${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}"
     healthcheck:
       test: ["CMD", "node", "-e", "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"]
@@ -116,8 +117,6 @@ services:
       TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.example.com}"
       TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
       TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
-    ports:
-      - "7001:7001"
     depends_on:
       redis:
         condition: service_healthy

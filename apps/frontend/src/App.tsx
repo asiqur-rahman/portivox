@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { GatewayApi, type ApiKeyRecord, type TunnelRecord } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GatewayApi, type ApiKeyRecord, type AuditItem, type TunnelRecord } from "./api";
 import "./styles.css";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -23,18 +23,44 @@ interface UserInfo {
   role: string;
 }
 
+interface ConfirmState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+}
+
+interface GatewayStatus {
+  ready: boolean;
+  draining: boolean;
+  maintenanceMode: boolean;
+  activeTunnels: number;
+}
+
 const PAGE_TITLES: Record<Page, string> = {
   tunnels: "Tunnels",
   devices: "Devices",
   ai: "AI Assistant",
-  usage: "Usage",
+  usage: "Usage & Logs",
   api: "API Keys",
   org: "Organisation",
   settings: "Settings",
   billing: "Billing",
 };
 
+const AI_QUICK_ACTIONS = [
+  { icon: "ti-plug", title: "Expose local port", desc: "Share a dev server via a secure tunnel", prompt: "How do I expose my local port 3000 to the internet?" },
+  { icon: "ti-stethoscope", title: "Diagnose idle tunnel", desc: "Investigate why connections aren't arriving", prompt: "Why is my tunnel showing zero inbound connections?" },
+  { icon: "ti-database", title: "Tunnel a database", desc: "Securely expose PostgreSQL, MySQL, or Redis", prompt: "How do I create a TCP tunnel for my PostgreSQL database?" },
+  { icon: "ti-shield-lock", title: "Security audit", desc: "Review open tunnels for exposure risks", prompt: "Audit my current tunnels and suggest security improvements" },
+  { icon: "ti-code", title: "CLI command help", desc: "Generate the exact portivox command you need", prompt: "What portivox CLI command opens a tunnel with IP protection enabled?" },
+  { icon: "ti-clock-play", title: "Auto-close rules", desc: "Stop tunnels automatically after idle timeout", prompt: "How do I configure tunnels to close automatically after 1 hour of inactivity?" },
+];
+
 let toastSeq = 0;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function deriveInitials(email: string): string {
   const name = email.split("@")[0].replace(/[^a-zA-Z\s]/g, " ").trim();
@@ -53,18 +79,87 @@ function deriveName(email: string): string {
 }
 
 function getTunnelUrl(subdomain: string): string {
+  const proto = window.location.protocol; // "http:" or "https:"
   const host = window.location.hostname;
-  return `${subdomain}.${host}`;
+  return `${proto}//${subdomain}.${host}`;
+}
+
+function getWsGatewayUrl(): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/connect`;
+}
+
+function saveSession(token: string, user: UserInfo): void {
+  try {
+    localStorage.setItem("ptx-session", JSON.stringify({ token, ...user }));
+  } catch {
+    // ignore
+  }
+}
+
+function clearSession(): void {
+  localStorage.removeItem("ptx-session");
+}
+
+function loadSession(): { token: string; user: UserInfo } | null {
+  try {
+    const raw = localStorage.getItem("ptx-session");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: string; email?: string; name?: string; initials?: string; role?: string };
+    if (!parsed.token || !parsed.email) return null;
+    return {
+      token: parsed.token,
+      user: {
+        email: parsed.email,
+        name: parsed.name ?? deriveName(parsed.email),
+        initials: parsed.initials ?? deriveInitials(parsed.email),
+        role: parsed.role ?? "owner",
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── ConfirmModal ─────────────────────────────────────────────────────────────
+
+function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onClose }: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title">
+            {danger && <i className="ti ti-alert-triangle" style={{ color: "var(--red)", marginRight: 6 }} />}
+            {title}
+          </div>
+          <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.6, margin: 0 }}>{message}</p>
+        </div>
+        <div className="modal-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          {danger
+            ? <button className="btn-danger" onClick={onConfirm}>{confirmLabel}</button>
+            : <button className="btn-primary" onClick={onConfirm}>{confirmLabel}</button>
+          }
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── NewTunnelModal ───────────────────────────────────────────────────────────
 
 function NewTunnelModal({
-  subdomain,
-  setSubdomain,
-  loading,
-  onCreate,
-  onClose,
+  subdomain, setSubdomain, loading, onCreate, onClose,
 }: {
   subdomain: string;
   setSubdomain: (v: string) => void;
@@ -72,21 +167,18 @@ function NewTunnelModal({
   onCreate: () => void;
   onClose: () => void;
 }) {
+  const host = window.location.hostname;
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <div className="modal-title">
-            <i className="ti ti-topology-star-3" /> New tunnel
-          </div>
-          <div className="icon-btn" onClick={onClose}>
-            <i className="ti ti-x" />
-          </div>
+          <div className="modal-title"><i className="ti ti-topology-star-3" /> New tunnel</div>
+          <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
         </div>
         <div className="modal-body">
           <p style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 16, lineHeight: 1.6 }}>
-            Reserve a subdomain. Once a client connects using this subdomain,
-            traffic will be routed automatically.
+            Reserve a subdomain. Once a client connects using this subdomain, traffic
+            will be routed automatically.
           </p>
           <label className="form-lbl">Subdomain</label>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
@@ -95,25 +187,22 @@ function NewTunnelModal({
               style={{ flex: 1 }}
               placeholder="myapp"
               value={subdomain}
-              onChange={(e) => setSubdomain(e.target.value)}
+              onChange={(e) => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
               onKeyDown={(e) => e.key === "Enter" && onCreate()}
               autoFocus
             />
             <span style={{ fontSize: 12, color: "var(--text-3)", whiteSpace: "nowrap" }}>
-              .{window.location.hostname}
+              .{host}
             </span>
           </div>
+          <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 6 }}>
+            3–32 chars · lowercase letters, numbers, hyphens only
+          </p>
         </div>
         <div className="modal-foot">
-          <button className="btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn-primary"
-            disabled={loading || !subdomain.trim()}
-            onClick={onCreate}
-          >
-            <i className="ti ti-plus" /> Create tunnel
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={loading || subdomain.length < 3} onClick={onCreate}>
+            {loading ? <><i className="ti ti-loader-2 spin" /> Creating…</> : <><i className="ti ti-plus" /> Create tunnel</>}
           </button>
         </div>
       </div>
@@ -124,13 +213,7 @@ function NewTunnelModal({
 // ─── NewKeyModal ──────────────────────────────────────────────────────────────
 
 function NewKeyModal({
-  name,
-  setName,
-  scopes,
-  setScopes,
-  loading,
-  onCreate,
-  onClose,
+  name, setName, scopes, setScopes, loading, onCreate, onClose,
 }: {
   name: string;
   setName: (v: string) => void;
@@ -144,12 +227,8 @@ function NewKeyModal({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <div className="modal-title">
-            <i className="ti ti-key" /> Generate API key
-          </div>
-          <div className="icon-btn" onClick={onClose}>
-            <i className="ti ti-x" />
-          </div>
+          <div className="modal-title"><i className="ti ti-key" /> Generate API key</div>
+          <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
         </div>
         <div className="modal-body">
           <div style={{ display: "grid", gap: 14 }}>
@@ -158,7 +237,7 @@ function NewKeyModal({
               <input
                 className="form-inp"
                 style={{ marginTop: 6, width: "100%" }}
-                placeholder="e.g. ci-cd-key"
+                placeholder="e.g. ci-cd-deploy"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && onCreate()}
@@ -180,15 +259,9 @@ function NewKeyModal({
           </div>
         </div>
         <div className="modal-foot">
-          <button className="btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn-primary"
-            disabled={loading || !name.trim()}
-            onClick={onCreate}
-          >
-            <i className="ti ti-check" /> Generate key
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={loading || !name.trim()} onClick={onCreate}>
+            {loading ? <><i className="ti ti-loader-2 spin" /> Generating…</> : <><i className="ti ti-check" /> Generate key</>}
           </button>
         </div>
       </div>
@@ -199,85 +272,42 @@ function NewKeyModal({
 // ─── AuthScreen ───────────────────────────────────────────────────────────────
 
 function AuthScreen({
-  authTab,
-  setAuthTab,
-  theme,
-  setTheme,
-  loginEmail,
-  setLoginEmail,
-  loginPassword,
-  setLoginPassword,
-  loginPassShow,
-  setLoginPassShow,
-  regFirstName,
-  setRegFirstName,
-  regLastName,
-  setRegLastName,
-  regEmail,
-  setRegEmail,
-  regOrg,
-  setRegOrg,
-  regPassword,
-  setRegPassword,
-  regPassShow,
-  setRegPassShow,
-  loading,
-  doLogin,
-  doRegister,
+  authTab, setAuthTab, theme, setTheme,
+  loginEmail, setLoginEmail, loginPassword, setLoginPassword, loginPassShow, setLoginPassShow,
+  regFirstName, setRegFirstName, regLastName, setRegLastName,
+  regEmail, setRegEmail, regPassword, setRegPassword, regPassShow, setRegPassShow,
+  loading, doLogin, doRegister,
 }: {
-  authTab: AuthTab;
-  setAuthTab: (t: AuthTab) => void;
-  theme: Theme;
-  setTheme: (t: Theme) => void;
-  loginEmail: string;
-  setLoginEmail: (v: string) => void;
-  loginPassword: string;
-  setLoginPassword: (v: string) => void;
-  loginPassShow: boolean;
-  setLoginPassShow: (v: boolean) => void;
-  regFirstName: string;
-  setRegFirstName: (v: string) => void;
-  regLastName: string;
-  setRegLastName: (v: string) => void;
-  regEmail: string;
-  setRegEmail: (v: string) => void;
-  regOrg: string;
-  setRegOrg: (v: string) => void;
-  regPassword: string;
-  setRegPassword: (v: string) => void;
-  regPassShow: boolean;
-  setRegPassShow: (v: boolean) => void;
-  loading: boolean;
-  doLogin: () => void;
-  doRegister: () => void;
+  authTab: AuthTab; setAuthTab: (t: AuthTab) => void;
+  theme: Theme; setTheme: (t: Theme) => void;
+  loginEmail: string; setLoginEmail: (v: string) => void;
+  loginPassword: string; setLoginPassword: (v: string) => void;
+  loginPassShow: boolean; setLoginPassShow: (v: boolean) => void;
+  regFirstName: string; setRegFirstName: (v: string) => void;
+  regLastName: string; setRegLastName: (v: string) => void;
+  regEmail: string; setRegEmail: (v: string) => void;
+  regPassword: string; setRegPassword: (v: string) => void;
+  regPassShow: boolean; setRegPassShow: (v: boolean) => void;
+  loading: boolean; doLogin: () => void; doRegister: () => void;
 }) {
   return (
     <div id="screen-auth">
-      {/* ── Left panel ─────────────────────────── */}
+      {/* ── Left panel ────────────────────────── */}
       <div className="auth-left">
         <div className="auth-left-inner">
           <div className="auth-brand">
-            <div className="auth-brand-icon">
-              <i className="ti ti-topology-star" />
-            </div>
-            <span className="auth-brand-name">
-              Portivox <span className="auth-brand-badge">AI</span>
-            </span>
+            <div className="auth-brand-icon"><i className="ti ti-topology-star" /></div>
+            <span className="auth-brand-name">Portivox <span className="auth-brand-badge">AI</span></span>
           </div>
-
-          <h1 className="auth-headline">
-            Secure tunnels.<br />
-            <em>AI superpowers.</em>
-          </h1>
+          <h1 className="auth-headline">Secure tunnels.<br /><em>AI superpowers.</em></h1>
           <p className="auth-sub">
-            Expose local ports to the internet in seconds — with intelligent
-            monitoring, auto-optimization, and AI-assisted setup built right in.
+            Expose local ports to the internet in seconds — with intelligent monitoring,
+            auto-optimization, and AI-assisted setup built right in.
           </p>
-
           <div className="auth-features">
             <div className="auth-feature">
               <div className="auth-feature-dot"><i className="ti ti-shield-lock" /></div>
-              <span>End-to-end encrypted SSH tunnels</span>
+              <span>End-to-end encrypted WebSocket tunnels</span>
             </div>
             <div className="auth-feature">
               <div className="auth-feature-dot"><i className="ti ti-sparkles" /></div>
@@ -295,99 +325,49 @@ function AuthScreen({
         </div>
       </div>
 
-      {/* ── Right panel ────────────────────────── */}
+      {/* ── Right panel ───────────────────────── */}
       <div className="auth-right">
-        {/* Theme toggle */}
         <div className="auth-theme-top">
           <div className="theme-toggle" style={{ width: "fit-content" }}>
-            <button
-              className={`theme-btn ${theme === "light" ? "active" : ""}`}
-              onClick={() => setTheme("light")}
-            >
-              <i className="ti ti-sun" />
-            </button>
-            <button
-              className={`theme-btn ${theme === "dark" ? "active" : ""}`}
-              onClick={() => setTheme("dark")}
-            >
-              <i className="ti ti-moon" />
-            </button>
+            <button className={`theme-btn ${theme === "light" ? "active" : ""}`} onClick={() => setTheme("light")}><i className="ti ti-sun" /></button>
+            <button className={`theme-btn ${theme === "dark" ? "active" : ""}`} onClick={() => setTheme("dark")}><i className="ti ti-moon" /></button>
           </div>
         </div>
 
-        {/* Tabs */}
         <div className="auth-tabs">
-          <button
-            className={`auth-tab ${authTab === "login" ? "active" : ""}`}
-            onClick={() => setAuthTab("login")}
-          >
-            Sign in
-          </button>
-          <button
-            className={`auth-tab ${authTab === "register" ? "active" : ""}`}
-            onClick={() => setAuthTab("register")}
-          >
-            Create account
-          </button>
+          <button className={`auth-tab ${authTab === "login" ? "active" : ""}`} onClick={() => setAuthTab("login")}>Sign in</button>
+          <button className={`auth-tab ${authTab === "register" ? "active" : ""}`} onClick={() => setAuthTab("register")}>Create account</button>
         </div>
 
         {/* LOGIN */}
         <div className={`auth-panel ${authTab === "login" ? "active" : ""}`}>
           <div className="auth-form-title">Welcome back</div>
           <div className="auth-form-sub">Sign in to your Portivox workspace</div>
-
           <div className="auth-form">
             <div>
-              <label className="field-label" htmlFor="login-email">
-                Email address
-              </label>
-              <input
-                className="field-input"
-                id="login-email"
-                type="email"
-                placeholder="you@company.com"
-                autoComplete="email"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && doLogin()}
-              />
+              <label className="field-label" htmlFor="login-email">Email address</label>
+              <input className="field-input" id="login-email" type="email" placeholder="you@company.com"
+                autoComplete="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && doLogin()} />
             </div>
             <div>
-              <label className="field-label" htmlFor="login-pass">
-                Password
-              </label>
+              <label className="field-label" htmlFor="login-pass">Password</label>
               <div className="field-input-wrap">
-                <input
-                  className="field-input"
-                  id="login-pass"
-                  type={loginPassShow ? "text" : "password"}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && doLogin()}
-                />
-                <i
-                  className={`ti ${loginPassShow ? "ti-eye-off" : "ti-eye"} field-eye`}
-                  onClick={() => setLoginPassShow(!loginPassShow)}
-                />
+                <input className="field-input" id="login-pass" type={loginPassShow ? "text" : "password"}
+                  placeholder="••••••••" autoComplete="current-password"
+                  value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && doLogin()} />
+                <i className={`ti ${loginPassShow ? "ti-eye-off" : "ti-eye"} field-eye`}
+                  onClick={() => setLoginPassShow(!loginPassShow)} />
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: -6 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, color: "var(--text-2)", cursor: "pointer" }}>
-                <input type="checkbox" style={{ accentColor: "var(--accent)" }} /> Remember me
-              </label>
-              <a href="#" style={{ fontSize: 13 }}>Forgot password?</a>
-            </div>
             <button className="auth-submit" disabled={loading} onClick={doLogin}>
-              <i className="ti ti-login" /> Sign in
+              {loading ? <><i className="ti ti-loader-2 spin" /> Signing in…</> : <><i className="ti ti-login" /> Sign in</>}
             </button>
           </div>
           <div className="auth-footer-note">
             Don't have an account?{" "}
-            <a href="#" onClick={(e) => { e.preventDefault(); setAuthTab("register"); }}>
-              Create one free →
-            </a>
+            <a href="#" onClick={(e) => { e.preventDefault(); setAuthTab("register"); }}>Create one free →</a>
           </div>
         </div>
 
@@ -395,80 +375,42 @@ function AuthScreen({
         <div className={`auth-panel ${authTab === "register" ? "active" : ""}`}>
           <div className="auth-form-title">Create your account</div>
           <div className="auth-form-sub">Get started free — no credit card required</div>
-
           <div className="auth-form">
             <div className="field-row">
               <div>
                 <label className="field-label">First name</label>
-                <input
-                  className="field-input"
-                  type="text"
-                  placeholder="Asiqur"
-                  value={regFirstName}
-                  onChange={(e) => setRegFirstName(e.target.value)}
-                />
+                <input className="field-input" type="text" placeholder="First name"
+                  value={regFirstName} onChange={(e) => setRegFirstName(e.target.value)} />
               </div>
               <div>
                 <label className="field-label">Last name</label>
-                <input
-                  className="field-input"
-                  type="text"
-                  placeholder="Rahman"
-                  value={regLastName}
-                  onChange={(e) => setRegLastName(e.target.value)}
-                />
+                <input className="field-input" type="text" placeholder="Last name"
+                  value={regLastName} onChange={(e) => setRegLastName(e.target.value)} />
               </div>
             </div>
             <div>
               <label className="field-label">Work email</label>
-              <input
-                className="field-input"
-                type="email"
-                placeholder="you@company.com"
-                value={regEmail}
-                onChange={(e) => setRegEmail(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="field-label">Organisation</label>
-              <input
-                className="field-input"
-                type="text"
-                placeholder="AIUB / Acme Corp"
-                value={regOrg}
-                onChange={(e) => setRegOrg(e.target.value)}
-              />
+              <input className="field-input" type="email" placeholder="you@company.com"
+                value={regEmail} onChange={(e) => setRegEmail(e.target.value)} />
             </div>
             <div>
               <label className="field-label">Password</label>
               <div className="field-input-wrap">
-                <input
-                  className="field-input"
-                  type={regPassShow ? "text" : "password"}
-                  placeholder="Min. 8 characters"
-                  value={regPassword}
+                <input className="field-input" type={regPassShow ? "text" : "password"}
+                  placeholder="Min. 8 characters" value={regPassword}
                   onChange={(e) => setRegPassword(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && doRegister()}
-                />
-                <i
-                  className={`ti ${regPassShow ? "ti-eye-off" : "ti-eye"} field-eye`}
-                  onClick={() => setRegPassShow(!regPassShow)}
-                />
+                  onKeyDown={(e) => e.key === "Enter" && doRegister()} />
+                <i className={`ti ${regPassShow ? "ti-eye-off" : "ti-eye"} field-eye`}
+                  onClick={() => setRegPassShow(!regPassShow)} />
               </div>
             </div>
-            <label style={{ display: "flex", alignItems: "flex-start", gap: 9, fontSize: "12.5px", color: "var(--text-2)", cursor: "pointer", lineHeight: 1.5 }}>
-              <input type="checkbox" style={{ accentColor: "var(--accent)", marginTop: 2, flexShrink: 0 }} />
-              I agree to the <a href="#">Terms of Service</a>&nbsp;and&nbsp;<a href="#">Privacy Policy</a>
-            </label>
             <button className="auth-submit" disabled={loading} onClick={doRegister}>
-              <i className="ti ti-user-plus" /> Create account
+              {loading ? <><i className="ti ti-loader-2 spin" /> Creating account…</> : <><i className="ti ti-user-plus" /> Create account</>}
             </button>
           </div>
           <div className="auth-footer-note">
             Already have an account?{" "}
-            <a href="#" onClick={(e) => { e.preventDefault(); setAuthTab("login"); }}>
-              Sign in →
-            </a>
+            <a href="#" onClick={(e) => { e.preventDefault(); setAuthTab("login"); }}>Sign in →</a>
           </div>
         </div>
       </div>
@@ -479,27 +421,21 @@ function AuthScreen({
 // ─── TunnelsPage ──────────────────────────────────────────────────────────────
 
 function TunnelsPage({
-  tunnels,
-  loading,
-  aiInsightVisible,
-  setAiInsightVisible,
-  onRefresh,
-  onNewTunnel,
-  onDeleteTunnel,
-  onCopy,
+  tunnels, loading, gatewayStatus, aiInsightVisible, setAiInsightVisible,
+  onRefresh, onNewTunnel, onDeleteTunnel, onCopy,
 }: {
   tunnels: TunnelRecord[];
   loading: boolean;
+  gatewayStatus: GatewayStatus | null;
   aiInsightVisible: boolean;
   setAiInsightVisible: (v: boolean) => void;
   onRefresh: () => void;
   onNewTunnel: () => void;
-  onDeleteTunnel: (id: string) => void;
+  onDeleteTunnel: (id: string, subdomain: string) => void;
   onCopy: (text: string) => void;
 }) {
   return (
     <div className="page">
-      {/* Metrics */}
       <div className="metrics">
         <div className="metric-card">
           <div className="metric-label">
@@ -508,11 +444,27 @@ function TunnelsPage({
           </div>
           <div className="metric-val">{tunnels.length}</div>
           <div className="metric-sub">
-            {tunnels.length > 0 ? (
-              <span className="up">↑ {tunnels.length} currently running</span>
-            ) : (
-              "None active"
-            )}
+            {tunnels.length > 0
+              ? <span className="up">↑ {tunnels.length} running</span>
+              : "None active"}
+          </div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">
+            <div className="metric-icon"><i className="ti ti-server" /></div>
+            Gateway status
+          </div>
+          <div className="metric-val" style={{ fontSize: 15, paddingTop: 5, fontWeight: 600 }}>
+            {gatewayStatus == null ? "…" : gatewayStatus.ready ? "Ready" : "Unavailable"}
+          </div>
+          <div className={`metric-sub ${gatewayStatus?.ready ? "up" : ""}`}>
+            {gatewayStatus?.maintenanceMode
+              ? "⚠ Maintenance mode"
+              : gatewayStatus?.draining
+                ? "⚠ Draining"
+                : gatewayStatus?.ready
+                  ? "↑ All systems operational"
+                  : "Status unknown"}
           </div>
         </div>
         <div className="metric-card">
@@ -521,7 +473,7 @@ function TunnelsPage({
             Data transferred
           </div>
           <div className="metric-val" style={{ fontSize: 22 }}>—</div>
-          <div className="metric-sub">Monitoring coming soon</div>
+          <div className="metric-sub">Metrics coming soon</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">
@@ -529,47 +481,31 @@ function TunnelsPage({
             Avg latency
           </div>
           <div className="metric-val" style={{ fontSize: 22 }}>—</div>
-          <div className="metric-sub">Monitoring coming soon</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">
-            <div className="metric-icon"><i className="ti ti-server" /></div>
-            Gateway
-          </div>
-          <div className="metric-val" style={{ fontSize: 15, paddingTop: 5, fontWeight: 600 }}>
-            {window.location.hostname}
-          </div>
-          <div className="metric-sub up">↑ Online</div>
+          <div className="metric-sub">Metrics coming soon</div>
         </div>
       </div>
 
-      {/* AI insight banner */}
       {aiInsightVisible && (
         <div className="ai-insight">
           <div className="ai-badge"><i className="ti ti-sparkles" /></div>
           <div style={{ flex: 1 }}>
             <div className="ai-insight-label">AI insight</div>
             <div className="ai-insight-text">
-              {tunnels.length === 0 ? (
-                <>No active tunnels found. Click <strong>New tunnel</strong> to reserve a subdomain, or run <strong>portivox open &lt;port&gt;</strong> from any registered device.</>
-              ) : (
-                <>You have <strong>{tunnels.length}</strong> active tunnel{tunnels.length !== 1 ? "s" : ""}. Use <strong>portivox list</strong> from the CLI to check status from any device.</>
-              )}
+              {tunnels.length === 0
+                ? <>No active tunnels. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
+                : <>You have <strong>{tunnels.length}</strong> active tunnel{tunnels.length !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
             </div>
           </div>
           <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
         </div>
       )}
 
-      {/* Live sessions table */}
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-topology-star-3" /> Live sessions
-          </div>
+          <div className="section-title"><i className="ti ti-topology-star-3" /> Live sessions</div>
           <div className="section-actions">
             <button className="btn-ghost" onClick={onRefresh} disabled={loading}>
-              <i className="ti ti-refresh" /> Refresh
+              {loading ? <><i className="ti ti-loader-2 spin" /> Refreshing</> : <><i className="ti ti-refresh" /> Refresh</>}
             </button>
             <button className="btn-primary" onClick={onNewTunnel}>
               <i className="ti ti-plus" /> New tunnel
@@ -582,7 +518,8 @@ function TunnelsPage({
             <i className="ti ti-topology-star-3" />
             <div className="empty-title">No active tunnels</div>
             <div className="empty-desc">
-              Start a tunnel from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>, or click below to reserve a subdomain.
+              Start a tunnel from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>,
+              or click below to reserve a subdomain.
             </div>
             <button className="btn-primary" style={{ margin: "0 auto" }} onClick={onNewTunnel}>
               <i className="ti ti-plus" /> New tunnel
@@ -618,30 +555,18 @@ function TunnelsPage({
                     <td style={{ color: "var(--text-3)", fontSize: 12 }}>
                       {new Date(tunnel.createdAt).toLocaleString()}
                     </td>
-                    <td>
-                      <span className="status-dot dot-green" />Live
-                    </td>
+                    <td><span className="status-dot dot-green" />Live</td>
                     <td>
                       <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                        <div
-                          className="icon-btn"
-                          title="Copy URL"
-                          onClick={() => onCopy(url)}
-                        >
+                        <div className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
                           <i className="ti ti-copy" />
                         </div>
-                        <div
-                          className="icon-btn"
-                          title="Open in browser"
-                          onClick={() => window.open(`http://${url}`, "_blank")}
-                        >
+                        <div className="icon-btn" title="Open in browser"
+                          onClick={() => window.open(url, "_blank")}>
                           <i className="ti ti-external-link" />
                         </div>
-                        <button
-                          className="stop-btn"
-                          disabled={loading}
-                          onClick={() => onDeleteTunnel(tunnel.id)}
-                        >
+                        <button className="stop-btn" disabled={loading}
+                          onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
                           Stop
                         </button>
                       </div>
@@ -659,55 +584,102 @@ function TunnelsPage({
 
 // ─── DevicesPage ──────────────────────────────────────────────────────────────
 
-function DevicesPage({ onCopy }: { onCopy: (text: string) => void }) {
-  const cmd = "portivox register <your-token>";
+function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: string) => void }) {
+  const wsUrl = getWsGatewayUrl();
+  const installCmd = "npm install -g portivox";
+  const openCmd = `portivox open 3000 --gateway ${wsUrl}`;
+  const openWithKeyCmd = `portivox open 3000 --gateway ${wsUrl} --key tk_YOUR_API_KEY`;
+
   return (
     <div className="page">
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-device-laptop" /> Registered devices
-          </div>
-          <button className="btn-primary">
-            <i className="ti ti-plus" /> Add device
-          </button>
+          <div className="section-title"><i className="ti ti-device-laptop" /> Connect a device</div>
         </div>
-        <div className="empty">
-          <i className="ti ti-device-laptop" />
-          <div className="empty-title">No registered devices</div>
-          <div className="empty-desc">
-            Register a device by installing the Portivox client and running the registration command below.
+        <div style={{ padding: "16px 22px" }}>
+          <div className="ai-insight">
+            <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+            <div style={{ flex: 1 }}>
+              <div className="ai-insight-label">How it works</div>
+              <div className="ai-insight-text">
+                Install the Portivox CLI on any device and run{" "}
+                <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code>.
+                No registration needed — connect from anywhere.
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-terminal-2" /> Register a new device
-          </div>
+          <div className="section-title"><i className="ti ti-terminal-2" /> Quick start</div>
         </div>
-        <div style={{ padding: "18px 22px" }}>
-          <p style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 12 }}>
-            Install the Portivox client on your device, then run:
-          </p>
-          <div className="code-block">
-            <code>{cmd}</code>
-            <div
-              className="icon-btn"
-              style={{ borderColor: "rgba(255,255,255,0.1)", color: "#b4a9ff", background: "transparent" }}
-              onClick={() => onCopy(cmd)}
-              title="Copy"
-            >
-              <i className="ti ti-copy" />
+        <div style={{ padding: "18px 22px", display: "grid", gap: 20 }}>
+          <div>
+            <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
+              1 — Install the CLI
+            </p>
+            <div className="code-block">
+              <code>{installCmd}</code>
+              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(installCmd)} title="Copy">
+                <i className="ti ti-copy" />
+              </div>
             </div>
           </div>
-          <p style={{ fontSize: 12, color: "var(--text-3)", marginTop: 10 }}>
-            Need the client?{" "}
-            <a href="https://github.com" target="_blank" rel="noreferrer">
-              Download for Linux / macOS / Windows →
-            </a>
-          </p>
+          <div>
+            <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
+              2 — Open a tunnel (connects to this gateway)
+            </p>
+            <div className="code-block">
+              <code>{openCmd}</code>
+              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(openCmd)} title="Copy">
+                <i className="ti ti-copy" />
+              </div>
+            </div>
+          </div>
+          {user && !user.email.startsWith("anonymous") && (
+            <div>
+              <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 4 }}>
+                3 — For CI/CD or automation, use an API key
+              </p>
+              <p style={{ fontSize: 12, color: "var(--text-3)", marginBottom: 8 }}>
+                Generate a key in the <strong>API Keys</strong> section, then replace{" "}
+                <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>tk_YOUR_API_KEY</code>:
+              </p>
+              <div className="code-block">
+                <code>{openWithKeyCmd}</code>
+                <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(openWithKeyCmd)} title="Copy">
+                  <i className="ti ti-copy" />
+                </div>
+              </div>
+            </div>
+          )}
+          <div>
+            <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
+              More options
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {[
+                { cmd: `portivox open 3000 --subdomain myapp --gateway ${wsUrl}`, label: "Custom subdomain" },
+                { cmd: `portivox open 5432 --type tcp --gateway ${wsUrl}`, label: "TCP tunnel (database)" },
+                { cmd: `portivox open 3000 --no-ip-protection --gateway ${wsUrl}`, label: "Disable IP protection" },
+                { cmd: `portivox list --gateway ${wsUrl}`, label: "List active tunnels" },
+              ].map(({ cmd, label }) => (
+                <div key={label} style={{ background: "var(--bg-secondary)", borderRadius: "var(--r-md)", padding: "12px 14px", border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-2)", marginBottom: 6 }}>{label}</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--accent)", wordBreak: "break-all" }}>
+                      {cmd.length > 60 ? cmd.slice(0, 60) + "…" : cmd}
+                    </code>
+                    <div className="icon-btn" style={{ flexShrink: 0, color: "var(--text-3)" }} onClick={() => onCopy(cmd)} title="Copy">
+                      <i className="ti ti-copy" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -717,40 +689,76 @@ function DevicesPage({ onCopy }: { onCopy: (text: string) => void }) {
 // ─── AiPage ───────────────────────────────────────────────────────────────────
 
 function AiPage() {
-  const cards = [
-    { icon: "ti-plug", title: "Expose local port", desc: "Create a secure tunnel to share your dev server with the world" },
-    { icon: "ti-stethoscope", title: "Diagnose idle tunnel", desc: "Investigate why a tunnel has zero inbound connections" },
-    { icon: "ti-database", title: "Tunnel a database", desc: "Securely expose PostgreSQL, MySQL, or Redis" },
-    { icon: "ti-chart-dots-3", title: "Optimize bandwidth", desc: "Analyze usage and suggest ways to cut data consumption" },
-    { icon: "ti-shield-lock", title: "Security audit", desc: "Review open tunnels for internet exposure risks" },
-    { icon: "ti-clock-play", title: "Auto-close rules", desc: "Stop tunnels automatically after an idle timeout" },
-  ];
+  const [chatInput, setChatInput] = useState("");
+  const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const sendMessage = useCallback(() => {
+    const text = chatInput.trim();
+    if (!text) return;
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text },
+      {
+        role: "assistant",
+        text: `AI assistant is coming soon. In the meantime, check the Portivox documentation or use the CLI help command: portivox --help`,
+      },
+    ]);
+    setChatInput("");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [chatInput]);
 
   return (
     <div className="page">
       <div className="ai-page-banner">
         <div className="ai-page-text">
-          <div className="ai-page-title">AI assistant</div>
+          <div className="ai-page-title">
+            AI Assistant
+            <span style={{ fontSize: 11, fontWeight: 500, background: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.8)", padding: "2px 9px", borderRadius: 20, marginLeft: 10 }}>
+              Coming soon
+            </span>
+          </div>
           <div className="ai-page-sub">
-            Ask anything about your tunnels, devices, or usage. Set up connections,
-            diagnose issues, generate CLI commands, or review your security posture.
+            Natural language interface for your tunnels. Ask anything — setup help,
+            diagnostics, security review, or CLI commands.
           </div>
         </div>
         <i className="ti ti-robot ai-page-icon" />
       </div>
 
+      {messages.length > 0 && (
+        <div className="section">
+          {messages.map((msg, i) => (
+            <div key={i} style={{
+              padding: "14px 22px",
+              display: "flex", gap: 12, alignItems: "flex-start",
+              borderBottom: "1px solid var(--border)",
+              background: msg.role === "assistant" ? "var(--bg-secondary)" : undefined,
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                background: msg.role === "user" ? "var(--accent)" : "var(--accent-bg)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 13, color: msg.role === "user" ? "#fff" : "var(--accent)",
+              }}>
+                <i className={`ti ${msg.role === "user" ? "ti-user" : "ti-robot"}`} />
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-1)", lineHeight: 1.65, paddingTop: 4 }}>
+                {msg.text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-bolt" /> Quick actions
-          </div>
+          <div className="section-title"><i className="ti ti-bolt" /> Quick actions</div>
         </div>
         <div className="ai-grid">
-          {cards.map((card) => (
-            <button key={card.title} className="ai-card">
-              <div className="ai-card-icon">
-                <i className={`ti ${card.icon}`} />
-              </div>
+          {AI_QUICK_ACTIONS.map((card) => (
+            <button key={card.title} className="ai-card" onClick={() => setChatInput(card.prompt)}>
+              <div className="ai-card-icon"><i className={`ti ${card.icon}`} /></div>
               <div>
                 <div className="ai-card-title">{card.title}</div>
                 <div className="ai-card-desc">{card.desc}</div>
@@ -759,58 +767,134 @@ function AiPage() {
           ))}
         </div>
       </div>
+
+      <div className="section">
+        <div style={{ padding: "14px 22px", display: "flex", gap: 10 }}>
+          <input
+            ref={inputRef}
+            className="form-inp"
+            style={{ flex: 1 }}
+            placeholder="Ask anything about your tunnels, CLI commands, or setup…"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          />
+          <button className="btn-primary" onClick={sendMessage} disabled={!chatInput.trim()}>
+            <i className="ti ti-send" /> Send
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── UsagePage ────────────────────────────────────────────────────────────────
 
-function UsagePage({ tunnelCount }: { tunnelCount: number }) {
+function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number }) {
+  const [gwStatus, setGwStatus] = useState<GatewayStatus | null>(null);
+  const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+
+  useEffect(() => {
+    setLoadingStatus(true);
+    const pubApi = new GatewayApi(DEFAULT_GATEWAY, {});
+    const p1 = pubApi.getReadyz().then(setGwStatus).catch(() => {});
+    const p2 = api.getAudit(50).then(setAuditItems).catch(() => {});
+    void Promise.all([p1, p2]).finally(() => setLoadingStatus(false));
+  }, [api]);
+
+  const activeTunnels = gwStatus?.activeTunnels ?? tunnelCount;
+
   return (
     <div className="page">
       <div className="metrics" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
         <div className="metric-card">
           <div className="metric-label">
-            <div className="metric-icon"><i className="ti ti-transfer" /></div>
-            Data used
-          </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>—</div>
-          <div className="metric-sub">Analytics coming soon</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">
-            <div className="metric-icon"><i className="ti ti-clock" /></div>
+            <div className="metric-icon"><i className="ti ti-plug-connected" /></div>
             Active tunnels
           </div>
-          <div className="metric-val">{tunnelCount}</div>
-          <div className="metric-sub">Currently running</div>
+          <div className="metric-val">{loadingStatus ? "…" : activeTunnels}</div>
+          <div className="metric-sub">
+            {activeTunnels > 0 ? <span className="up">↑ Running</span> : "None active"}
+          </div>
         </div>
         <div className="metric-card">
           <div className="metric-label">
-            <div className="metric-icon"><i className="ti ti-arrow-bounce" /></div>
-            Requests proxied
+            <div className="metric-icon"><i className="ti ti-server" /></div>
+            Gateway
           </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>—</div>
-          <div className="metric-sub">Analytics coming soon</div>
+          <div className="metric-val" style={{ fontSize: 15, paddingTop: 5, fontWeight: 600 }}>
+            {loadingStatus ? "…" : gwStatus?.ready ? "Ready" : "Unknown"}
+          </div>
+          <div className={`metric-sub ${gwStatus?.ready ? "up" : ""}`}>
+            {gwStatus?.maintenanceMode
+              ? "⚠ Maintenance mode"
+              : gwStatus?.draining
+                ? "⚠ Draining"
+                : gwStatus?.ready
+                  ? "↑ Healthy"
+                  : "Status unknown"}
+          </div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">
+            <div className="metric-icon"><i className="ti ti-list-check" /></div>
+            Audit events
+          </div>
+          <div className="metric-val">{loadingStatus ? "…" : auditItems.length}</div>
+          <div className="metric-sub">Last 50 events</div>
         </div>
       </div>
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-chart-bar" /> Bandwidth usage
-          </div>
+          <div className="section-title"><i className="ti ti-list-check" /> Activity log</div>
         </div>
-        <div className="usage-wrap">
-          <div className="usage-row">
-            <span>Usage data</span>
-            <span style={{ color: "var(--text-3)" }}>Not yet available</span>
+        {loadingStatus ? (
+          <div className="empty" style={{ padding: "30px 0" }}>
+            <i className="ti ti-loader-2 spin" style={{ fontSize: 28, color: "var(--accent)" }} />
           </div>
-          <div className="usage-bar">
-            <div className="usage-fill" style={{ width: "0%" }} />
+        ) : auditItems.length === 0 ? (
+          <div className="empty">
+            <i className="ti ti-list-check" />
+            <div className="empty-title">No activity yet</div>
+            <div className="empty-desc">Events will appear here as you use the system.</div>
           </div>
-          <div className="usage-note">Detailed analytics will be available in a future release.</div>
-        </div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>User</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditItems.map((item, i) => (
+                <tr key={item.id || i}>
+                  <td>
+                    <span className="chip chip-purple" style={{ fontSize: 10 }}>{item.action}</span>
+                  </td>
+                  <td style={{ color: "var(--text-2)", fontSize: 12 }}>
+                    {item.resource}
+                    {item.resourceId ? (
+                      <span style={{ color: "var(--text-3)", marginLeft: 4 }}>
+                        / {item.resourceId.slice(0, 8)}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>
+                    {item.userId ? item.userId.slice(0, 8) + "…" : "—"}
+                  </td>
+                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>
+                    {new Date(item.createdAt).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -819,21 +903,14 @@ function UsagePage({ tunnelCount }: { tunnelCount: number }) {
 // ─── ApiKeysPage ──────────────────────────────────────────────────────────────
 
 function ApiKeysPage({
-  apiKeys,
-  loading,
-  createdKeyToken,
-  onDismissToken,
-  onNewKey,
-  onRevokeKey,
-  onCopy,
-  onRefresh,
+  apiKeys, loading, createdKeyToken, onDismissToken, onNewKey, onRevokeKey, onCopy, onRefresh,
 }: {
   apiKeys: ApiKeyRecord[];
   loading: boolean;
   createdKeyToken: string | null;
   onDismissToken: () => void;
   onNewKey: () => void;
-  onRevokeKey: (id: string) => void;
+  onRevokeKey: (id: string, name: string) => void;
   onCopy: (text: string) => void;
   onRefresh: () => void;
 }) {
@@ -841,23 +918,16 @@ function ApiKeysPage({
 
   return (
     <div className="page">
-      {/* New-key token banner */}
       {createdKeyToken && (
         <div className="ai-insight" style={{ borderColor: "rgba(0,184,148,0.2)", background: "var(--green-bg)", marginBottom: 16 }}>
           <div className="ai-badge" style={{ background: "var(--green)" }}>
             <i className="ti ti-check" />
           </div>
           <div style={{ flex: 1 }}>
-            <div className="ai-insight-label" style={{ color: "var(--green)" }}>
-              Key generated — copy now
-            </div>
+            <div className="ai-insight-label" style={{ color: "var(--green)" }}>Key generated — copy now</div>
             <div className="ai-insight-text" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 4 }}>
-              <span className="url-pill" style={{ userSelect: "all", cursor: "text" }}>
-                {createdKeyToken}
-              </span>
-              <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-                This token will not be shown again.
-              </span>
+              <span className="url-pill" style={{ userSelect: "all", cursor: "text" }}>{createdKeyToken}</span>
+              <span style={{ fontSize: 12, color: "var(--text-2)" }}>This token is shown only once.</span>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -871,12 +941,10 @@ function ApiKeysPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-code" /> API keys
-          </div>
+          <div className="section-title"><i className="ti ti-code" /> API keys</div>
           <div className="section-actions">
             <button className="btn-ghost" onClick={onRefresh} disabled={loading}>
-              <i className="ti ti-refresh" /> Refresh
+              {loading ? <><i className="ti ti-loader-2 spin" /> Refreshing</> : <><i className="ti ti-refresh" /> Refresh</>}
             </button>
             <button className="btn-primary" onClick={onNewKey}>
               <i className="ti ti-plus" /> Generate key
@@ -920,9 +988,7 @@ function ApiKeysPage({
                   <td>
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                       {key.scopes.map((s) => (
-                        <span key={s} className="chip chip-purple" style={{ fontSize: 10 }}>
-                          {s}
-                        </span>
+                        <span key={s} className="chip chip-purple" style={{ fontSize: 10 }}>{s}</span>
                       ))}
                     </div>
                   </td>
@@ -931,11 +997,8 @@ function ApiKeysPage({
                   </td>
                   <td>
                     <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                      <button
-                        className="stop-btn"
-                        disabled={loading}
-                        onClick={() => onRevokeKey(key.id)}
-                      >
+                      <button className="stop-btn" disabled={loading}
+                        onClick={() => onRevokeKey(key.id, key.name)}>
                         Revoke
                       </button>
                     </div>
@@ -953,24 +1016,22 @@ function ApiKeysPage({
 // ─── OrgPage ──────────────────────────────────────────────────────────────────
 
 function OrgPage({ user }: { user: UserInfo | null }) {
+  const [showInviteNote, setShowInviteNote] = useState(false);
+
   return (
     <div className="page">
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-building" /> Organisation
-          </div>
+          <div className="section-title"><i className="ti ti-building" /> Organisation</div>
         </div>
         <div style={{ padding: "20px 22px", display: "flex", alignItems: "center", gap: 16 }}>
           <div style={{ width: 52, height: 52, borderRadius: 14, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}>
             {user?.initials?.[0] ?? "P"}
           </div>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-1)" }}>
-              My Organisation
-            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-1)" }}>My Workspace</div>
             <div style={{ fontSize: 13, color: "var(--text-2)", marginTop: 3 }}>
-              1 member · Self-hosted
+              Self-hosted instance · {user ? "1 member" : "—"}
             </div>
           </div>
         </div>
@@ -978,18 +1039,33 @@ function OrgPage({ user }: { user: UserInfo | null }) {
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-users" /> Members
-          </div>
-          <button className="btn-primary">
+          <div className="section-title"><i className="ti ti-users" /> Members</div>
+          <button className="btn-ghost" onClick={() => setShowInviteNote((v) => !v)}>
             <i className="ti ti-user-plus" /> Invite
           </button>
         </div>
+
+        {showInviteNote && (
+          <div style={{ padding: "0 22px 16px" }}>
+            <div className="ai-insight">
+              <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+              <div style={{ flex: 1 }}>
+                <div className="ai-insight-label">Team management</div>
+                <div className="ai-insight-text">
+                  In self-hosted mode, additional users can sign up directly using the <strong>Create Account</strong> form.
+                  Full invitation flows, role management, and SSO are planned for a future release.
+                </div>
+              </div>
+              <i className="ti ti-x ai-dismiss" onClick={() => setShowInviteNote(false)} />
+            </div>
+          </div>
+        )}
+
         {user ? (
           <table className="tbl">
             <thead>
               <tr>
-                <th>Name</th>
+                <th>Member</th>
                 <th>Email</th>
                 <th>Role</th>
               </tr>
@@ -998,9 +1074,7 @@ function OrgPage({ user }: { user: UserInfo | null }) {
               <tr>
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <div className="avatar" style={{ width: 28, height: 28, fontSize: 10 }}>
-                      {user.initials}
-                    </div>
+                    <div className="avatar" style={{ width: 28, height: 28, fontSize: 10 }}>{user.initials}</div>
                     <strong>{user.name}</strong>
                   </div>
                 </td>
@@ -1016,7 +1090,7 @@ function OrgPage({ user }: { user: UserInfo | null }) {
         ) : (
           <div className="empty">
             <i className="ti ti-users" />
-            <div className="empty-title">No members yet</div>
+            <div className="empty-title">No members</div>
           </div>
         )}
       </div>
@@ -1027,81 +1101,137 @@ function OrgPage({ user }: { user: UserInfo | null }) {
 // ─── SettingsPage ─────────────────────────────────────────────────────────────
 
 function SettingsPage({
-  user,
-  settingsName,
-  setSettingsName,
-  settingsLastName,
-  setSettingsLastName,
-  showToast,
+  user, isAnonymous, api, showToast, onLogout,
 }: {
   user: UserInfo | null;
-  settingsName: string;
-  setSettingsName: (v: string) => void;
-  settingsLastName: string;
-  setSettingsLastName: (v: string) => void;
-  showToast: (msg: string, type?: "default" | "green" | "red") => void;
+  isAnonymous: boolean;
+  api: GatewayApi;
+  showToast: (msg: string, type?: Toast["type"]) => void;
+  onLogout: () => void;
 }) {
+  const [displayName, setDisplayName] = useState(user?.name ?? "");
+  const [curPass, setCurPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [passLoading, setPassLoading] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const saveDisplayName = () => {
+    // Display name is stored locally (no backend profile endpoint yet)
+    try {
+      const raw = localStorage.getItem("ptx-session");
+      if (raw) {
+        const sess = JSON.parse(raw) as Record<string, unknown>;
+        sess.name = displayName;
+        localStorage.setItem("ptx-session", JSON.stringify(sess));
+      }
+    } catch { /* ignore */ }
+    showToast("Display name saved locally", "green");
+  };
+
+  const doChangePassword = useCallback(() => {
+    if (!curPass || !newPass || !confirmPass) {
+      showToast("Please fill in all password fields", "red");
+      return;
+    }
+    if (newPass !== confirmPass) {
+      showToast("New passwords do not match", "red");
+      return;
+    }
+    if (newPass.length < 8) {
+      showToast("New password must be at least 8 characters", "red");
+      return;
+    }
+    setPassLoading(true);
+    api
+      .changePassword(curPass, newPass)
+      .then(() => {
+        showToast("Password changed successfully!", "green");
+        setCurPass("");
+        setNewPass("");
+        setConfirmPass("");
+      })
+      .catch((err: unknown) => {
+        showToast(err instanceof Error ? err.message : "Failed to change password", "red");
+      })
+      .finally(() => setPassLoading(false));
+  }, [api, curPass, newPass, confirmPass, showToast]);
+
   return (
     <div className="page">
+      {/* Profile */}
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-user-circle" /> Profile
-          </div>
+          <div className="section-title"><i className="ti ti-user-circle" /> Profile</div>
         </div>
         <div className="form-body">
-          <div className="form-row">
-            <div className="form-field">
-              <label className="form-lbl">First name</label>
-              <input
-                type="text"
-                className="form-inp"
-                value={settingsName}
-                onChange={(e) => setSettingsName(e.target.value)}
-              />
-            </div>
-            <div className="form-field">
-              <label className="form-lbl">Last name</label>
-              <input
-                type="text"
-                className="form-inp"
-                value={settingsLastName}
-                onChange={(e) => setSettingsLastName(e.target.value)}
-              />
-            </div>
+          <div className="form-field">
+            <label className="form-lbl">Display name</label>
+            <input type="text" className="form-inp" value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveDisplayName()} />
+            <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 5 }}>
+              Stored locally in your browser.
+            </p>
           </div>
           <div className="form-field">
             <label className="form-lbl">Email address</label>
-            <input
-              type="email"
-              className="form-inp"
-              value={user?.email ?? ""}
-              disabled
-            />
+            <input type="email" className="form-inp" value={user?.email ?? ""} disabled />
           </div>
-
-          <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
-          <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-2)", padding: "0 0 4px" }}>
-            Change password
-          </div>
-          <div className="form-field">
-            <label className="form-lbl">Current password</label>
-            <input type="password" className="form-inp" placeholder="••••••••••" />
-          </div>
-          <div className="form-field">
-            <label className="form-lbl">New password</label>
-            <input type="password" className="form-inp" placeholder="Min. 8 characters" />
-          </div>
-          <div className="form-field">
-            <label className="form-lbl">Confirm new password</label>
-            <input type="password" className="form-inp" placeholder="Repeat new password" />
-          </div>
-          <button className="btn-save" onClick={() => showToast("Changes saved!", "green")}>
-            <i className="ti ti-check" /> Save changes
+          <button className="btn-save" onClick={saveDisplayName}>
+            <i className="ti ti-check" /> Save name
           </button>
         </div>
       </div>
 
+      {/* Password change — only for JWT users */}
+      {!isAnonymous ? (
+        <div className="section">
+          <div className="section-head">
+            <div className="section-title"><i className="ti ti-lock" /> Change password</div>
+          </div>
+          <div className="form-body">
+            <div className="form-field">
+              <label className="form-lbl">Current password</label>
+              <input type="password" className="form-inp" value={curPass}
+                onChange={(e) => setCurPass(e.target.value)} placeholder="••••••••" />
+            </div>
+            <div className="form-field">
+              <label className="form-lbl">New password</label>
+              <input type="password" className="form-inp" value={newPass}
+                onChange={(e) => setNewPass(e.target.value)} placeholder="Min. 8 characters" />
+            </div>
+            <div className="form-field">
+              <label className="form-lbl">Confirm new password</label>
+              <input type="password" className="form-inp" value={confirmPass}
+                onChange={(e) => setConfirmPass(e.target.value)} placeholder="Repeat new password"
+                onKeyDown={(e) => e.key === "Enter" && doChangePassword()} />
+            </div>
+            <button className="btn-save" disabled={passLoading} onClick={doChangePassword}>
+              {passLoading
+                ? <><i className="ti ti-loader-2 spin" /> Saving…</>
+                : <><i className="ti ti-check" /> Change password</>}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="section">
+          <div style={{ padding: "18px 22px" }}>
+            <div className="ai-insight">
+              <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+              <div style={{ flex: 1 }}>
+                <div className="ai-insight-label">Auth disabled</div>
+                <div className="ai-insight-text">
+                  This gateway is running with <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=false</code>.
+                  Password management is not available in anonymous mode. Set <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=true</code> and restart to enable user accounts.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Danger zone */}
       <div className="section" style={{ borderColor: "rgba(225,112,85,0.25)" }}>
         <div className="section-head">
           <div className="section-title" style={{ color: "var(--red)" }}>
@@ -1110,38 +1240,68 @@ function SettingsPage({
         </div>
         <div style={{ padding: "18px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
           <div>
-            <div style={{ fontSize: "13.5px", fontWeight: 500 }}>Delete account</div>
+            <div style={{ fontSize: "13.5px", fontWeight: 500 }}>Sign out</div>
             <div style={{ fontSize: "12.5px", color: "var(--text-2)", marginTop: 3 }}>
-              Permanently delete your account and all associated data. This cannot be undone.
+              Sign out of this session. Your tunnels will remain active.
             </div>
           </div>
-          <button style={{ padding: "8px 16px", background: "var(--red-bg)", color: "var(--red)", border: "1px solid rgba(225,112,85,0.25)", borderRadius: "var(--r-md)", fontSize: 13, fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "var(--font)", flexShrink: 0 }}>
-            Delete account
+          <button className="btn-danger" onClick={onLogout}>
+            <i className="ti ti-logout" /> Sign out
           </button>
         </div>
+        {!isAnonymous && (
+          <div style={{ padding: "0 22px 18px", borderTop: "1px solid var(--border)", paddingTop: 18, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: "13.5px", fontWeight: 500 }}>Delete account</div>
+              <div style={{ fontSize: "12.5px", color: "var(--text-2)", marginTop: 3 }}>
+                Remove your user account from this self-hosted instance.
+              </div>
+            </div>
+            <button className="btn-danger" style={{ opacity: 0.8 }} onClick={() => setShowDeleteConfirm(true)}>
+              Delete account
+            </button>
+          </div>
+        )}
       </div>
+
+      {showDeleteConfirm && (
+        <ConfirmModal
+          title="Delete account?"
+          message={`Account deletion requires direct database access on a self-hosted instance. Connect to the PostgreSQL database and run: DELETE FROM "User" WHERE email = 'your@email.com'; or use docker compose down -v to wipe all data.`}
+          confirmLabel="I understand"
+          onConfirm={() => setShowDeleteConfirm(false)}
+          onClose={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </div>
   );
 }
 
 // ─── BillingPage ──────────────────────────────────────────────────────────────
 
-function BillingPage({
-  showToast,
-}: {
-  showToast: (msg: string, type?: "default" | "green" | "red") => void;
-}) {
-  const [invoiceOrg, setInvoiceOrg] = useState("My Organisation");
-  const [taxId, setTaxId] = useState("");
-  const [invoiceEmail, setInvoiceEmail] = useState("");
+function BillingPage({ showToast }: { showToast: (msg: string, type?: Toast["type"]) => void }) {
+  const [invoiceOrg, setInvoiceOrg] = useState(
+    () => localStorage.getItem("ptx-billing-org") ?? ""
+  );
+  const [taxId, setTaxId] = useState(
+    () => localStorage.getItem("ptx-billing-taxid") ?? ""
+  );
+  const [invoiceEmail, setInvoiceEmail] = useState(
+    () => localStorage.getItem("ptx-billing-email") ?? ""
+  );
+
+  const saveDetails = () => {
+    localStorage.setItem("ptx-billing-org", invoiceOrg);
+    localStorage.setItem("ptx-billing-taxid", taxId);
+    localStorage.setItem("ptx-billing-email", invoiceEmail);
+    showToast("Invoice details saved to browser storage", "green");
+  };
 
   return (
     <div className="page">
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-credit-card" /> Current plan
-          </div>
+          <div className="section-title"><i className="ti ti-credit-card" /> Current plan</div>
         </div>
         <div className="billing-plan-row">
           <div>
@@ -1154,59 +1314,45 @@ function BillingPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-file-invoice" /> Invoices
-          </div>
+          <div className="section-title"><i className="ti ti-file-invoice" /> Invoices</div>
         </div>
         <div className="empty">
           <i className="ti ti-receipt-off" />
           <div className="empty-title">No invoices</div>
-          <div className="empty-desc">
-            Your self-hosted instance has no billing requirements.
-          </div>
+          <div className="empty-desc">Your self-hosted instance has no billing requirements.</div>
         </div>
       </div>
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title">
-            <i className="ti ti-building" /> Invoice details
-          </div>
+          <div className="section-title"><i className="ti ti-building" /> Invoice details</div>
         </div>
         <div className="form-body">
+          <div className="ai-insight" style={{ marginBottom: 16 }}>
+            <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+            <div style={{ flex: 1 }}>
+              <div className="ai-insight-label">Stored locally</div>
+              <div className="ai-insight-text">
+                Invoice details are saved in your browser's local storage for reference. No data is sent to any server.
+              </div>
+            </div>
+          </div>
           <div className="form-field">
             <label className="form-lbl">Name on invoice</label>
-            <input
-              type="text"
-              className="form-inp"
-              value={invoiceOrg}
-              onChange={(e) => setInvoiceOrg(e.target.value)}
-            />
+            <input type="text" className="form-inp" placeholder="Organisation name"
+              value={invoiceOrg} onChange={(e) => setInvoiceOrg(e.target.value)} />
           </div>
           <div className="form-field">
             <label className="form-lbl">Tax ID</label>
-            <input
-              type="text"
-              className="form-inp"
-              placeholder="e.g. VAT BE0123456789"
-              value={taxId}
-              onChange={(e) => setTaxId(e.target.value)}
-            />
+            <input type="text" className="form-inp" placeholder="e.g. VAT BE0123456789"
+              value={taxId} onChange={(e) => setTaxId(e.target.value)} />
           </div>
           <div className="form-field">
             <label className="form-lbl">Invoice email</label>
-            <input
-              type="email"
-              className="form-inp"
-              placeholder="billing@company.com"
-              value={invoiceEmail}
-              onChange={(e) => setInvoiceEmail(e.target.value)}
-            />
+            <input type="email" className="form-inp" placeholder="billing@company.com"
+              value={invoiceEmail} onChange={(e) => setInvoiceEmail(e.target.value)} />
           </div>
-          <button
-            className="btn-save"
-            onClick={() => showToast("Invoice details saved!", "green")}
-          >
+          <button className="btn-save" onClick={saveDetails}>
             <i className="ti ti-check" /> Save details
           </button>
         </div>
@@ -1219,17 +1365,19 @@ function BillingPage({
 
 export function App() {
   // ── Theme ──────────────────────────────────────────────────────────────────
-  const [theme, setThemeState] = useState<Theme>(() => {
-    return (localStorage.getItem("ptx-theme") as Theme | null) ?? "light";
-  });
+  const [theme, setThemeState] = useState<Theme>(
+    () => (localStorage.getItem("ptx-theme") as Theme | null) ?? "light"
+  );
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("ptx-theme", theme);
   }, [theme]);
 
-  // ── Screen / nav ───────────────────────────────────────────────────────────
+  // ── Boot / screen ──────────────────────────────────────────────────────────
+  const [appReady, setAppReady] = useState(false);
   const [screen, setScreen] = useState<"auth" | "app">("auth");
+  const [isAnonymous, setIsAnonymous] = useState(false);
   const [authTab, setAuthTab] = useState<AuthTab>("login");
   const [currentPage, setCurrentPage] = useState<Page>("tunnels");
 
@@ -1240,7 +1388,6 @@ export function App() {
   const [regFirstName, setRegFirstName] = useState("");
   const [regLastName, setRegLastName] = useState("");
   const [regEmail, setRegEmail] = useState("");
-  const [regOrg, setRegOrg] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regPassShow, setRegPassShow] = useState(false);
 
@@ -1248,15 +1395,12 @@ export function App() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [accessToken, setAccessToken] = useState("");
 
-  // ── Settings form ──────────────────────────────────────────────────────────
-  const [settingsName, setSettingsName] = useState("");
-  const [settingsLastName, setSettingsLastName] = useState("");
-
   // ── Data ───────────────────────────────────────────────────────────────────
   const [tunnels, setTunnels] = useState<TunnelRecord[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [aiInsightVisible, setAiInsightVisible] = useState(true);
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
 
   // ── Modals ─────────────────────────────────────────────────────────────────
   const [showNewTunnel, setShowNewTunnel] = useState(false);
@@ -1265,6 +1409,7 @@ export function App() {
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyScopes, setNewKeyScopes] = useState("tunnel:create,tunnel:read,tunnel:delete");
   const [createdKeyToken, setCreatedKeyToken] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
 
   // ── Toasts ─────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -1275,10 +1420,9 @@ export function App() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3200);
   }, []);
 
-  // ── API instances ──────────────────────────────────────────────────────────
-  const authApi = useMemo(() => new GatewayApi(DEFAULT_GATEWAY, {}), []);
+  // ── API instance (never null — anonymous mode uses empty auth) ─────────────
   const api = useMemo(
-    () => (accessToken.trim() ? new GatewayApi(DEFAULT_GATEWAY, { accessToken: accessToken.trim() }) : null),
+    () => new GatewayApi(DEFAULT_GATEWAY, accessToken.trim() ? { accessToken: accessToken.trim() } : {}),
     [accessToken],
   );
 
@@ -1298,35 +1442,84 @@ export function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        showToast("Command palette coming soon…");
+        setCurrentPage("ai"); // Cmd+K → AI assistant
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [showToast]);
+  }, []);
 
-  // ── Load API keys on navigate ──────────────────────────────────────────────
+  // ── Gateway status poll (public endpoint, no auth) ─────────────────────────
   useEffect(() => {
-    if (currentPage === "api" && screen === "app" && accessToken) {
-      const inst = new GatewayApi(DEFAULT_GATEWAY, { accessToken });
-      void inst
-        .listApiKeys()
-        .then(setApiKeys)
-        .catch((err: unknown) => {
-          showToast(err instanceof Error ? err.message : "Failed to load API keys", "red");
+    if (screen !== "app") return;
+    const pubApi = new GatewayApi(DEFAULT_GATEWAY, {});
+    const fetch = () =>
+      void pubApi.getReadyz().then(setGatewayStatus).catch(() => {});
+    fetch();
+    const timer = setInterval(fetch, 30_000);
+    return () => clearInterval(timer);
+  }, [screen]);
+
+  // ── Boot: restore session or detect anonymous mode ─────────────────────────
+  useEffect(() => {
+    function enterApp(token: string, userInfo: UserInfo, anon: boolean, initialTunnels: TunnelRecord[]) {
+      setAccessToken(token);
+      setUser(userInfo);
+      setIsAnonymous(anon);
+      setTunnels(initialTunnels);
+      setScreen("app");
+      setAppReady(true);
+    }
+
+    function tryAnonymous() {
+      const anonApi = new GatewayApi(DEFAULT_GATEWAY, {});
+      anonApi
+        .listTunnels()
+        .then((tuns) => {
+          enterApp("", { email: "local@anonymous", name: "Anonymous", initials: "AN", role: "admin" }, true, tuns);
+        })
+        .catch(() => {
+          setScreen("auth");
+          setAppReady(true);
         });
     }
-  }, [currentPage, screen, accessToken, showToast]);
+
+    const session = loadSession();
+    if (session) {
+      const inst = new GatewayApi(DEFAULT_GATEWAY, { accessToken: session.token });
+      inst
+        .listTunnels()
+        .then((tuns) => {
+          enterApp(session.token, session.user, false, tuns);
+        })
+        .catch(() => {
+          clearSession();
+          tryAnonymous();
+        });
+    } else {
+      tryAnonymous();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Load API keys when navigating to that page ─────────────────────────────
+  useEffect(() => {
+    if (currentPage !== "api" || screen !== "app") return;
+    setLoading(true);
+    api
+      .listApiKeys()
+      .then(setApiKeys)
+      .catch((err: unknown) => {
+        showToast(err instanceof Error ? err.message : "Failed to load API keys", "red");
+      })
+      .finally(() => setLoading(false));
+  }, [currentPage, screen, api, showToast]);
 
   // ── Auth ───────────────────────────────────────────────────────────────────
 
   const doLogin = () => {
-    if (!loginEmail.trim()) {
-      showToast("Please enter your email", "red");
-      return;
-    }
+    if (!loginEmail.trim()) { showToast("Please enter your email", "red"); return; }
     setLoading(true);
-    authApi
+    new GatewayApi(DEFAULT_GATEWAY, {})
       .login(loginEmail.trim(), loginPassword)
       .then((result) => {
         const info: UserInfo = {
@@ -1337,11 +1530,12 @@ export function App() {
         };
         setUser(info);
         setAccessToken(result.accessToken);
-        setScreen("app");
+        setIsAnonymous(false);
+        saveSession(result.accessToken, info);
         showToast("Welcome back! 👋", "green");
-        // Pre-load tunnels
         const inst = new GatewayApi(DEFAULT_GATEWAY, { accessToken: result.accessToken });
         void inst.listTunnels().then(setTunnels).catch(() => {});
+        setScreen("app");
       })
       .catch((err: unknown) => {
         showToast(err instanceof Error ? err.message : "Login failed", "red");
@@ -1355,27 +1549,26 @@ export function App() {
       return;
     }
     setLoading(true);
-    authApi
+    new GatewayApi(DEFAULT_GATEWAY, {})
       .register(regEmail.trim(), regPassword)
       .then((result) => {
-        const displayName = [regFirstName.trim(), regLastName.trim()]
-          .filter(Boolean)
-          .join(" ");
+        const displayName = [regFirstName.trim(), regLastName.trim()].filter(Boolean).join(" ");
         const initials =
           regFirstName && regLastName
             ? (regFirstName[0] + regLastName[0]).toUpperCase()
             : deriveInitials(result.user.email);
-        setUser({
+        const info: UserInfo = {
           email: result.user.email,
           name: displayName || deriveName(result.user.email),
           initials,
           role: result.user.role,
-        });
+        };
+        setUser(info);
         setAccessToken(result.accessToken);
-        setSettingsName(regFirstName);
-        setSettingsLastName(regLastName);
-        showToast("Account created! Signing you in…", "green");
-        setTimeout(() => setScreen("app"), 600);
+        setIsAnonymous(false);
+        saveSession(result.accessToken, info);
+        showToast("Account created! Welcome 🎉", "green");
+        setTimeout(() => setScreen("app"), 400);
       })
       .catch((err: unknown) => {
         showToast(err instanceof Error ? err.message : "Registration failed", "red");
@@ -1384,43 +1577,43 @@ export function App() {
   };
 
   const doLogout = () => {
-    setScreen("auth");
+    clearSession();
     setAccessToken("");
     setUser(null);
+    setIsAnonymous(false);
     setTunnels([]);
     setApiKeys([]);
     setCurrentPage("tunnels");
     setAiInsightVisible(true);
-    showToast("Signed out successfully");
+    setScreen("auth");
+    showToast("Signed out");
   };
 
   // ── Tunnels ────────────────────────────────────────────────────────────────
 
-  const refreshTunnels = () => {
-    const a = api;
-    if (!a) return;
+  const refreshTunnels = useCallback(() => {
     setLoading(true);
-    a.listTunnels()
+    api
+      .listTunnels()
       .then(setTunnels)
       .catch((err: unknown) => {
         showToast(err instanceof Error ? err.message : "Failed to load tunnels", "red");
       })
       .finally(() => setLoading(false));
-  };
+  }, [api, showToast]);
 
   const createTunnel = () => {
-    if (!newTunnelSubdomain.trim()) {
-      showToast("Enter a subdomain", "red");
+    if (newTunnelSubdomain.trim().length < 3) {
+      showToast("Subdomain must be at least 3 characters", "red");
       return;
     }
-    const a = api;
-    if (!a) return;
     setLoading(true);
-    a.createTunnel(newTunnelSubdomain.trim().toLowerCase())
+    api
+      .createTunnel(newTunnelSubdomain.trim().toLowerCase())
       .then(() => {
         setNewTunnelSubdomain("");
         setShowNewTunnel(false);
-        return a.listTunnels();
+        return api.listTunnels();
       })
       .then(setTunnels)
       .then(() => showToast("Tunnel created!", "green"))
@@ -1430,48 +1623,51 @@ export function App() {
       .finally(() => setLoading(false));
   };
 
-  const deleteTunnel = (id: string) => {
-    const a = api;
-    if (!a) return;
-    setLoading(true);
-    a.deleteTunnel(id)
-      .then(() => a.listTunnels())
-      .then(setTunnels)
-      .then(() => showToast("Tunnel stopped", "green"))
-      .catch((err: unknown) => {
-        showToast(err instanceof Error ? err.message : "Failed to stop tunnel", "red");
-      })
-      .finally(() => setLoading(false));
+  const requestDeleteTunnel = (id: string, subdomain: string) => {
+    setConfirm({
+      title: "Stop tunnel?",
+      message: `This will permanently stop "${subdomain}". Any active connections will be dropped immediately.`,
+      confirmLabel: "Stop tunnel",
+      danger: true,
+      onConfirm: () => {
+        setConfirm(null);
+        setLoading(true);
+        api
+          .deleteTunnel(id)
+          .then(() => api.listTunnels())
+          .then(setTunnels)
+          .then(() => showToast("Tunnel stopped", "green"))
+          .catch((err: unknown) => {
+            showToast(err instanceof Error ? err.message : "Failed to stop tunnel", "red");
+          })
+          .finally(() => setLoading(false));
+      },
+    });
   };
 
   // ── API Keys ───────────────────────────────────────────────────────────────
 
-  const loadApiKeys = () => {
-    const a = api;
-    if (!a) return;
+  const loadApiKeys = useCallback(() => {
     setLoading(true);
-    a.listApiKeys()
+    api
+      .listApiKeys()
       .then(setApiKeys)
       .catch((err: unknown) => {
         showToast(err instanceof Error ? err.message : "Failed to load API keys", "red");
       })
       .finally(() => setLoading(false));
-  };
+  }, [api, showToast]);
 
   const createApiKey = () => {
-    if (!newKeyName.trim()) {
-      showToast("Enter a key name", "red");
-      return;
-    }
-    const a = api;
-    if (!a) return;
+    if (!newKeyName.trim()) { showToast("Enter a key name", "red"); return; }
     setLoading(true);
-    a.createApiKey(newKeyName.trim(), newKeyScopes.trim())
+    api
+      .createApiKey(newKeyName.trim(), newKeyScopes.trim())
       .then((result) => {
         if (result.apiKey?.token) setCreatedKeyToken(result.apiKey.token);
         setNewKeyName("");
         setShowNewKey(false);
-        return a.listApiKeys();
+        return api.listApiKeys();
       })
       .then(setApiKeys)
       .then(() => showToast("API key generated!", "green"))
@@ -1481,168 +1677,134 @@ export function App() {
       .finally(() => setLoading(false));
   };
 
-  const revokeApiKey = (id: string) => {
-    const a = api;
-    if (!a) return;
-    setLoading(true);
-    a.revokeApiKey(id)
-      .then(() => a.listApiKeys())
-      .then(setApiKeys)
-      .then(() => showToast("API key revoked", "green"))
-      .catch((err: unknown) => {
-        showToast(err instanceof Error ? err.message : "Failed to revoke key", "red");
-      })
-      .finally(() => setLoading(false));
+  const requestRevokeKey = (id: string, name: string) => {
+    setConfirm({
+      title: "Revoke API key?",
+      message: `Revoking "${name}" will immediately invalidate it. Any services or scripts using this key will lose access.`,
+      confirmLabel: "Revoke key",
+      danger: true,
+      onConfirm: () => {
+        setConfirm(null);
+        setLoading(true);
+        api
+          .revokeApiKey(id)
+          .then(() => api.listApiKeys())
+          .then(setApiKeys)
+          .then(() => showToast("API key revoked", "green"))
+          .catch((err: unknown) => {
+            showToast(err instanceof Error ? err.message : "Failed to revoke key", "red");
+          })
+          .finally(() => setLoading(false));
+      },
+    });
   };
+
+  // ── Boot splash ────────────────────────────────────────────────────────────
+  if (!appReady) {
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        height: "100vh", background: "var(--bg-page)", gap: 16,
+      }}>
+        <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: "#fff" }}>
+          <i className="ti ti-topology-star" />
+        </div>
+        <i className="ti ti-loader-2 spin" style={{ fontSize: 24, color: "var(--accent)" }} />
+      </div>
+    );
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <>
-      {/* ── AUTH SCREEN ─────────────────────────────────────────────────── */}
+      {/* ── AUTH SCREEN ──────────────────────────────────────────────────── */}
       {screen === "auth" && (
         <AuthScreen
-          authTab={authTab}
-          setAuthTab={setAuthTab}
-          theme={theme}
-          setTheme={setThemeState}
-          loginEmail={loginEmail}
-          setLoginEmail={setLoginEmail}
-          loginPassword={loginPassword}
-          setLoginPassword={setLoginPassword}
-          loginPassShow={loginPassShow}
-          setLoginPassShow={setLoginPassShow}
-          regFirstName={regFirstName}
-          setRegFirstName={setRegFirstName}
-          regLastName={regLastName}
-          setRegLastName={setRegLastName}
-          regEmail={regEmail}
-          setRegEmail={setRegEmail}
-          regOrg={regOrg}
-          setRegOrg={setRegOrg}
-          regPassword={regPassword}
-          setRegPassword={setRegPassword}
-          regPassShow={regPassShow}
-          setRegPassShow={setRegPassShow}
-          loading={loading}
-          doLogin={doLogin}
-          doRegister={doRegister}
+          authTab={authTab} setAuthTab={setAuthTab}
+          theme={theme} setTheme={setThemeState}
+          loginEmail={loginEmail} setLoginEmail={setLoginEmail}
+          loginPassword={loginPassword} setLoginPassword={setLoginPassword}
+          loginPassShow={loginPassShow} setLoginPassShow={setLoginPassShow}
+          regFirstName={regFirstName} setRegFirstName={setRegFirstName}
+          regLastName={regLastName} setRegLastName={setRegLastName}
+          regEmail={regEmail} setRegEmail={setRegEmail}
+          regPassword={regPassword} setRegPassword={setRegPassword}
+          regPassShow={regPassShow} setRegPassShow={setRegPassShow}
+          loading={loading} doLogin={doLogin} doRegister={doRegister}
         />
       )}
 
-      {/* ── APP SCREEN ──────────────────────────────────────────────────── */}
+      {/* ── APP SCREEN ───────────────────────────────────────────────────── */}
       {screen === "app" && (
         <div id="screen-app" className="active">
-          {/* ── Sidebar ─────────────────────────────────────────────────── */}
+          {/* ── Sidebar ──────────────────────────────────────────────────── */}
           <aside className="sidebar">
             <div className="logo">
-              <div className="logo-icon">
-                <i className="ti ti-topology-star" />
-              </div>
-              <span className="logo-wordmark">
-                Portivox <span className="logo-badge">AI</span>
-              </span>
+              <div className="logo-icon"><i className="ti ti-topology-star" /></div>
+              <span className="logo-wordmark">Portivox <span className="logo-badge">AI</span></span>
             </div>
 
             <div className="nav-body">
               <span className="nav-group-label">Workspace</span>
-              <div
-                className={`nav-item ${currentPage === "tunnels" ? "active" : ""}`}
-                onClick={() => setCurrentPage("tunnels")}
-              >
-                <i className="ti ti-topology-star-3" /> Tunnels
-                {tunnels.length > 0 && (
-                  <span className="nav-badge">{tunnels.length}</span>
-                )}
-              </div>
-              <div
-                className={`nav-item ${currentPage === "devices" ? "active" : ""}`}
-                onClick={() => setCurrentPage("devices")}
-              >
-                <i className="ti ti-device-laptop" /> Devices
-              </div>
-              <div
-                className={`nav-item ${currentPage === "ai" ? "active" : ""}`}
-                onClick={() => setCurrentPage("ai")}
-              >
-                <i className="ti ti-sparkles" /> AI Assistant
-              </div>
+              {(["tunnels", "devices", "ai"] as Page[]).map((page) => (
+                <div key={page} className={`nav-item ${currentPage === page ? "active" : ""}`}
+                  onClick={() => setCurrentPage(page)}>
+                  <i className={`ti ti-${page === "tunnels" ? "topology-star-3" : page === "devices" ? "device-laptop" : "sparkles"}`} />
+                  {PAGE_TITLES[page]}
+                  {page === "tunnels" && tunnels.length > 0 && (
+                    <span className="nav-badge">{tunnels.length}</span>
+                  )}
+                </div>
+              ))}
 
               <span className="nav-group-label">Analytics</span>
-              <div
-                className={`nav-item ${currentPage === "usage" ? "active" : ""}`}
-                onClick={() => setCurrentPage("usage")}
-              >
-                <i className="ti ti-chart-bar" /> Usage
+              <div className={`nav-item ${currentPage === "usage" ? "active" : ""}`}
+                onClick={() => setCurrentPage("usage")}>
+                <i className="ti ti-chart-bar" /> {PAGE_TITLES.usage}
               </div>
 
               <span className="nav-group-label">Developer</span>
-              <div
-                className={`nav-item ${currentPage === "api" ? "active" : ""}`}
-                onClick={() => setCurrentPage("api")}
-              >
-                <i className="ti ti-code" /> API Keys
+              <div className={`nav-item ${currentPage === "api" ? "active" : ""}`}
+                onClick={() => setCurrentPage("api")}>
+                <i className="ti ti-code" /> {PAGE_TITLES.api}
               </div>
 
               <span className="nav-group-label">Account</span>
-              <div
-                className={`nav-item ${currentPage === "org" ? "active" : ""}`}
-                onClick={() => setCurrentPage("org")}
-              >
-                <i className="ti ti-building" /> Organisation
-              </div>
-              <div
-                className={`nav-item ${currentPage === "settings" ? "active" : ""}`}
-                onClick={() => setCurrentPage("settings")}
-              >
-                <i className="ti ti-settings" /> Settings
-              </div>
-              <div
-                className={`nav-item ${currentPage === "billing" ? "active" : ""}`}
-                onClick={() => setCurrentPage("billing")}
-              >
-                <i className="ti ti-credit-card" /> Billing
-              </div>
+              {(["org", "settings", "billing"] as Page[]).map((page) => (
+                <div key={page} className={`nav-item ${currentPage === page ? "active" : ""}`}
+                  onClick={() => setCurrentPage(page)}>
+                  <i className={`ti ti-${page === "org" ? "building" : page === "settings" ? "settings" : "credit-card"}`} />
+                  {PAGE_TITLES[page]}
+                </div>
+              ))}
             </div>
 
-            {/* Theme toggle */}
             <div className="theme-toggle-wrap">
               <div className="theme-toggle">
-                <button
-                  className={`theme-btn ${theme === "light" ? "active" : ""}`}
-                  onClick={() => setThemeState("light")}
-                >
+                <button className={`theme-btn ${theme === "light" ? "active" : ""}`} onClick={() => setThemeState("light")}>
                   <i className="ti ti-sun" /> Light
                 </button>
-                <button
-                  className={`theme-btn ${theme === "dark" ? "active" : ""}`}
-                  onClick={() => setThemeState("dark")}
-                >
+                <button className={`theme-btn ${theme === "dark" ? "active" : ""}`} onClick={() => setThemeState("dark")}>
                   <i className="ti ti-moon" /> Dark
                 </button>
               </div>
             </div>
 
-            {/* User row */}
             <div className="user-row" onClick={() => setCurrentPage("settings")}>
-              <div className="avatar">{user?.initials ?? "U"}</div>
+              <div className="avatar">{user?.initials ?? "AN"}</div>
               <div style={{ minWidth: 0 }}>
-                <div className="user-name">{user?.name ?? "User"}</div>
+                <div className="user-name">{user?.name ?? "Anonymous"}</div>
                 <div className="user-plan">
-                  {user?.role === "owner"
-                    ? "Owner"
-                    : user?.role === "admin"
-                      ? "Admin"
-                      : "Member"}
+                  {isAnonymous ? "No auth" : user?.role === "owner" ? "Owner" : user?.role === "admin" ? "Admin" : "Member"}
                 </div>
               </div>
               <i className="ti ti-chevron-right user-chevron" />
             </div>
           </aside>
 
-          {/* ── Main area ───────────────────────────────────────────────── */}
+          {/* ── Main ─────────────────────────────────────────────────────── */}
           <div className="main">
-            {/* Topbar */}
             <header className="topbar">
               <div className="topbar-left">
                 <div className="breadcrumb">
@@ -1652,14 +1814,17 @@ export function App() {
                 </div>
               </div>
               <div className="topbar-right">
-                <div className="search-box">
+                <div className="search-box" onClick={() => setCurrentPage("ai")} style={{ cursor: "pointer" }}>
                   <i className="ti ti-search" />
-                  <span>Search…</span>
+                  <span>Search or ask AI…</span>
                   <span className="search-shortcut">⌘K</span>
                 </div>
-                <div className="notif-btn" title="Notifications">
-                  <i className="ti ti-bell" />
-                  <div className="notif-dot" />
+                <div
+                  className="notif-btn"
+                  title={gatewayStatus?.ready ? "Gateway healthy" : "Gateway status unknown"}
+                  style={{ color: gatewayStatus?.ready ? "var(--green)" : "var(--text-3)" }}
+                >
+                  <i className={`ti ti-${gatewayStatus?.ready ? "circle-check" : "circle-dashed"}`} />
                 </div>
                 <button className="ai-btn" onClick={() => setCurrentPage("ai")}>
                   <i className="ti ti-sparkles" /> Ask AI
@@ -1670,25 +1835,27 @@ export function App() {
               </div>
             </header>
 
-            {/* Page content */}
             <div className="content">
               {currentPage === "tunnels" && (
                 <TunnelsPage
                   tunnels={tunnels}
                   loading={loading}
+                  gatewayStatus={gatewayStatus}
                   aiInsightVisible={aiInsightVisible}
                   setAiInsightVisible={setAiInsightVisible}
                   onRefresh={refreshTunnels}
                   onNewTunnel={() => setShowNewTunnel(true)}
-                  onDeleteTunnel={deleteTunnel}
+                  onDeleteTunnel={requestDeleteTunnel}
                   onCopy={copyToClipboard}
                 />
               )}
               {currentPage === "devices" && (
-                <DevicesPage onCopy={copyToClipboard} />
+                <DevicesPage user={user} onCopy={copyToClipboard} />
               )}
               {currentPage === "ai" && <AiPage />}
-              {currentPage === "usage" && <UsagePage tunnelCount={tunnels.length} />}
+              {currentPage === "usage" && (
+                <UsagePage api={api} tunnelCount={tunnels.length} />
+              )}
               {currentPage === "api" && (
                 <ApiKeysPage
                   apiKeys={apiKeys}
@@ -1696,7 +1863,7 @@ export function App() {
                   createdKeyToken={createdKeyToken}
                   onDismissToken={() => setCreatedKeyToken(null)}
                   onNewKey={() => setShowNewKey(true)}
-                  onRevokeKey={revokeApiKey}
+                  onRevokeKey={requestRevokeKey}
                   onCopy={copyToClipboard}
                   onRefresh={loadApiKeys}
                 />
@@ -1705,11 +1872,10 @@ export function App() {
               {currentPage === "settings" && (
                 <SettingsPage
                   user={user}
-                  settingsName={settingsName}
-                  setSettingsName={setSettingsName}
-                  settingsLastName={settingsLastName}
-                  setSettingsLastName={setSettingsLastName}
+                  isAnonymous={isAnonymous}
+                  api={api}
                   showToast={showToast}
+                  onLogout={doLogout}
                 />
               )}
               {currentPage === "billing" && <BillingPage showToast={showToast} />}
@@ -1718,17 +1884,14 @@ export function App() {
         </div>
       )}
 
-      {/* ── Modals ──────────────────────────────────────────────────────── */}
+      {/* ── Modals ────────────────────────────────────────────────────────── */}
       {showNewTunnel && (
         <NewTunnelModal
           subdomain={newTunnelSubdomain}
           setSubdomain={setNewTunnelSubdomain}
           loading={loading}
           onCreate={createTunnel}
-          onClose={() => {
-            setShowNewTunnel(false);
-            setNewTunnelSubdomain("");
-          }}
+          onClose={() => { setShowNewTunnel(false); setNewTunnelSubdomain(""); }}
         />
       )}
       {showNewKey && (
@@ -1739,29 +1902,25 @@ export function App() {
           setScopes={setNewKeyScopes}
           loading={loading}
           onCreate={createApiKey}
-          onClose={() => {
-            setShowNewKey(false);
-            setNewKeyName("");
-          }}
+          onClose={() => { setShowNewKey(false); setNewKeyName(""); }}
+        />
+      )}
+      {confirm && (
+        <ConfirmModal
+          title={confirm.title}
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          danger={confirm.danger}
+          onConfirm={confirm.onConfirm}
+          onClose={() => setConfirm(null)}
         />
       )}
 
-      {/* ── Toast notifications ─────────────────────────────────────────── */}
+      {/* ── Toasts ────────────────────────────────────────────────────────── */}
       <div className="toast-wrap">
         {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={`toast${toast.type !== "default" ? ` ${toast.type}` : ""}`}
-          >
-            <i
-              className={`ti ti-${
-                toast.type === "green"
-                  ? "check"
-                  : toast.type === "red"
-                    ? "alert-circle"
-                    : "info-circle"
-              }`}
-            />
+          <div key={toast.id} className={`toast${toast.type !== "default" ? ` ${toast.type}` : ""}`}>
+            <i className={`ti ti-${toast.type === "green" ? "check" : toast.type === "red" ? "alert-circle" : "info-circle"}`} />
             {toast.message}
           </div>
         ))}
