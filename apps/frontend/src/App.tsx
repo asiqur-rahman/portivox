@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GatewayApi, type ApiKeyRecord, type AuditItem, type TunnelRecord } from "./api";
+import { GatewayApi, type ApiKeyRecord, type AuditItem, type TcpPortMapping, type TunnelRecord } from "./api";
 import "./styles.css";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "";
 
-type Page = "tunnels" | "devices" | "ai" | "usage" | "api" | "org" | "settings" | "billing";
+type Page = "tunnels" | "devices" | "ai" | "usage" | "api" | "org" | "settings" | "billing"
+  | "admin:overview" | "admin:audit" | "admin:gateway" | "admin:tcp";
 type Theme = "light" | "dark";
 type AuthTab = "login" | "register";
 
@@ -47,7 +48,14 @@ const PAGE_TITLES: Record<Page, string> = {
   org: "Organisation",
   settings: "Settings",
   billing: "Billing",
+  "admin:overview": "Admin Overview",
+  "admin:audit":    "Audit Log",
+  "admin:gateway":  "Gateway Control",
+  "admin:tcp":      "TCP Port Mappings",
 };
+
+function isAdminPage(p: Page): boolean { return p.startsWith("admin:"); }
+function hasAdminRole(role?: string): boolean { return role === "admin" || role === "owner"; }
 
 const AI_QUICK_ACTIONS = [
   { icon: "ti-plug", title: "Expose local port", desc: "Share a dev server via a secure tunnel", prompt: "How do I expose my local port 3000 to the internet?" },
@@ -1361,6 +1369,822 @@ function BillingPage({ showToast }: { showToast: (msg: string, type?: Toast["typ
   );
 }
 
+// ─── Admin helpers ───────────────────────────────────────────────────────────
+
+function timeAgo(iso: string): string {
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function actionBadge(action: string): { cls: string; icon: string } {
+  if (action.includes("created") || action.includes("registered")) return { cls: "create", icon: "ti-plus" };
+  if (action.includes("deleted") || action.includes("revoked")) return { cls: "delete", icon: "ti-trash" };
+  if (action.includes("login") || action.includes("auth") || action.includes("password")) return { cls: "auth", icon: "ti-lock" };
+  if (action.includes("admin") || action.includes("state") || action.includes("maintenance") || action.includes("drain")) return { cls: "admin", icon: "ti-shield" };
+  return { cls: "other", icon: "ti-activity" };
+}
+
+// ─── AdminOverviewPage ────────────────────────────────────────────────────────
+
+function AdminOverviewPage({
+  api, showToast,
+}: {
+  api: GatewayApi;
+  showToast: (msg: string, type?: Toast["type"]) => void;
+}) {
+  const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [chunkDiag, setChunkDiag] = useState<{ chunkFramesReceived: number; chunkStreamsReassembled: number; chunkIncompleteTimeouts: number; activeChunkAssemblies: number } | null>(null);
+  const [recentAudit, setRecentAudit] = useState<AuditItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [toggling, setToggling] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      api.getReadyz(),
+      api.getChunkDiagnostics(),
+      api.getAudit(10),
+    ]).then(([s, c, a]) => {
+      setStatus(s);
+      setChunkDiag(c as typeof chunkDiag);
+      setRecentAudit(a);
+    }).catch((err: unknown) => {
+      showToast(err instanceof Error ? err.message : "Failed to load admin data", "red");
+    }).finally(() => setLoading(false));
+  }, [api, showToast]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    const t = setInterval(refresh, 30_000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  function toggleMode(field: "maintenanceMode" | "draining", val: boolean) {
+    setToggling(true);
+    api.setAdminState({ [field]: val }).then((s) => {
+      setStatus(s);
+      showToast(
+        field === "maintenanceMode"
+          ? (val ? "Maintenance mode enabled" : "Maintenance mode disabled")
+          : (val ? "Draining enabled" : "Draining disabled"),
+        "green"
+      );
+    }).catch((e: unknown) => {
+      showToast(e instanceof Error ? e.message : "Failed to update state", "red");
+    }).finally(() => setToggling(false));
+  }
+
+  const isHealthy = status?.ready && !status?.draining && !status?.maintenanceMode;
+
+  return (
+    <div className="page-body">
+      {/* Hero */}
+      <div className="admin-hero">
+        <div className="admin-hero-left">
+          <div className="admin-hero-title">
+            <i className="ti ti-shield-check" />
+            Administration
+            <span className="admin-hero-badge">Admin Panel</span>
+          </div>
+          <div className="admin-hero-sub">System overview — live data, refreshed every 30 seconds</div>
+        </div>
+        <div className="admin-hero-right">
+          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }}
+            onClick={refresh} disabled={loading}>
+            <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* KPI cards */}
+      <div className="kpi-grid">
+        <div className="kpi-card">
+          <div className="kpi-card-head">
+            <div className="kpi-icon purple"><i className="ti ti-topology-star-3" /></div>
+            {status && (
+              <div className={`status-live`} style={{ color: status.ready ? "var(--green)" : "var(--red)" }}>
+                <div className={`status-pulse ${status.ready ? "" : "red"}`} />
+                {status.ready ? "Online" : "Offline"}
+              </div>
+            )}
+          </div>
+          <div className="kpi-val">{loading ? "…" : (status?.activeTunnels ?? 0)}</div>
+          <div className="kpi-label">Active Tunnels</div>
+          <div className="kpi-delta neutral">Connected right now</div>
+        </div>
+
+        <div className="kpi-card">
+          <div className="kpi-card-head">
+            <div className="kpi-icon green"><i className="ti ti-server" /></div>
+          </div>
+          <div className="kpi-val" style={{ fontSize: 18, paddingTop: 4 }}>
+            {loading ? "…" : isHealthy ? "Healthy" : status?.maintenanceMode ? "Maintenance" : status?.draining ? "Draining" : "Unknown"}
+          </div>
+          <div className="kpi-label">Gateway Status</div>
+          <div className={`kpi-delta ${isHealthy ? "up" : "down"}`}>
+            <i className={`ti ti-${isHealthy ? "circle-check" : "alert-triangle"}`} />
+            {isHealthy ? "All systems operational" : "Action needed"}
+          </div>
+        </div>
+
+        <div className="kpi-card">
+          <div className="kpi-card-head">
+            <div className="kpi-icon purple"><i className="ti ti-stack-2" /></div>
+          </div>
+          <div className="kpi-val">{loading ? "…" : (chunkDiag?.chunkFramesReceived ?? 0)}</div>
+          <div className="kpi-label">Chunk Frames</div>
+          <div className="kpi-delta neutral">
+            {chunkDiag ? `${chunkDiag.chunkStreamsReassembled} reassembled` : "Loading…"}
+          </div>
+        </div>
+
+        <div className="kpi-card">
+          <div className="kpi-card-head">
+            <div className={`kpi-icon ${(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "red" : "green"}`}>
+              <i className="ti ti-clock-exclamation" />
+            </div>
+          </div>
+          <div className="kpi-val">{loading ? "…" : (chunkDiag?.chunkIncompleteTimeouts ?? 0)}</div>
+          <div className="kpi-label">Incomplete Timeouts</div>
+          <div className={`kpi-delta ${(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "down" : "up"}`}>
+            <i className={`ti ti-${(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "alert-triangle" : "circle-check"}`} />
+            {(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "Needs attention" : "Within normal range"}
+          </div>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="section" style={{ marginBottom: 16 }}>
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-adjustments" /> Gateway Controls</div>
+        </div>
+        <div style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
+          <label className="toggle-row">
+            <div className="toggle-row-info">
+              <div className="toggle-row-title"><i className="ti ti-tools" style={{ marginRight: 6 }} />Maintenance Mode</div>
+              <div className="toggle-row-desc">
+                Rejects all new tunnel connections and inbound requests with 503.
+                Existing WebSocket sessions are preserved.
+              </div>
+            </div>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={status?.maintenanceMode ?? false} disabled={toggling || loading}
+                onChange={(e) => toggleMode("maintenanceMode", e.target.checked)} />
+              <span className="toggle-track" />
+            </label>
+          </label>
+
+          <label className="toggle-row">
+            <div className="toggle-row-info">
+              <div className="toggle-row-title"><i className="ti ti-arrows-left-right" style={{ marginRight: 6 }} />Draining Mode</div>
+              <div className="toggle-row-desc">
+                Stops accepting new WebSocket clients. Allows in-flight requests to complete
+                before a rolling restart or node removal.
+              </div>
+            </div>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={status?.draining ?? false} disabled={toggling || loading}
+                onChange={(e) => toggleMode("draining", e.target.checked)} />
+              <span className="toggle-track" />
+            </label>
+          </label>
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      <div className="section">
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-activity" /> Recent Activity</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)" }}>Last 10 events</div>
+        </div>
+        {loading ? (
+          <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>
+            <i className="ti ti-loader-2 spin" style={{ fontSize: 22, display: "block", marginBottom: 8 }} />
+            Loading…
+          </div>
+        ) : recentAudit.length === 0 ? (
+          <div className="empty">
+            <i className="ti ti-clipboard-off" />
+            <div className="empty-title">No audit events yet</div>
+            <div className="empty-desc">Events will appear here as users interact with the system.</div>
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Action</th><th>Resource</th><th>User</th><th>When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentAudit.map((item) => {
+                const badge = actionBadge(item.action);
+                return (
+                  <tr key={item.id}>
+                    <td>
+                      <span className={`action-badge ${badge.cls}`}>
+                        <i className={`ti ${badge.icon}`} />
+                        {item.action.replace(/_/g, " ")}
+                      </span>
+                    </td>
+                    <td style={{ color: "var(--text-2)", fontSize: 12 }}>
+                      {item.resource}{item.resourceId ? <><br /><code style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{item.resourceId.slice(0, 12)}…</code></> : null}
+                    </td>
+                    <td>
+                      <span className="tunnel-user-chip">
+                        <i className="ti ti-user" />
+                        {item.userId ? item.userId.slice(0, 8) + "…" : "system"}
+                      </span>
+                    </td>
+                    <td style={{ color: "var(--text-3)", fontSize: 12 }} title={new Date(item.createdAt).toLocaleString()}>
+                      {timeAgo(item.createdAt)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AdminAuditPage ───────────────────────────────────────────────────────────
+
+function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: string, type?: Toast["type"]) => void }) {
+  const [items, setItems] = useState<AuditItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [cursorStack, setCursorStack] = useState<string[]>([]);
+  const [filterAction, setFilterAction] = useState("");
+  const [filterResource, setFilterResource] = useState("");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [filterLimit, setFilterLimit] = useState(50);
+
+  const load = useCallback((cursor?: string, pushCursor?: string) => {
+    setLoading(true);
+    api.getAuditFiltered({
+      limit: filterLimit,
+      action: filterAction || undefined,
+      resource: filterResource || undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+      cursor,
+    }).then((r) => {
+      setItems(r.items);
+      setNextCursor(r.nextCursor);
+      if (pushCursor) setCursorStack((s) => [...s, pushCursor]);
+    }).catch((e: unknown) => {
+      showToast(e instanceof Error ? e.message : "Failed to load audit log", "red");
+    }).finally(() => setLoading(false));
+  }, [api, filterAction, filterResource, filterFrom, filterTo, filterLimit, showToast]);
+
+  useEffect(() => {
+    setCursorStack([]);
+    setNextCursor(undefined);
+    load(undefined);
+  }, [load]);
+
+  function exportCsv() {
+    const header = "id,userId,action,resource,resourceId,createdAt,metadata";
+    const rows = items.map((i) => [
+      i.id, i.userId ?? "", i.action, i.resource, i.resourceId ?? "",
+      i.createdAt, JSON.stringify(i.metadata ?? {}).replace(/,/g, ";"),
+    ].map((v) => `"${v}"`).join(","));
+    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `audit-${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="page-body">
+      <div className="admin-hero">
+        <div className="admin-hero-left">
+          <div className="admin-hero-title"><i className="ti ti-clipboard-list" />Audit Log<span className="admin-hero-badge">Admin</span></div>
+          <div className="admin-hero-sub">Full event history — every action logged with user, resource and timestamp</div>
+        </div>
+        <div className="admin-hero-right">
+          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }}
+            onClick={exportCsv} disabled={items.length === 0}>
+            <i className="ti ti-download" /> Export CSV
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="audit-filter-bar">
+        <label>Action</label>
+        <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)}>
+          <option value="">All actions</option>
+          <option value="tunnel_created">tunnel_created</option>
+          <option value="tunnel_deleted">tunnel_deleted</option>
+          <option value="api_key_created">api_key_created</option>
+          <option value="api_key_revoked">api_key_revoked</option>
+          <option value="user_registered">user_registered</option>
+          <option value="user_login">user_login</option>
+          <option value="password_changed">password_changed</option>
+          <option value="http_auth_failed">http_auth_failed</option>
+          <option value="ws_auth_failed">ws_auth_failed</option>
+        </select>
+
+        <label>Resource</label>
+        <select value={filterResource} onChange={(e) => setFilterResource(e.target.value)}>
+          <option value="">All resources</option>
+          <option value="tunnel">tunnel</option>
+          <option value="api_key">api_key</option>
+          <option value="user">user</option>
+          <option value="tunnel_session">tunnel_session</option>
+        </select>
+
+        <label>From</label>
+        <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} style={{ width: 140 }} />
+
+        <label>To</label>
+        <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} style={{ width: 140 }} />
+
+        <label>Limit</label>
+        <select value={filterLimit} onChange={(e) => setFilterLimit(Number(e.target.value))}>
+          {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+
+        <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => {
+          setFilterAction(""); setFilterResource(""); setFilterFrom(""); setFilterTo(""); setFilterLimit(50);
+        }}>
+          <i className="ti ti-x" /> Clear
+        </button>
+      </div>
+
+      {/* Table */}
+      <div className="section">
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-list" /> {items.length} events</div>
+          <div className="section-actions">
+            <button className="btn-ghost" onClick={() => {
+              setCursorStack([]);
+              setNextCursor(undefined);
+              load(undefined);
+            }} disabled={loading}>
+              <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>
+            <i className="ti ti-loader-2 spin" style={{ fontSize: 22, display: "block", marginBottom: 8 }} />
+            Loading…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="empty">
+            <i className="ti ti-clipboard-off" />
+            <div className="empty-title">No events match your filters</div>
+            <div className="empty-desc">Try clearing the filters to see all audit events.</div>
+          </div>
+        ) : (
+          <>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Resource</th>
+                  <th>Resource ID</th>
+                  <th>User ID</th>
+                  <th>Metadata</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => {
+                  const badge = actionBadge(item.action);
+                  return (
+                    <tr key={item.id}>
+                      <td>
+                        <span className={`action-badge ${badge.cls}`}>
+                          <i className={`ti ${badge.icon}`} />
+                          {item.action.replace(/_/g, " ")}
+                        </span>
+                      </td>
+                      <td style={{ color: "var(--text-2)", fontSize: 12 }}>{item.resource}</td>
+                      <td>
+                        {item.resourceId
+                          ? <code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>{item.resourceId.slice(0, 16)}{item.resourceId.length > 16 ? "…" : ""}</code>
+                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>}
+                      </td>
+                      <td>
+                        {item.userId
+                          ? <span className="tunnel-user-chip"><i className="ti ti-user" />{item.userId.slice(0, 10)}{item.userId.length > 10 ? "…" : ""}</span>
+                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>system</span>}
+                      </td>
+                      <td style={{ maxWidth: 200 }}>
+                        {item.metadata && Object.keys(item.metadata).length > 0
+                          ? <code style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", wordBreak: "break-all" }}>
+                              {JSON.stringify(item.metadata).slice(0, 60)}{JSON.stringify(item.metadata).length > 60 ? "…" : ""}
+                            </code>
+                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>}
+                      </td>
+                      <td style={{ color: "var(--text-3)", fontSize: 12, whiteSpace: "nowrap" }}
+                        title={new Date(item.createdAt).toLocaleString()}>
+                        {timeAgo(item.createdAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {/* Pagination */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+              <button className="btn-ghost" disabled={cursorStack.length === 0 || loading}
+                onClick={() => {
+                  const stack = [...cursorStack];
+                  stack.pop();
+                  const prev = stack[stack.length - 1];
+                  setCursorStack(stack);
+                  load(prev);
+                }}>
+                <i className="ti ti-chevron-left" /> Prev
+              </button>
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                Page {cursorStack.length + 1}
+              </span>
+              <button className="btn-ghost" disabled={!nextCursor || loading}
+                onClick={() => { if (nextCursor) load(nextCursor, nextCursor); }}>
+                Next <i className="ti ti-chevron-right" />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AdminGatewayPage ─────────────────────────────────────────────────────────
+
+function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
+  api: GatewayApi;
+  tunnels: TunnelRecord[];
+  showToast: (msg: string, type?: Toast["type"]) => void;
+  onConfirm: (state: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => void;
+}) {
+  const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [chunkDiag, setChunkDiag] = useState<{ chunkFramesReceived: number; chunkStreamsReassembled: number; chunkIncompleteTimeouts: number; activeChunkAssemblies?: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [toggling, setToggling] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    Promise.all([api.getReadyz(), api.getChunkDiagnostics()])
+      .then(([s, c]) => { setStatus(s); setChunkDiag(c as typeof chunkDiag); })
+      .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Load failed", "red"))
+      .finally(() => setLoading(false));
+  }, [api, showToast]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  function toggleMode(field: "maintenanceMode" | "draining", val: boolean, confirmMsg: string) {
+    if (val) {
+      onConfirm({
+        title: `Enable ${field === "maintenanceMode" ? "Maintenance Mode" : "Draining"}?`,
+        message: confirmMsg,
+        confirmLabel: "Confirm",
+        danger: true,
+        onConfirm: () => doToggle(field, val),
+      });
+    } else {
+      doToggle(field, val);
+    }
+  }
+
+  function doToggle(field: "maintenanceMode" | "draining", val: boolean) {
+    setToggling(true);
+    api.setAdminState({ [field]: val })
+      .then((s) => { setStatus(s); showToast("Gateway state updated", "green"); })
+      .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Update failed", "red"))
+      .finally(() => setToggling(false));
+  }
+
+  const isHealthy = status?.ready && !status?.draining && !status?.maintenanceMode;
+
+  return (
+    <div className="page-body">
+      <div className="admin-hero">
+        <div className="admin-hero-left">
+          <div className="admin-hero-title"><i className="ti ti-server-cog" />Gateway Control<span className="admin-hero-badge">Admin</span></div>
+          <div className="admin-hero-sub">Live status, tunnel management and runtime controls</div>
+        </div>
+        <div className="admin-hero-right">
+          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }}
+            onClick={refresh} disabled={loading}>
+            <i className={`ti ti-refresh${loading ? " spin" : ""}`} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Status Cards */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
+        <div className="kpi-card" style={{ borderLeft: `3px solid ${isHealthy ? "var(--green)" : "var(--red)"}` }}>
+          <div className="kpi-card-head">
+            <div className="kpi-icon" style={{ background: isHealthy ? "var(--green-bg)" : "var(--red-bg)", color: isHealthy ? "var(--green)" : "var(--red)" }}>
+              <i className={`ti ti-${isHealthy ? "circle-check" : "alert-triangle"}`} />
+            </div>
+            {status && (
+              <span className="status-live" style={{ color: isHealthy ? "var(--green)" : "var(--red)" }}>
+                <span className={`status-pulse ${isHealthy ? "" : "red"}`} />
+                {isHealthy ? "Healthy" : status.maintenanceMode ? "Maintenance" : status.draining ? "Draining" : "Degraded"}
+              </span>
+            )}
+          </div>
+          <div className="kpi-val">{status?.activeTunnels ?? "…"}</div>
+          <div className="kpi-label">Active Tunnels</div>
+        </div>
+
+        <div className="kpi-card">
+          <div className="kpi-card-head">
+            <div className="kpi-icon purple"><i className="ti ti-stack-2" /></div>
+          </div>
+          <div className="kpi-val" style={{ fontSize: 20, paddingTop: 4 }}>
+            {chunkDiag ? `${chunkDiag.chunkFramesReceived}` : "…"}
+          </div>
+          <div className="kpi-label">Chunk Frames Received</div>
+          <div className="kpi-delta neutral">
+            {chunkDiag ? `${chunkDiag.chunkStreamsReassembled} reassembled · ${chunkDiag.chunkIncompleteTimeouts} timeouts` : ""}
+          </div>
+        </div>
+      </div>
+
+      {/* Toggle Controls */}
+      <div className="section" style={{ marginBottom: 16 }}>
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-settings-2" /> Runtime Controls</div>
+        </div>
+        <div style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
+          <label className="toggle-row">
+            <div className="toggle-row-info">
+              <div className="toggle-row-title">
+                {status?.maintenanceMode && <span style={{ color: "var(--red)", marginRight: 6, fontSize: 11, fontWeight: 700 }}>● ACTIVE</span>}
+                Maintenance Mode
+              </div>
+              <div className="toggle-row-desc">Rejects all new requests with HTTP 503. Use before upgrades.</div>
+            </div>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={status?.maintenanceMode ?? false} disabled={toggling || loading}
+                onChange={(e) => toggleMode("maintenanceMode", e.target.checked,
+                  "This will reject all new tunnel connections and return 503 to clients. Existing sessions are preserved.")} />
+              <span className="toggle-track" />
+            </label>
+          </label>
+
+          <label className="toggle-row">
+            <div className="toggle-row-info">
+              <div className="toggle-row-title">
+                {status?.draining && <span style={{ color: "var(--yellow)", marginRight: 6, fontSize: 11, fontWeight: 700 }}>● ACTIVE</span>}
+                Draining Mode
+              </div>
+              <div className="toggle-row-desc">Stops accepting new WebSocket clients. Allows graceful node shutdown.</div>
+            </div>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={status?.draining ?? false} disabled={toggling || loading}
+                onChange={(e) => toggleMode("draining", e.target.checked,
+                  "This will stop accepting new WebSocket tunnel connections. Enable before a rolling restart or node removal.")} />
+              <span className="toggle-track" />
+            </label>
+          </label>
+        </div>
+      </div>
+
+      {/* All Tunnels */}
+      <div className="section">
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-topology-star-3" /> All Active Tunnels ({allTunnels.length})</div>
+        </div>
+        {allTunnels.length === 0 ? (
+          <div className="empty">
+            <i className="ti ti-topology-star-3" />
+            <div className="empty-title">No active tunnels</div>
+            <div className="empty-desc">Tunnels appear here as users connect via the CLI.</div>
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th></tr></thead>
+            <tbody>
+              {allTunnels.map((t) => (
+                <tr key={t.id}>
+                  <td>
+                    <a href={`//${t.subdomain}.${window.location.hostname}`}
+                      target="_blank" rel="noreferrer"
+                      style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--accent)" }}>
+                      {t.subdomain}
+                    </a>
+                  </td>
+                  <td><code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>{t.id.slice(0, 16)}…</code></td>
+                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>{timeAgo(t.createdAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AdminTcpPage ─────────────────────────────────────────────────────────────
+
+function NewTcpMappingModal({ onCreate, onClose }: {
+  onCreate: (data: { name: string; localPort: number; publicPort: number; description?: string }) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [localPort, setLocalPort] = useState("");
+  const [publicPort, setPublicPort] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function submit() {
+    const lp = parseInt(localPort, 10);
+    const pp = parseInt(publicPort, 10);
+    if (!name.trim() || !lp || !pp) return;
+    setSaving(true);
+    onCreate({ name: name.trim(), localPort: lp, publicPort: pp, description: description.trim() || undefined });
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title"><i className="ti ti-network" /> New TCP Port Mapping</div>
+          <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
+        </div>
+        <div className="modal-body" style={{ display: "grid", gap: 14 }}>
+          <div>
+            <label className="form-lbl">Name <span style={{ color: "var(--red)" }}>*</span></label>
+            <input className="form-inp" placeholder="e.g. Postgres DB" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label className="form-lbl">Local Port <span style={{ color: "var(--red)" }}>*</span></label>
+              <input className="form-inp" type="number" min={1} max={65535} placeholder="5432"
+                value={localPort} onChange={(e) => setLocalPort(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-lbl">Public Port <span style={{ color: "var(--red)" }}>*</span></label>
+              <input className="form-inp" type="number" min={1} max={65535} placeholder="19000"
+                value={publicPort} onChange={(e) => setPublicPort(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label className="form-lbl">Description</label>
+            <input className="form-inp" placeholder="Optional note" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={saving || !name.trim() || !localPort || !publicPort} onClick={submit}>
+            {saving ? <><i className="ti ti-loader-2 spin" /> Creating…</> : <><i className="ti ti-plus" /> Create mapping</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminTcpPage({ api, showToast, onConfirm }: {
+  api: GatewayApi;
+  showToast: (msg: string, type?: Toast["type"]) => void;
+  onConfirm: (state: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => void;
+}) {
+  const [mappings, setMappings] = useState<TcpPortMapping[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    api.listTcpPortMappings()
+      .then(setMappings)
+      .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Load failed", "red"))
+      .finally(() => setLoading(false));
+  }, [api, showToast]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  function handleCreate(data: { name: string; localPort: number; publicPort: number; description?: string }) {
+    api.createTcpPortMapping(data)
+      .then((m) => {
+        setMappings((prev) => [m, ...prev]);
+        setShowCreate(false);
+        showToast(`TCP mapping "${m.name}" created`, "green");
+      })
+      .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Create failed", "red"));
+  }
+
+  function requestDelete(id: string, name: string) {
+    onConfirm({
+      title: "Delete TCP mapping?",
+      message: `This will permanently remove "${name}". Any clients using port mapping will lose connectivity.`,
+      confirmLabel: "Delete mapping",
+      danger: true,
+      onConfirm: () => {
+        api.deleteTcpPortMapping(id)
+          .then(() => { setMappings((prev) => prev.filter((m) => m.id !== id)); showToast("Mapping deleted", "green"); })
+          .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Delete failed", "red"));
+      },
+    });
+  }
+
+  return (
+    <div className="page-body">
+      <div className="admin-hero">
+        <div className="admin-hero-left">
+          <div className="admin-hero-title"><i className="ti ti-network" />TCP Port Mappings<span className="admin-hero-badge">Admin</span></div>
+          <div className="admin-hero-sub">Reserve public ports for TCP tunnels — databases, SSH, custom protocols</div>
+        </div>
+        <div className="admin-hero-right">
+          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }}
+            onClick={refresh} disabled={loading}>
+            <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
+          </button>
+          <button className="btn-primary" onClick={() => setShowCreate(true)}>
+            <i className="ti ti-plus" /> New mapping
+          </button>
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-list" /> {mappings.length} mapping{mappings.length !== 1 ? "s" : ""}</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>
+            <i className="ti ti-loader-2 spin" style={{ fontSize: 22, display: "block", marginBottom: 8 }} />
+            Loading…
+          </div>
+        ) : mappings.length === 0 ? (
+          <div className="empty">
+            <i className="ti ti-network-off" />
+            <div className="empty-title">No TCP port mappings</div>
+            <div className="empty-desc">
+              Create a mapping to reserve a public port for TCP tunnels.
+              Clients connect to the public port; the gateway forwards traffic to the local port.
+            </div>
+            <button className="btn-primary" style={{ margin: "0 auto" }} onClick={() => setShowCreate(true)}>
+              <i className="ti ti-plus" /> New mapping
+            </button>
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Local Port</th>
+                <th>Public Port</th>
+                <th>Description</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {mappings.map((m) => (
+                <tr key={m.id}>
+                  <td style={{ fontWeight: 600, color: "var(--text-1)" }}>{m.name}</td>
+                  <td><span className="port-tag">{m.localPort}</span></td>
+                  <td><span className="port-tag public">{m.publicPort}</span></td>
+                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>{m.description ?? "—"}</td>
+                  <td>
+                    <span className={`action-badge ${m.enabled ? "create" : "other"}`}>
+                      <i className={`ti ti-${m.enabled ? "circle-check" : "circle-x"}`} />
+                      {m.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </td>
+                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>{timeAgo(m.createdAt)}</td>
+                  <td>
+                    <div className="row-actions">
+                      <div className="icon-btn danger" title="Delete" onClick={() => requestDelete(m.id, m.name)}>
+                        <i className="ti ti-trash" />
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showCreate && <NewTcpMappingModal onCreate={handleCreate} onClose={() => setShowCreate(false)} />}
+    </div>
+  );
+}
+
 // ─── App (main) ───────────────────────────────────────────────────────────────
 
 export function App() {
@@ -1778,6 +2602,33 @@ export function App() {
                   {PAGE_TITLES[page]}
                 </div>
               ))}
+
+              {/* Admin section — only visible to admin/owner roles */}
+              {hasAdminRole(user?.role) && (
+                <>
+                  <span className="nav-admin-label">
+                    <span className="nav-admin-dot" />
+                    Administration
+                  </span>
+                  <div className={`nav-item ${currentPage === "admin:overview" ? "active" : ""}`}
+                    onClick={() => setCurrentPage("admin:overview")}>
+                    <i className="ti ti-layout-dashboard" /> Overview
+                    <span className="nav-admin-badge">Admin</span>
+                  </div>
+                  <div className={`nav-item ${currentPage === "admin:audit" ? "active" : ""}`}
+                    onClick={() => setCurrentPage("admin:audit")}>
+                    <i className="ti ti-clipboard-list" /> Audit Log
+                  </div>
+                  <div className={`nav-item ${currentPage === "admin:gateway" ? "active" : ""}`}
+                    onClick={() => setCurrentPage("admin:gateway")}>
+                    <i className="ti ti-server-cog" /> Gateway
+                  </div>
+                  <div className={`nav-item ${currentPage === "admin:tcp" ? "active" : ""}`}
+                    onClick={() => setCurrentPage("admin:tcp")}>
+                    <i className="ti ti-network" /> TCP Ports
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="theme-toggle-wrap">
@@ -1810,6 +2661,13 @@ export function App() {
                 <div className="breadcrumb">
                   <span className="breadcrumb-root">Portivox</span>
                   <span className="breadcrumb-sep">/</span>
+                  {isAdminPage(currentPage) && (
+                    <>
+                      <span className="breadcrumb-root" style={{ color: "var(--red)", cursor: "pointer" }}
+                        onClick={() => setCurrentPage("admin:overview")}>Admin</span>
+                      <span className="breadcrumb-sep">/</span>
+                    </>
+                  )}
                   <span className="breadcrumb-current">{PAGE_TITLES[currentPage]}</span>
                 </div>
               </div>
@@ -1879,6 +2737,25 @@ export function App() {
                 />
               )}
               {currentPage === "billing" && <BillingPage showToast={showToast} />}
+
+              {/* ── Admin pages ── */}
+              {currentPage === "admin:overview" && hasAdminRole(user?.role) && (
+                <AdminOverviewPage api={api} showToast={showToast} />
+              )}
+              {currentPage === "admin:audit" && hasAdminRole(user?.role) && (
+                <AdminAuditPage api={api} showToast={showToast} />
+              )}
+              {currentPage === "admin:gateway" && hasAdminRole(user?.role) && (
+                <AdminGatewayPage
+                  api={api}
+                  tunnels={tunnels}
+                  showToast={showToast}
+                  onConfirm={setConfirm}
+                />
+              )}
+              {currentPage === "admin:tcp" && hasAdminRole(user?.role) && (
+                <AdminTcpPage api={api} showToast={showToast} onConfirm={setConfirm} />
+              )}
             </div>
           </div>
         </div>

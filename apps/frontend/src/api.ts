@@ -27,6 +27,24 @@ export type AdminState = {
   maintenanceMode: boolean;
 };
 
+export type TcpPortMapping = {
+  id: string;
+  name: string;
+  localPort: number;
+  publicPort: number;
+  description: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GatewayStatus = {
+  ready: boolean;
+  draining: boolean;
+  maintenanceMode: boolean;
+  activeTunnels: number;
+};
+
 export type ChunkDiagnostics = {
   chunkFramesReceived: number;
   chunkStreamsReassembled: number;
@@ -107,7 +125,7 @@ export class GatewayApi {
     return this.request("/readyz", { method: "GET" });
   }
 
-  async setAdminState(patch: Partial<AdminState>): Promise<AdminState> {
+  async setAdminState(patch: Partial<AdminState>): Promise<GatewayStatus> {
     return this.request("/api/admin/state", {
       method: "POST",
       body: JSON.stringify(patch),
@@ -121,6 +139,43 @@ export class GatewayApi {
   async getAudit(limit = 20): Promise<AuditItem[]> {
     const result = await this.request<{ items: AuditItem[] }>(`/api/audit?limit=${Math.max(1, Math.min(100, limit))}`, { method: "GET" });
     return Array.isArray(result.items) ? result.items : [];
+  }
+
+  async getAuditFiltered(params: {
+    limit?: number;
+    action?: string;
+    resource?: string;
+    userId?: string;
+    from?: string;
+    to?: string;
+    cursor?: string;
+  }): Promise<{ items: AuditItem[]; nextCursor?: string; count: number }> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(Math.max(1, Math.min(100, params.limit))));
+    if (params.action) qs.set("action", params.action);
+    if (params.resource) qs.set("resource", params.resource);
+    if (params.userId) qs.set("userId", params.userId);
+    if (params.from) qs.set("from", params.from);
+    if (params.to) qs.set("to", params.to);
+    if (params.cursor) qs.set("cursor", params.cursor);
+    return this.request<{ items: AuditItem[]; nextCursor?: string; count: number }>(`/api/audit?${qs}`, { method: "GET" });
+  }
+
+  async listTcpPortMappings(): Promise<TcpPortMapping[]> {
+    const result = await this.request<{ mappings: TcpPortMapping[] }>("/api/admin/tcp-port-mappings", { method: "GET" });
+    return Array.isArray(result.mappings) ? result.mappings : [];
+  }
+
+  async createTcpPortMapping(data: { name: string; localPort: number; publicPort: number; description?: string }): Promise<TcpPortMapping> {
+    const result = await this.request<{ mapping: TcpPortMapping }>("/api/admin/tcp-port-mappings", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return result.mapping;
+  }
+
+  async deleteTcpPortMapping(id: string): Promise<void> {
+    await this.request(`/api/admin/tcp-port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   private async request<T = unknown>(path: string, init: RequestInit & { authOverride?: GatewayAuth }): Promise<T> {
