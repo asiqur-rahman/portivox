@@ -1,13 +1,26 @@
-# Portivox Docker Compose
+# ============================================================
+# Portivox — Docker Compose (single file)
+# ============================================================
 #
-# Dev  : `docker compose up --build`
-#        Auto-merges docker-compose.override.yml — no .env needed.
+# Quick start
+# -----------
+#   cp .env.example .env          # fill in DATABASE_URL + secrets
+#   docker compose up --build     # starts nginx, gateway, redis
 #
-# Prod : Copy .env.example → .env, fill in secrets, then:
-#        `docker compose --env-file .env up -d --build`
+# With demo echo app + tunnel client:
+#   docker compose --profile demo up --build
 #
-# First-time DB migration (prod):
-#        `docker compose run --rm gateway node -e "require('child_process').execSync('npm run db:migrate:deploy', {stdio:'inherit'})"`
+# Horizontal scale (second gateway node):
+#   docker compose --profile scale up --build
+#
+# First-time DB migration:
+#   docker compose run --rm gateway \
+#     node -e "require('child_process').execSync('npm run db:migrate:deploy',{stdio:'inherit'})"
+#
+# ── Environment variables ────────────────────────────────────
+# All tuneable values are read from .env (see .env.example).
+# Defaults shown in ${VAR:-default} expressions are production-safe.
+# ============================================================
 
 services:
 
@@ -34,35 +47,36 @@ services:
     container_name: portivox-gateway
     restart: unless-stopped
     environment:
-      NODE_ENV: "production"
-      GATEWAY_PORT: "8080"
-      GATEWAY_WS_PORT: "7000"
-      ROOT_DOMAIN: "portivox.braintechsolution.com"
-      GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
-      AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
-      AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      DATABASE_URL: "${DATABASE_URL}"
-      MAX_REQUEST_BODY_BYTES: "1048576"
+      NODE_ENV:                   "${NODE_ENV:-production}"
+      GATEWAY_PORT:               "8080"
+      GATEWAY_WS_PORT:            "7000"
+      ROOT_DOMAIN:                "${ROOT_DOMAIN:-portivox.braintechsolution.com}"
+      GATEWAY_PUBLIC_BASE_URL:    "${GATEWAY_PUBLIC_BASE_URL}"
+      AUTH_REQUIRED:              "${AUTH_REQUIRED:-true}"
+      AUTH_JWT_SECRET:            "${AUTH_JWT_SECRET}"
+      DATABASE_URL:               "${DATABASE_URL}"
+      MAX_REQUEST_BODY_BYTES:     "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
-      WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
-      REGISTRY_BACKEND: "redis"
-      REDIS_URL: "redis://redis:6379"
-      REDIS_KEY_PREFIX: "portivox:registry"
-      REGISTRY_LEASE_TTL_MS: "${REGISTRY_LEASE_TTL_MS:-30000}"
-      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"
-      CORS_ALLOW_CREDENTIALS: "true"
-      SECURITY_HEADERS_ENABLED: "true"
-      IDEMPOTENCY_ENABLED: "true"
-      TCP_TUNNEL_ENABLED: "true"
-      TCP_TUNNEL_BIND_HOST: "0.0.0.0"
-      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
-      TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
-      TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
-      IP_PROTECTION_DEFAULT: "${IP_PROTECTION_DEFAULT:-true}"
-      TCP_CONNECTION_RATE_LIMIT: "${TCP_CONNECTION_RATE_LIMIT:-10}"
-      API_RATE_LIMIT_READ_PER_MIN: "${API_RATE_LIMIT_READ_PER_MIN:-600}"
+      WS_IDLE_TIMEOUT_MS:         "${WS_IDLE_TIMEOUT_MS:-30000}"
+      REGISTRY_BACKEND:           "redis"
+      REDIS_URL:                  "redis://redis:6379"
+      REDIS_KEY_PREFIX:           "portivox:registry"
+      REGISTRY_LEASE_TTL_MS:      "${REGISTRY_LEASE_TTL_MS:-30000}"
+      CORS_ALLOWED_ORIGINS:       "${CORS_ALLOWED_ORIGINS}"
+      CORS_ALLOW_CREDENTIALS:     "true"
+      SECURITY_HEADERS_ENABLED:   "true"
+      IDEMPOTENCY_ENABLED:        "true"
+      TCP_TUNNEL_ENABLED:         "true"
+      TCP_TUNNEL_BIND_HOST:       "0.0.0.0"
+      TCP_PUBLIC_HOST:            "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
+      TCP_PUBLIC_PORT_START:      "${TCP_PUBLIC_PORT_START:-19000}"
+      TCP_PUBLIC_PORT_END:        "${TCP_PUBLIC_PORT_END:-19099}"
+      IP_PROTECTION_DEFAULT:      "${IP_PROTECTION_DEFAULT:-true}"
+      TCP_CONNECTION_RATE_LIMIT:  "${TCP_CONNECTION_RATE_LIMIT:-10}"
+      API_RATE_LIMIT_READ_PER_MIN:  "${API_RATE_LIMIT_READ_PER_MIN:-600}"
       API_RATE_LIMIT_WRITE_PER_MIN: "${API_RATE_LIMIT_WRITE_PER_MIN:-300}"
-      HEARTBEAT_INTERVAL_MS: "${HEARTBEAT_INTERVAL_MS:-5000}"
+      HEARTBEAT_INTERVAL_MS:      "${HEARTBEAT_INTERVAL_MS:-5000}"
+      METRICS_TOKEN:              "${METRICS_TOKEN:-}"
     ports:
       - "${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}:${TCP_PUBLIC_PORT_START:-19000}-${TCP_PUBLIC_PORT_END:-19099}"
     healthcheck:
@@ -76,6 +90,7 @@ services:
         condition: service_healthy
 
   # ── Gateway node 2 — optional horizontal scale ───────────────
+  # Activate with:  docker compose --profile scale up
   gateway-2:
     build:
       context: .
@@ -86,36 +101,42 @@ services:
     profiles: ["scale"]
     restart: unless-stopped
     environment:
-      NODE_ENV: "production"
-      GATEWAY_PORT: "8081"
-      GATEWAY_WS_PORT: "7001"
-      GATEWAY_NODE_ID: "gateway-2"
-      ROOT_DOMAIN: "portivox.braintechsolution.com"
-      GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
-      AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
-      AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      DATABASE_URL: "${DATABASE_URL}"
-      MAX_REQUEST_BODY_BYTES: "1048576"
+      NODE_ENV:                   "${NODE_ENV:-production}"
+      GATEWAY_PORT:               "8081"
+      GATEWAY_WS_PORT:            "7001"
+      GATEWAY_NODE_ID:            "gateway-2"
+      ROOT_DOMAIN:                "${ROOT_DOMAIN:-portivox.braintechsolution.com}"
+      GATEWAY_PUBLIC_BASE_URL:    "${GATEWAY_PUBLIC_BASE_URL}"
+      AUTH_REQUIRED:              "${AUTH_REQUIRED:-true}"
+      AUTH_JWT_SECRET:            "${AUTH_JWT_SECRET}"
+      DATABASE_URL:               "${DATABASE_URL}"
+      MAX_REQUEST_BODY_BYTES:     "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
-      WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
-      REGISTRY_BACKEND: "redis"
-      REDIS_URL: "redis://redis:6379"
-      REDIS_KEY_PREFIX: "portivox:registry"
-      REGISTRY_LEASE_TTL_MS: "${REGISTRY_LEASE_TTL_MS:-30000}"
-      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"
-      CORS_ALLOW_CREDENTIALS: "true"
-      SECURITY_HEADERS_ENABLED: "true"
-      IDEMPOTENCY_ENABLED: "true"
-      TCP_TUNNEL_ENABLED: "true"
-      TCP_TUNNEL_BIND_HOST: "0.0.0.0"
-      TCP_PUBLIC_HOST: "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
-      TCP_PUBLIC_PORT_START: "${TCP_PUBLIC_PORT_START:-19000}"
-      TCP_PUBLIC_PORT_END: "${TCP_PUBLIC_PORT_END:-19099}"
+      WS_IDLE_TIMEOUT_MS:         "${WS_IDLE_TIMEOUT_MS:-30000}"
+      REGISTRY_BACKEND:           "redis"
+      REDIS_URL:                  "redis://redis:6379"
+      REDIS_KEY_PREFIX:           "portivox:registry"
+      REGISTRY_LEASE_TTL_MS:      "${REGISTRY_LEASE_TTL_MS:-30000}"
+      CORS_ALLOWED_ORIGINS:       "${CORS_ALLOWED_ORIGINS}"
+      CORS_ALLOW_CREDENTIALS:     "true"
+      SECURITY_HEADERS_ENABLED:   "true"
+      IDEMPOTENCY_ENABLED:        "true"
+      TCP_TUNNEL_ENABLED:         "true"
+      TCP_TUNNEL_BIND_HOST:       "0.0.0.0"
+      TCP_PUBLIC_HOST:            "${TCP_PUBLIC_HOST:-portivox.braintechsolution.com}"
+      TCP_PUBLIC_PORT_START:      "${TCP_PUBLIC_PORT_START:-19000}"
+      TCP_PUBLIC_PORT_END:        "${TCP_PUBLIC_PORT_END:-19099}"
+      IP_PROTECTION_DEFAULT:      "${IP_PROTECTION_DEFAULT:-true}"
+      TCP_CONNECTION_RATE_LIMIT:  "${TCP_CONNECTION_RATE_LIMIT:-10}"
+      API_RATE_LIMIT_READ_PER_MIN:  "${API_RATE_LIMIT_READ_PER_MIN:-600}"
+      API_RATE_LIMIT_WRITE_PER_MIN: "${API_RATE_LIMIT_WRITE_PER_MIN:-300}"
+      HEARTBEAT_INTERVAL_MS:      "${HEARTBEAT_INTERVAL_MS:-5000}"
+      METRICS_TOKEN:              "${METRICS_TOKEN:-}"
     depends_on:
       redis:
         condition: service_healthy
 
-  # ── Redis — tunnel registry backend ──────────────────────────
+  # ── Redis — tunnel registry + session store ───────────────────
   redis:
     image: redis:7-alpine
     container_name: portivox-redis
@@ -128,8 +149,50 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
-    # No host port binding — gateway connects via Docker network.
-    # Add "ports: - 127.0.0.1:6379:6379" in docker-compose.override.yml for local GUI access.
+    # Redis is intentionally not exposed on the host — the gateway reaches it
+    # via the internal Docker network.  To access Redis with a GUI tool locally,
+    # temporarily add:  ports: ["127.0.0.1:6379:6379"]
+
+  # ── Demo: local HTTP echo server ─────────────────────────────
+  # Activate with:  docker compose --profile demo up
+  sample-local-app:
+    image: hashicorp/http-echo:1.0.0
+    container_name: portivox-sample-local-app
+    profiles: ["demo"]
+    restart: "no"
+    command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
+    expose:
+      - "3000"
+
+  # ── Demo: auto-tunnel client pointing at the echo server ──────
+  client:
+    build:
+      context: .
+      dockerfile: apps/tunnel-client/Dockerfile
+    container_name: portivox-client
+    profiles: ["demo"]
+    restart: "no"
+    command:
+      - "node"
+      - "apps/tunnel-client/dist/index.js"
+      - "open"
+      - "3000"
+      - "--gateway"
+      - "ws://gateway:7000/connect"
+      - "--local"
+      - "http://sample-local-app:3000"
+      - "--subdomain"
+      - "demo"
+      - "--no-ip-protection"
+    environment:
+      TUNNEL_API_KEY:                "dev-key"
+      LOCAL_REQUEST_TIMEOUT_MS:      "15000"
+      MAX_LOCAL_RESPONSE_BODY_BYTES: "2097152"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      sample-local-app:
+        condition: service_started
 
 volumes:
   redis_data:
