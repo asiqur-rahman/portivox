@@ -1008,9 +1008,16 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
 
     // Fall back to anonymous when auth is not required and no valid credentials were provided.
-    // Anonymous users get minimal scopes only — never wildcard or admin role.
+    // In dev mode (authRequired === false) the anonymous principal is a full superuser so all
+    // endpoints are accessible without credentials.  This code path is never reached in production
+    // because authRequired is always true there and the function returns null above instead.
     if (!config.authRequired) {
-      return { userId: "anonymous", authType: "anonymous", scopes: ["tunnel:create", "tunnel:read", "tunnel:delete"], role: "owner" };
+      return {
+        userId: "anonymous",
+        authType: "anonymous",
+        scopes: ["tunnel:create", "tunnel:read", "tunnel:delete", "tunnel:tcp", "key:manage", "admin:read", "admin:write"],
+        role: "admin",
+      };
     }
 
     return null;
