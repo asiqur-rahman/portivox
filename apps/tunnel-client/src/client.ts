@@ -212,7 +212,8 @@ export class TunnelClient {
       this.scheduleReconnect();
     });
 
-    this.socket.on("error", () => {
+    this.socket.on("error", (err) => {
+      this.logger.warn("WebSocket error", { error: err.message });
       this.stopHeartbeat();
     });
   }

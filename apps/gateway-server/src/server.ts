@@ -533,7 +533,8 @@ class AuditSink {
           throw new Error(`Webhook URL must not target a private/loopback address (${parsed.hostname})`);
         }
       } catch (err) {
-        console.error(`[audit-sink] Invalid AUDIT_EXPORT_WEBHOOK_URL — webhook delivery disabled: ${err instanceof Error ? err.message : String(err)}`);
+        // Log to stderr without a Fastify logger (constructed before app is ready)
+        process.stderr.write(`[audit-sink] Invalid AUDIT_EXPORT_WEBHOOK_URL — webhook delivery disabled: ${err instanceof Error ? err.message : String(err)}\n`);
         validatedWebhookUrl = null;
       }
     }
@@ -752,7 +753,7 @@ export type GatewayServer = {
 export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer {
   const app = Fastify({ logger: true });
   void app.register(swagger, {
-    openapi: buildOpenApiDocument("http://localhost:8080"),
+    openapi: buildOpenApiDocument((config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}:${config.gatewayPort}`),
   });
   void app.register(swaggerUi, {
     routePrefix: "/docs",
@@ -939,12 +940,30 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return payload;
   });
 
-  function serializeWireMessage(message: WireMessage): string {
-    return encodeWireMessage(message);
-  }
+  // Constant header blocklist defined once — used in tunnel ingress to prevent
+  // tunnel operators from overriding gateway-level security headers.
+  const BLOCKED_RESPONSE_HEADERS = new Set([
+    "content-security-policy",
+    "content-security-policy-report-only",
+    "strict-transport-security",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
+    "set-cookie",
+    "access-control-allow-origin",
+    "access-control-allow-credentials",
+    "access-control-allow-headers",
+    "access-control-allow-methods",
+    "access-control-expose-headers",
+    "access-control-max-age",
+  ]);
+
+  // Default scopes granted to newly registered users and JWT fallback.
+  const DEFAULT_USER_SCOPES = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"] as const;
 
   function createGatewayError(message: string): string {
-    return serializeWireMessage({ type: "error", message });
+    return encodeWireMessage({ type: "error", message });
   }
 
   function hashApiKey(value: string): string {
@@ -996,7 +1015,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             ? payload.scopes
             : typeof payload.scopes === "string"
               ? parseScopes(payload.scopes, [])
-              : ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"];
+              : [...DEFAULT_USER_SCOPES];
           const role = payload.role === "viewer" || payload.role === "owner" || payload.role === "admin" ? payload.role : "owner";
           return { userId: payload.sub, authType: "jwt", scopes: tokenScopes, role };
         }
@@ -1021,10 +1040,6 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
 
     return null;
-  }
-
-  async function requirePrincipal(headers: Record<string, unknown>): Promise<Principal | null> {
-    return resolvePrincipal(headers);
   }
 
   function isAdminRole(role: Principal["role"]): boolean {
@@ -1112,7 +1127,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     // Fixed-port tunnels bypass the random pool; dynamic tunnels must be in range.
     const port = fixedPort ?? allocateTcpPort();
-    if (!port || (!fixedPort && !isPortInRange(port))) {
+    if (port === null) {
       throw new Error("TCP_PORT_EXHAUSTED");
     }
 
@@ -1145,7 +1160,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       connectionIds.add(connectionId);
 
       if (socket.readyState === WebSocket.OPEN) {
-        socket.send(serializeWireMessage({ type: "tcp_open", connectionId }));
+        socket.send(encodeWireMessage({ type: "tcp_open", connectionId }));
       } else {
         conn.destroy();
         return;
@@ -1156,7 +1171,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           conn.destroy();
           return;
         }
-        socket.send(serializeWireMessage({
+        socket.send(encodeWireMessage({
           type: "tcp_data",
           connectionId,
           dataBase64: Buffer.from(chunk).toString("base64"),
@@ -1170,7 +1185,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         tcpConnectionsById.delete(connectionId);
         connectionIds.delete(connectionId);
         if (socket.readyState === WebSocket.OPEN) {
-          socket.send(serializeWireMessage({ type: "tcp_close", connectionId, reason }));
+          socket.send(encodeWireMessage({ type: "tcp_close", connectionId, reason }));
         }
       };
 
@@ -1442,7 +1457,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               redirectByToken.set(redirectToken, rEntry);
               redirectTokenByTunnelKey.set(syntheticKey, redirectToken);
 
-              socket.send(serializeWireMessage({
+              socket.send(encodeWireMessage({
                 type: "registered",
                 tunnelType: "tcp",
                 publicTcpHost: tcpBinding.publicHost,
@@ -1521,7 +1536,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 redirectByToken.set(redirectToken, rEntry);
                 redirectTokenByTunnelKey.set(subdomain, redirectToken);
 
-                socket.send(serializeWireMessage({
+                socket.send(encodeWireMessage({
                   type: "registered",
                   subdomain,
                   tunnelType: "tcp",
@@ -1554,7 +1569,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               redirectByToken.set(redirectToken, rEntry);
               redirectTokenByTunnelKey.set(subdomain, redirectToken);
 
-              socket.send(serializeWireMessage({ type: "registered", subdomain, tunnelType: "http", redirectToken, redirectUrl }));
+              socket.send(encodeWireMessage({ type: "registered", subdomain, tunnelType: "http", redirectToken, redirectUrl }));
             }
           } catch {
             socket.send(createGatewayError("Failed to allocate tunnel subdomain"));
@@ -1568,7 +1583,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             registry.heartbeat(subdomain);
           }
           // Acknowledge so the client's liveness timer doesn't trigger on idle tunnels
-          socket.send(JSON.stringify({ type: "heartbeat_ack" }));
+          socket.send(encodeWireMessage({ type: "heartbeat_ack" }));
           return;
         }
 
@@ -1781,7 +1796,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         registry.removeBySocket(socket);
         metrics.setGauge("gateway_active_tunnels", registry.count());
       });
-    }).catch(() => {
+    }).catch((err) => {
+      app.log.error({ err }, "ws auth resolution error");
       socket.close(1011, "auth_resolution_error");
     });
   });
@@ -1835,7 +1851,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
     try {
       const created = await userAuthStore.register(body.email, hashPassword(body.password));
-      const scopes = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"];
+      const scopes = [...DEFAULT_USER_SCOPES];
       const role: Principal["role"] = "owner";
       const token = signAccessToken({ sub: created.id, role, scopes }, config.authJwtSecret, "7d");
       await auditStore.log(created.id, "user_registered", "user", created.id, { email: created.email });
@@ -1873,7 +1889,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (!user || !verifyPassword(body.password, user.passwordHash)) {
       return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
     }
-    const scopes = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"];
+    const scopes = [...DEFAULT_USER_SCOPES];
     const role: Principal["role"] = "owner";
     const token = signAccessToken({ sub: user.id, role, scopes }, config.authJwtSecret, "7d");
     await auditStore.log(user.id, "user_login", "user", user.id, { email: user.email });
@@ -1886,7 +1902,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.post("/api/auth/change-password", async (req, reply) => {
     const endpoint = "/api/auth/change-password";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Authentication required" } });
     }
@@ -1921,7 +1937,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.get("/api/tunnels", async (req, reply) => {
     const endpoint = "/api/tunnels";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "tunnel", null, { path: "/api/tunnels", method: "GET" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -1950,7 +1966,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.post("/api/tunnels", async (req, reply) => {
     const endpoint = "/api/tunnels";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "tunnel", null, { path: "/api/tunnels", method: "POST" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -2009,7 +2025,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.delete("/api/tunnels/:id", async (req, reply) => {
     const endpoint = "/api/tunnels/:id";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "tunnel", null, { path: "/api/tunnels/:id", method: "DELETE" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -2068,7 +2084,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.post("/api/keys", async (req, reply) => {
     const endpoint = "/api/keys";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "api_key", null, { path: "/api/keys", method: "POST" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -2134,7 +2150,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.get("/api/keys", async (req, reply) => {
     const endpoint = "/api/keys";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "api_key", null, { path: "/api/keys", method: "GET" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -2171,7 +2187,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.delete("/api/keys/:id", async (req, reply) => {
     const endpoint = "/api/keys/:id";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       await auditStore.log(null, "http_auth_failed", "api_key", null, { path: "/api/keys/:id", method: "DELETE" });
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
@@ -2225,7 +2241,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.post("/api/admin/state", async (req, reply) => {
     const endpoint = "/api/admin/state";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
@@ -2303,7 +2319,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.get("/api/admin/chunk-diagnostics", async (req, reply) => {
     const endpoint = "/api/admin/chunk-diagnostics";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
@@ -2341,7 +2357,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.get("/api/audit", async (req, reply) => {
     const endpoint = "/api/audit";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
@@ -2403,7 +2419,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.get("/api/admin/tcp-port-mappings", async (req, reply) => {
     const endpoint = "/api/admin/tcp-port-mappings";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
@@ -2434,7 +2450,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.post("/api/admin/tcp-port-mappings", async (req, reply) => {
     const endpoint = "/api/admin/tcp-port-mappings";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
@@ -2502,7 +2518,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.patch("/api/admin/tcp-port-mappings/:id", async (req, reply) => {
     const endpoint = "/api/admin/tcp-port-mappings/:id";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
@@ -2548,7 +2564,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   app.delete("/api/admin/tcp-port-mappings/:id", async (req, reply) => {
     const endpoint = "/api/admin/tcp-port-mappings/:id";
-    const principal = await requirePrincipal(req.headers as Record<string, unknown>);
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
     if (!principal) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
@@ -2763,7 +2779,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       streamTimeouts.set(streamId, timeout);
     });
 
-    tunnel.socket.send(serializeWireMessage(outbound));
+    tunnel.socket.send(encodeWireMessage(outbound));
 
     try {
       const tunnelResponse = await responsePromise;
@@ -2777,22 +2793,6 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       // Strip hop-by-hop headers first, then additionally block headers that
       // tunnel operators must not be allowed to override on the gateway domain —
       // otherwise a rogue tunnel could poison browser state across the root domain.
-      const BLOCKED_RESPONSE_HEADERS = new Set([
-        "content-security-policy",
-        "content-security-policy-report-only",
-        "strict-transport-security",
-        "x-frame-options",
-        "x-content-type-options",
-        "referrer-policy",
-        "permissions-policy",
-        "set-cookie",
-        "access-control-allow-origin",
-        "access-control-allow-credentials",
-        "access-control-allow-headers",
-        "access-control-allow-methods",
-        "access-control-expose-headers",
-        "access-control-max-age",
-      ]);
       const responseHeaders = filterHopByHopHeaders(tunnelResponse.headers);
       for (const [key, value] of Object.entries(responseHeaders)) {
         if (typeof value !== "undefined" && !BLOCKED_RESPONSE_HEADERS.has(key.toLowerCase())) {
@@ -2854,7 +2854,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       clearInterval(idempotencySweep);
       clearInterval(redirectSweep);
       await app.close();
-      wsServer.close();
+      await new Promise<void>((resolve) => wsServer.close(() => resolve()));
       await store.close();
       await authStore.close();
       await userAuthStore.close();
@@ -2863,6 +2863,4 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     },
   };
 }
-
-
 

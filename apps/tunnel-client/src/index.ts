@@ -20,7 +20,7 @@ type SavedClientConfig = {
   apiKey?: string;
   defaultPort?: number;
   defaultTunnelType?: "http" | "tcp";
-  reconnectMode?: "always" | "once" | "ask";
+  reconnectMode?: "always" | "once";
   heartbeatIntervalMs?: number;
 };
 
@@ -221,15 +221,10 @@ async function runConfigWizard(): Promise<void> {
     [
       "Always reconnect on disconnect",
       "Connect once, exit on disconnect",
-      "Ask before each reconnect",
     ],
-    saved.reconnectMode === "once" ? 1 : saved.reconnectMode === "ask" ? 2 : 0,
+    saved.reconnectMode === "once" ? 1 : 0,
   );
-  const reconnectMode: "always" | "once" | "ask" = reconnectChoice.includes("once")
-    ? "once"
-    : reconnectChoice.includes("Ask")
-      ? "ask"
-      : "always";
+  const reconnectMode: "always" | "once" = reconnectChoice.includes("once") ? "once" : "always";
 
   // Step 6 — Heartbeat interval
   // eslint-disable-next-line no-console
@@ -349,8 +344,8 @@ const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
     return v;
   },
   reconnectMode: (v) => {
-    if (v !== "always" && v !== "once" && v !== "ask")
-      throw new Error("reconnectMode must be 'always', 'once', or 'ask'");
+    if (v !== "always" && v !== "once")
+      throw new Error("reconnectMode must be 'always' or 'once'");
     return v;
   },
   heartbeatIntervalMs: (v) => {

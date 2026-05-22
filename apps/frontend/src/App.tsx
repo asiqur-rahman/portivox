@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GatewayApi, type ApiKeyRecord, type AuditItem, type TcpPortMapping, type TunnelRecord } from "./api";
+import { GatewayApi, type ApiKeyRecord, type AuditItem, type GatewayStatus, type TcpPortMapping, type TunnelRecord } from "./api";
 import "./styles.css";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -32,12 +32,7 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
-interface GatewayStatus {
-  ready: boolean;
-  draining: boolean;
-  maintenanceMode: boolean;
-  activeTunnels: number;
-}
+// GatewayStatus is imported from api.ts — see import above
 
 const PAGE_TITLES: Record<Page, string> = {
   tunnels: "Tunnels",
@@ -66,7 +61,8 @@ const AI_QUICK_ACTIONS = [
   { icon: "ti-clock-play", title: "Auto-close rules", desc: "Stop tunnels automatically after idle timeout", prompt: "How do I configure tunnels to close automatically after 1 hour of inactivity?" },
 ];
 
-let toastSeq = 0;
+// toastSeq is kept as a module-level integer only to seed the initial ref.
+// The ref itself lives inside App — see useRef(0) below.
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -680,7 +676,7 @@ function TunnelsPage({
                           <i className="ti ti-copy" />
                         </div>
                         <div className="icon-btn" title="Open in browser"
-                          onClick={() => window.open(url, "_blank")}>
+                          onClick={() => window.open(url, "_blank", "noreferrer")}>
                           <i className="ti ti-external-link" />
                         </div>
                         <button className="stop-btn" disabled={loading}
@@ -756,7 +752,7 @@ function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: s
               </div>
             </div>
           </div>
-          {user && !user.email.startsWith("anonymous") && (
+          {user && user.email !== "local@anonymous" && (
             <div>
               <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 4 }}>
                 3 — For CI/CD or automation, use an API key
@@ -1483,6 +1479,7 @@ function BillingPage({ showToast }: { showToast: (msg: string, type?: Toast["typ
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (isNaN(s)) return "—";
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -1894,9 +1891,11 @@ function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: 
                       </td>
                       <td style={{ maxWidth: 200 }}>
                         {item.metadata && Object.keys(item.metadata).length > 0
-                          ? <code style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", wordBreak: "break-all" }}>
-                              {JSON.stringify(item.metadata).slice(0, 60)}{JSON.stringify(item.metadata).length > 60 ? "…" : ""}
+                          ? (() => { const metaStr = JSON.stringify(item.metadata); return (
+                            <code style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", wordBreak: "break-all" }}>
+                              {metaStr.slice(0, 60)}{metaStr.length > 60 ? "…" : ""}
                             </code>
+                          ); })()
                           : <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>}
                       </td>
                       <td style={{ color: "var(--text-3)", fontSize: 12, whiteSpace: "nowrap" }}
@@ -2109,7 +2108,7 @@ function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
 // ─── AdminTcpPage ─────────────────────────────────────────────────────────────
 
 function NewTcpMappingModal({ onCreate, onClose }: {
-  onCreate: (data: { name: string; localPort: number; publicPort: number; description?: string }) => void;
+  onCreate: (data: { name: string; localPort: number; publicPort: number; description?: string }, onDone: () => void) => void;
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
@@ -2123,7 +2122,10 @@ function NewTcpMappingModal({ onCreate, onClose }: {
     const pp = parseInt(publicPort, 10);
     if (!name.trim() || !lp || !pp) return;
     setSaving(true);
-    onCreate({ name: name.trim(), localPort: lp, publicPort: pp, description: description.trim() || undefined });
+    onCreate(
+      { name: name.trim(), localPort: lp, publicPort: pp, description: description.trim() || undefined },
+      () => setSaving(false),
+    );
   }
 
   return (
@@ -2185,14 +2187,20 @@ function AdminTcpPage({ api, showToast, onConfirm }: {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  function handleCreate(data: { name: string; localPort: number; publicPort: number; description?: string }) {
+  function handleCreate(
+    data: { name: string; localPort: number; publicPort: number; description?: string },
+    onDone: () => void,
+  ) {
     api.createTcpPortMapping(data)
       .then((m) => {
         setMappings((prev) => [m, ...prev]);
         setShowCreate(false);
         showToast(`TCP mapping "${m.name}" created`, "green");
       })
-      .catch((e: unknown) => showToast(e instanceof Error ? e.message : "Create failed", "red"));
+      .catch((e: unknown) => {
+        showToast(e instanceof Error ? e.message : "Create failed", "red");
+        onDone();
+      });
   }
 
   function requestDelete(id: string, name: string) {
@@ -2347,9 +2355,10 @@ export function App() {
 
   // ── Toasts ─────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastSeq = useRef(0);
 
   const showToast = useCallback((message: string, type: Toast["type"] = "default") => {
-    const id = ++toastSeq;
+    const id = ++toastSeq.current;
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3200);
   }, []);
@@ -2519,6 +2528,13 @@ export function App() {
     setApiKeys([]);
     setCurrentPage("tunnels");
     setAiInsightVisible(true);
+    // Clear auth form state so credentials don't persist after logout
+    setLoginEmail("");
+    setLoginPassword("");
+    setRegEmail("");
+    setRegPassword("");
+    setRegFirstName("");
+    setRegLastName("");
     setScreen("auth");
     showToast("Signed out");
   };

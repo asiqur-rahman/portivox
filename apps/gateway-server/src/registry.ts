@@ -1,7 +1,6 @@
 ﻿import crypto from "node:crypto";
 import type WebSocket from "ws";
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Redis = require("ioredis");
+import Redis from "ioredis";
 
 type SessionLease = {
   token: string;
@@ -79,7 +78,8 @@ class RedisRegistryBackend implements RegistryBackend {
   private readonly keyPrefix: string;
 
   constructor(redisUrl: string, keyPrefix: string) {
-    this.redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 });
+    // Cast to the narrow interface — we only use set/eval/connect from the full ioredis client.
+    this.redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 }) as unknown as typeof this.redis;
     this.keyPrefix = keyPrefix;
   }
 
@@ -201,7 +201,8 @@ export class TunnelRegistry {
     void this.backend.heartbeat(subdomain, session.leaseToken, this.leaseTtlMs).catch((err) => {
       // best-effort heartbeat refresh; request path remains available via local map,
       // but log failures so backend divergence is observable
-      console.warn("[registry] backend heartbeat failed", { subdomain, err: String(err) });
+      // best-effort; log to stderr so structured-log pipelines can pick it up
+      process.stderr.write(`[registry] backend heartbeat failed: subdomain=${subdomain} err=${String(err)}\n`);
     });
   }
 

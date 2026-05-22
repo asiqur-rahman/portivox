@@ -2,6 +2,7 @@
   "name": "@portivox/frontend",
   "private": true,
   "version": "0.1.0",
+  "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "type": "module",
   "scripts": {
     "dev": "vite",

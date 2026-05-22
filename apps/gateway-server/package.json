@@ -2,12 +2,14 @@
   "name": "@portivox/gateway-server",
   "version": "0.1.0",
   "private": true,
+  "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@prisma/client": "^6.8.2",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^4.2.0",
     "fastify": "^4.28.1",

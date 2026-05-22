@@ -2,6 +2,7 @@
   "name": "@portivox/tunnel-client",
   "version": "0.1.0",
   "private": true,
+  "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "main": "dist/index.js",
   "bin": {
     "portivox": "dist/index.js"

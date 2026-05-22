@@ -1,6 +1,9 @@
 # Portivox
 
-Portivox lets you expose local services over **HTTP** and **raw TCP** (SSH/RDP ready).
+> **Author:** [Md. Asiqur Rahman Khan](https://github.com/asiqur-rahman)  
+> **License:** MIT
+
+Portivox is a self-hosted, open-source tunnel gateway that exposes local services over **HTTP** and **raw TCP** (SSH, RDP, databases) — your own ngrok, under your full control.
 
 ## Security Documentation
 
@@ -53,9 +56,9 @@ npm run docker:prod:up
 npm run docker:prod:down
 ```
 
-### Database Provider (PostgreSQL or MySQL)
+### Database Provider (MySQL or PostgreSQL)
 
-- Choose provider with `DB_PROVIDER` (`postgresql` default, or `mysql`).
+- Choose provider with `DB_PROVIDER` (`mysql` default, or `postgresql`).
 - Keep one DB connection entry only: `DATABASE_URL`.
 - Prisma commands auto-select schema by provider.
 

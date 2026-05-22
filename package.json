@@ -2,6 +2,8 @@
   "name": "portivox-platform",
   "private": true,
   "version": "0.1.0",
+  "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
+  "license": "MIT",
   "bin": {
     "portivox": "apps/tunnel-client/dist/index.js"
   },
@@ -55,20 +57,18 @@
     "docker:dev:up": "docker compose up -d --build",
     "docker:dev:down": "docker compose down --remove-orphans",
     "docker:dev:logs": "docker compose logs -f",
-    "docker:prod:up": "docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build",
-    "docker:prod:down": "docker compose -f docker-compose.prod.yml --env-file .env.production down --remove-orphans",
-    "docker:prod:logs": "docker compose -f docker-compose.prod.yml --env-file .env.production logs -f",
+    "docker:prod:up": "docker compose up -d --build",
+    "docker:prod:down": "docker compose down --remove-orphans",
+    "docker:prod:logs": "docker compose logs -f",
     "start:gateway:win": "scripts\\start-gateway.cmd",
     "start:client:win": "scripts\\start-client.cmd",
     "start:gateway:linux": "bash ./scripts/start-gateway.sh",
     "start:client:linux": "bash ./scripts/start-client.sh",
     "portivox": "node ./scripts/portivox-cli.cjs"
   },
-  "dependencies": {
-    "@prisma/client": "^6.8.2",
-    "jsonwebtoken": "^9.0.2"
-  },
   "devDependencies": {
+    "@prisma/client": "^6.8.2",
+    "jsonwebtoken": "^9.0.2",
     "prisma": "^6.8.2"
   }
 }

@@ -16,6 +16,7 @@ export type TunnelClientConfig = {
   maxResponseBodyBytes: number;
   responseChunkBytes?: number;
   wsHeaders?: Record<string, string>;
+  heartbeatIntervalMs?: number;
 };
 
 export class TunnelClient {
@@ -75,7 +76,8 @@ export class TunnelClient {
       let msg: WireMessage;
       try {
         msg = decodeWireMessage(String(raw));
-      } catch {
+      } catch (err) {
+        this.logger.warn(`Received unparseable gateway frame: ${String(err)}`);
         return;
       }
 
@@ -132,7 +134,8 @@ export class TunnelClient {
       this.scheduleReconnect();
     });
 
-    this.socket.on("error", () => {
+    this.socket.on("error", (err) => {
+      this.logger.warn(`WebSocket error: ${err.message}`);
       this.stopHeartbeat();
     });
   }
@@ -148,7 +151,7 @@ export class TunnelClient {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       this.send({ type: "heartbeat", at: Date.now() });
-    }, 5000);
+    }, this.config.heartbeatIntervalMs ?? 5000);
   }
 
   private stopHeartbeat(): void {

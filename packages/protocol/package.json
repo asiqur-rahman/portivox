@@ -1,6 +1,7 @@
 {
   "name": "portivox-protocol",
   "version": "0.1.0",
+  "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "main": "src/index.ts"
 }
 
