@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import net from "node:net";
@@ -67,6 +67,8 @@ export type GatewayRuntimeConfig = {
   tcpConnectionRateLimit?: number;
   /** Public-facing base URL used to build access links and redirect URLs (e.g. https://portivox.example.com). */
   gatewayPublicBaseUrl?: string;
+  /** Optional static bearer token required to access /metrics. Leave unset to keep metrics open (e.g. for internal scraping). */
+  metricsToken?: string;
 };
 
 type Principal = {
@@ -97,6 +99,9 @@ type IpAccessEntry = {
 /** Stable tunnel status record keyed by the /r/:token URL. */
 type RedirectEntry = {
   tunnelKey: string;
+  /** userId of the principal who originally created this redirect entry.
+   *  Used to prevent redirect token takeover by other authenticated users. */
+  userId?: string;
   tunnelType: "http" | "tcp";
   subdomain?: string;
   publicTcpPort?: number;
@@ -513,7 +518,26 @@ class AuditSink {
 
   constructor(config: AuditSinkConfig) {
     this.jsonlPath = config.jsonlPath && config.jsonlPath.trim() ? config.jsonlPath.trim() : null;
-    this.webhookUrl = config.webhookUrl && config.webhookUrl.trim() ? config.webhookUrl.trim() : null;
+    // Validate webhook URL: only https:// scheme allowed, and the target must
+    // not resolve to a loopback, link-local, or RFC-1918 private address.
+    const rawWebhookUrl = config.webhookUrl && config.webhookUrl.trim() ? config.webhookUrl.trim() : null;
+    let validatedWebhookUrl: string | null = rawWebhookUrl;
+    if (rawWebhookUrl) {
+      try {
+        const parsed = new URL(rawWebhookUrl);
+        if (parsed.protocol !== "https:") {
+          throw new Error(`Webhook URL must use https:// scheme (got ${parsed.protocol})`);
+        }
+        const blockedPatterns = [/^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^::1$/, /^0\.0\.0\.0$/];
+        if (blockedPatterns.some((re) => re.test(parsed.hostname))) {
+          throw new Error(`Webhook URL must not target a private/loopback address (${parsed.hostname})`);
+        }
+      } catch (err) {
+        console.error(`[audit-sink] Invalid AUDIT_EXPORT_WEBHOOK_URL — webhook delivery disabled: ${err instanceof Error ? err.message : String(err)}`);
+        validatedWebhookUrl = null;
+      }
+    }
+    this.webhookUrl = validatedWebhookUrl;
     this.webhookTimeoutMs = config.webhookTimeoutMs;
     this.webhookSecret = config.webhookSecret && config.webhookSecret.trim() ? config.webhookSecret.trim() : null;
     this.webhookMaxRetries = config.webhookMaxRetries;
@@ -595,7 +619,9 @@ class AuditSink {
     const payload = JSON.stringify(event);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.webhookSecret) {
-      const signature = createHash("sha256").update(`${this.webhookSecret}.${payload}`).digest("hex");
+      // Use HMAC-SHA256 (not plain SHA-256) so the signature is keyed and not
+      // vulnerable to length-extension attacks.
+      const signature = createHmac("sha256", this.webhookSecret).update(payload).digest("hex");
       headers["x-portivox-signature"] = `sha256=${signature}`;
     }
     try {
@@ -982,8 +1008,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
 
     // Fall back to anonymous when auth is not required and no valid credentials were provided.
+    // Anonymous users get minimal scopes only — never wildcard or admin role.
     if (!config.authRequired) {
-      return { userId: "anonymous", authType: "anonymous", scopes: ["*"], role: "admin" };
+      return { userId: "anonymous", authType: "anonymous", scopes: ["tunnel:create", "tunnel:read", "tunnel:delete"], role: "owner" };
     }
 
     return null;
@@ -1368,12 +1395,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             // the same /r/:token entry so bookmarks/scripts stay valid.
             let redirectToken: string;
             const incomingRToken = requestMessage.redirectToken;
-            if (incomingRToken && redirectByToken.has(incomingRToken)) {
+            const existingREntry = incomingRToken ? redirectByToken.get(incomingRToken) : undefined;
+            // Only reuse the redirect token if the same user owns it — prevents
+            // one authenticated user from hijacking another's stable redirect URL.
+            if (incomingRToken && existingREntry && (!existingREntry.userId || existingREntry.userId === principal.userId)) {
               redirectToken = incomingRToken;
-              const existing = redirectByToken.get(redirectToken)!;
-              existing.connected = false;  // will be marked true after bind
-              existing.disconnectedAt = undefined;
-              existing.accessLink = accessLink;
+              existingREntry.connected = false;  // will be marked true after bind
+              existingREntry.disconnectedAt = undefined;
+              existingREntry.accessLink = accessLink;
             } else {
               redirectToken = randomBytes(16).toString("base64url");
             }
@@ -1392,6 +1421,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               // Store/update the redirect entry after we have the public host.
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: syntheticKey,
+                userId: principal.userId,
                 tunnelType: "tcp",
                 createdAt: Date.now(),
                 connected: false,
@@ -1436,11 +1466,12 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             // ── Stable redirect URL (all tunnel types) ──────────────────────
             let redirectToken: string;
             const incomingRToken = requestMessage.redirectToken;
-            if (incomingRToken && redirectByToken.has(incomingRToken)) {
+            const existingNormalREntry = incomingRToken ? redirectByToken.get(incomingRToken) : undefined;
+            // Only reuse the redirect token if the same user owns it.
+            if (incomingRToken && existingNormalREntry && (!existingNormalREntry.userId || existingNormalREntry.userId === principal.userId)) {
               redirectToken = incomingRToken;
-              const existing = redirectByToken.get(redirectToken)!;
-              existing.connected = false;
-              existing.disconnectedAt = undefined;
+              existingNormalREntry.connected = false;
+              existingNormalREntry.disconnectedAt = undefined;
             } else {
               redirectToken = randomBytes(16).toString("base64url");
             }
@@ -1468,6 +1499,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
                 const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                   tunnelKey: subdomain,
+                  userId: principal.userId,
                   tunnelType: "tcp",
                   createdAt: Date.now(),
                   connected: false,
@@ -1503,6 +1535,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               // HTTP tunnel — redirect URL only, no IP protection
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: subdomain,
+                userId: principal.userId,
                 tunnelType: "http",
                 createdAt: Date.now(),
                 connected: false,
@@ -1557,6 +1590,21 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               finalIndex: chunkMeta.final ? chunkMeta.index : undefined,
               meta: msg.meta,
             };
+            // Guard: validate chunk index is a safe non-negative integer to
+            // prevent a malicious client from sending index = Number.MAX_SAFE_INTEGER
+            // which would prevent assembly from completing.
+            const chunkIndex = chunkMeta.index;
+            const MAX_CHUNKS = Math.ceil(config.maxRequestBodyBytes / 1024) + 1;
+            if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= MAX_CHUNKS) {
+              app.log.warn({ streamId: msg.streamId, chunkIndex }, "chunk index out of valid range — dropping stream");
+              const timeoutBad = streamTimeouts.get(msg.streamId);
+              if (timeoutBad) { clearTimeout(timeoutBad); streamTimeouts.delete(msg.streamId); }
+              responseWaiters.delete(msg.streamId);
+              activeStreamsBySocket.get(socket)?.delete(msg.streamId);
+              responseChunksByStream.delete(msg.streamId);
+              return;
+            }
+
             chunkDiagnostics.chunkFramesReceived += 1;
             metrics.increment("gateway_chunk_frames_total");
             existing.statusCode = msg.statusCode;
@@ -1568,6 +1616,20 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             if (chunkMeta.final) {
               existing.finalIndex = chunkMeta.index;
             }
+
+            const newChunkBytes = Math.ceil(msg.bodyBase64.length * 3 / 4);
+            let totalAccumulated = newChunkBytes;
+            for (const buf of existing.chunks.values()) { totalAccumulated += buf.length; }
+            if (totalAccumulated > config.maxRequestBodyBytes) {
+              app.log.warn({ streamId: msg.streamId, totalAccumulated }, "chunk stream exceeds maxRequestBodyBytes — dropping stream");
+              const timeoutOversized = streamTimeouts.get(msg.streamId);
+              if (timeoutOversized) { clearTimeout(timeoutOversized); streamTimeouts.delete(msg.streamId); }
+              responseWaiters.delete(msg.streamId);
+              activeStreamsBySocket.get(socket)?.delete(msg.streamId);
+              responseChunksByStream.delete(msg.streamId);
+              return;
+            }
+
             existing.chunks.set(chunkMeta.index, Buffer.from(msg.bodyBase64, "base64"));
             responseChunksByStream.set(msg.streamId, existing);
 
@@ -1616,18 +1678,34 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }
 
         if (msg.type === "tcp_data") {
-          const conn = tcpConnectionsById.get(msg.connectionId);
-          if (conn) {
-            conn.write(Buffer.from(msg.dataBase64, "base64"));
+          // Ownership check: only allow the socket that owns this connectionId
+          // to write to it — prevents cross-tenant TCP connection injection.
+          const ownedConnections = tcpConnectionsBySocket.get(socket);
+          if (ownedConnections && ownedConnections.has(msg.connectionId)) {
+            const conn = tcpConnectionsById.get(msg.connectionId);
+            if (conn) {
+              // Size guard: reject oversized data frames to prevent memory-exhaustion DoS.
+              const maxChunkBytes = config.maxRequestBodyBytes * 2;
+              if (msg.dataBase64.length > maxChunkBytes) {
+                app.log.warn({ connectionId: msg.connectionId }, "tcp_data frame exceeds size limit — dropped");
+              } else {
+                conn.write(Buffer.from(msg.dataBase64, "base64"));
+              }
+            }
           }
           return;
         }
 
         if (msg.type === "tcp_close") {
-          const conn = tcpConnectionsById.get(msg.connectionId);
-          if (conn) {
-            tcpConnectionsById.delete(msg.connectionId);
-            conn.destroy();
+          // Ownership check: only allow the socket that owns this connectionId to close it.
+          const ownedConnections = tcpConnectionsBySocket.get(socket);
+          if (ownedConnections && ownedConnections.has(msg.connectionId)) {
+            const conn = tcpConnectionsById.get(msg.connectionId);
+            if (conn) {
+              ownedConnections.delete(msg.connectionId);
+              tcpConnectionsById.delete(msg.connectionId);
+              conn.destroy();
+            }
           }
           return;
         }
@@ -1711,14 +1789,25 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       activeTunnels: registry.count(),
     });
   });
-  app.get("/metrics", async (_req, reply) => {
+  app.get("/metrics", async (req, reply) => {
+    // If METRICS_TOKEN is configured, require a matching Bearer token so that
+    // Prometheus metrics are not publicly accessible on the internet.
+    if (config.metricsToken) {
+      const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+      const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      if (!provided || provided !== config.metricsToken) {
+        reply.header("www-authenticate", "Bearer");
+        return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required for /metrics" } });
+      }
+    }
     reply.header("content-type", "text/plain; version=0.0.4");
     return reply.status(200).send(metrics.renderPrometheus());
   });
-  app.get("/openapi.json", async (req, reply) => {
-    const host = typeof req.headers.host === "string" ? req.headers.host : `localhost:${config.gatewayPort}`;
-    const scheme = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    return reply.status(200).send(buildOpenApiDocument(`${scheme}://${host}`));
+  app.get("/openapi.json", async (_req, reply) => {
+    // Use the configured public base URL instead of reflecting the inbound Host
+    // header — reflecting Host verbatim enables host-header injection attacks.
+    const base = (config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}:${config.gatewayPort}`;
+    return reply.status(200).send(buildOpenApiDocument(base));
   });
 
   app.post("/api/auth/register", async (req, reply) => {
@@ -1807,8 +1896,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
       return reply.status(400).send({ error: { code: "INVALID_BODY", message: "currentPassword and newPassword are required" } });
     }
-    if (body.newPassword.length < 8) {
-      return reply.status(400).send({ error: { code: "PASSWORD_TOO_SHORT", message: "New password must be at least 8 characters" } });
+    if (body.newPassword.length < 8 || body.newPassword.length > 128) {
+      return reply.status(400).send({ error: { code: "PASSWORD_INVALID_LENGTH", message: "New password must be between 8 and 128 characters" } });
     }
     const user = await userAuthStore.findById(principal.userId);
     if (!user) {
@@ -2615,13 +2704,23 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(413).send(errorPayload.body);
     }
 
+    // Strip proxy/forwarded headers supplied by the external caller before
+    // forwarding — the gateway sets these itself from verified request metadata,
+    // preventing clients from spoofing their IP or host to backend apps.
+    const inboundHeaders = filterHopByHopHeaders(req.headers);
+    for (const h of ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded"]) {
+      delete (inboundHeaders as Record<string, unknown>)[h];
+    }
+
     const outbound: HttpRequest = {
       type: "http_request",
       streamId,
       method: req.method,
       path: req.url,
       headers: {
-        ...filterHopByHopHeaders(req.headers),
+        ...inboundHeaders,
+        "x-forwarded-for": req.ip,
+        "x-forwarded-proto": req.headers["x-forwarded-proto"] === "https" ? "https" : "http",
         "x-tunnel-request-id": String(req.id),
       },
       bodyBase64: bodyBuffer.toString("base64"),
@@ -2668,9 +2767,28 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
       metrics.observeRequestLatency(Date.now() - startedAt);
       reply.code(tunnelResponse.statusCode);
+      // Strip hop-by-hop headers first, then additionally block headers that
+      // tunnel operators must not be allowed to override on the gateway domain —
+      // otherwise a rogue tunnel could poison browser state across the root domain.
+      const BLOCKED_RESPONSE_HEADERS = new Set([
+        "content-security-policy",
+        "content-security-policy-report-only",
+        "strict-transport-security",
+        "x-frame-options",
+        "x-content-type-options",
+        "referrer-policy",
+        "permissions-policy",
+        "set-cookie",
+        "access-control-allow-origin",
+        "access-control-allow-credentials",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-expose-headers",
+        "access-control-max-age",
+      ]);
       const responseHeaders = filterHopByHopHeaders(tunnelResponse.headers);
       for (const [key, value] of Object.entries(responseHeaders)) {
-        if (typeof value !== "undefined") {
+        if (typeof value !== "undefined" && !BLOCKED_RESPONSE_HEADERS.has(key.toLowerCase())) {
           reply.header(key, value as string | string[] | number);
         }
       }

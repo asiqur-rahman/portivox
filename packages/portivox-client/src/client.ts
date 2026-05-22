@@ -51,11 +51,15 @@ export class TunnelClient {
 
   private connect(): void {
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
-      localBase: this.config.localBase,
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
+      // localBase intentionally omitted — it may contain internal hostnames
     });
-    this.socket = new WebSocket(this.config.gatewayUrl, { headers: this.config.wsHeaders });
+    this.socket = new WebSocket(this.config.gatewayUrl, {
+      headers: this.config.wsHeaders,
+      // Always enforce TLS certificate verification.
+      rejectUnauthorized: true,
+    });
 
     this.socket.on("open", () => {
       this.reconnectAttempt = 0;
@@ -168,7 +172,24 @@ export class TunnelClient {
   }
 
   private async proxyLocalRequest(msg: Extract<WireMessage, { type: "http_request" }>): Promise<Extract<WireMessage, { type: "http_response" }>[] > {
+    // SSRF guard: absolute URLs in msg.path bypass localBase — reject them.
     const target = new URL(msg.path, this.config.localBase);
+    const localOrigin = new URL(this.config.localBase).origin;
+    if (target.origin !== localOrigin) {
+      this.logger.warn("Rejected gateway request — path resolves outside localBase", {
+        path: msg.path,
+        resolvedOrigin: target.origin,
+        localOrigin,
+      });
+      return [{
+        type: "http_response",
+        streamId: msg.streamId,
+        statusCode: 400,
+        headers: { "content-type": "application/json" },
+        bodyBase64: Buffer.from(JSON.stringify({ error: "Bad request" })).toString("base64"),
+        meta: msg.meta,
+      }];
+    }
     const transport = target.protocol === "https:" ? https : http;
     const outboundHeaders = filterHopByHopHeaders(msg.headers);
     outboundHeaders.host = target.host;
@@ -212,12 +233,14 @@ export class TunnelClient {
       });
 
       req.on("error", (error) => {
+        // Log locally but return a generic error — don't leak internal topology.
+        this.logger.warn("Local upstream request failed", { streamId: msg.streamId, error: error.message });
         resolve([{
           type: "http_response",
           streamId: msg.streamId,
           statusCode: 502,
           headers: { "content-type": "application/json" },
-          bodyBase64: Buffer.from(JSON.stringify({ error: error.message })).toString("base64"),
+          bodyBase64: Buffer.from(JSON.stringify({ error: "Upstream connection failed" })).toString("base64"),
           meta: msg.meta,
         }]);
       });
@@ -231,6 +254,14 @@ export class TunnelClient {
   }
 
   private openTcpConnection(connectionId: string): void {
+    // Cap concurrent TCP connections to prevent gateway-driven resource exhaustion.
+    const MAX_TCP_CONNECTIONS = 256;
+    if (this.tcpConnections.size >= MAX_TCP_CONNECTIONS) {
+      this.logger.warn("TCP connection limit reached — rejecting new connection", { connectionId, limit: MAX_TCP_CONNECTIONS });
+      this.send({ type: "tcp_close", connectionId, reason: "connection_limit_exceeded" });
+      return;
+    }
+
     const host = this.config.localTcpHost ?? "127.0.0.1";
     const port = this.config.localTcpPort ?? Number(new URL(this.config.localBase).port || "0");
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {

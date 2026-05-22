@@ -2,7 +2,7 @@
 #
 # Provides a working dev environment with zero configuration:
 #   - Auth is disabled (no JWT secret required)
-#   - Dev-safe DB passwords baked in (no .env needed)
+#   - Dev-safe DB credentials baked in (no .env needed)
 #   - Sample echo app + auto-tunnel client included for quick smoke tests
 #   - Restart policies disabled (containers stay dead on crash so errors are visible)
 #
@@ -18,21 +18,38 @@ services:
       NODE_ENV: "development"
       AUTH_REQUIRED: "false"
       AUTH_JWT_SECRET: "dev-secret-change-in-production"
-      POSTGRES_PASSWORD: "devpass"
+      DATABASE_URL: "mysql://portivox:devpass@mysql:3306/portivox"
       GATEWAY_PUBLIC_BASE_URL: "http://portivox.braintechsolution.com"
       CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   redis:
     restart: "no"
     ports:
       - "127.0.0.1:6379:6379"
 
-  postgres:
+  # ── MySQL — auth + tunnel metadata ───────────────────────────
+  mysql:
+    image: mysql:8-debian
+    container_name: portivox-mysql
     restart: "no"
     environment:
-      POSTGRES_PASSWORD: "devpass"
+      MYSQL_DATABASE: "portivox"
+      MYSQL_USER: "portivox"
+      MYSQL_PASSWORD: "devpass"
+      MYSQL_ROOT_PASSWORD: "devrootpass"
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "portivox", "--password=devpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ── Demo: local HTTP echo server ─────────────────────────────
   sample-local-app:
@@ -71,3 +88,6 @@ services:
         condition: service_healthy
       sample-local-app:
         condition: service_started
+
+volumes:
+  mysql_data:

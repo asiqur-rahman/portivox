@@ -220,17 +220,30 @@ function NewTunnelModal({
 
 // ─── NewKeyModal ──────────────────────────────────────────────────────────────
 
+const AVAILABLE_SCOPES: { value: string; label: string; desc: string }[] = [
+  { value: "tunnel:create", label: "tunnel:create", desc: "Open new tunnels" },
+  { value: "tunnel:read",   label: "tunnel:read",   desc: "List and view tunnels" },
+  { value: "tunnel:delete", label: "tunnel:delete", desc: "Close and delete tunnels" },
+  { value: "key:manage",    label: "key:manage",    desc: "Create and revoke API keys" },
+];
+
 function NewKeyModal({
   name, setName, scopes, setScopes, loading, onCreate, onClose,
 }: {
   name: string;
   setName: (v: string) => void;
-  scopes: string;
-  setScopes: (v: string) => void;
+  scopes: string[];
+  setScopes: (v: string[]) => void;
   loading: boolean;
   onCreate: () => void;
   onClose: () => void;
 }) {
+  const [dropOpen, setDropOpen] = useState(false);
+
+  const toggleScope = (scope: string) => {
+    setScopes(scopes.includes(scope) ? scopes.filter((s) => s !== scope) : [...scopes, scope]);
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -239,37 +252,134 @@ function NewKeyModal({
           <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
         </div>
         <div className="modal-body">
-          <div style={{ display: "grid", gap: 14 }}>
+          <div style={{ display: "grid", gap: 18 }}>
+
+            {/* Key format preview */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              background: "var(--accent-bg)", border: "1px solid var(--border)",
+              borderRadius: 8, padding: "9px 13px",
+            }}>
+              <i className="ti ti-info-circle" style={{ color: "var(--accent)", fontSize: 15, flexShrink: 0 }} />
+              <span style={{ fontSize: 11.5, color: "var(--text-2)", fontFamily: "var(--mono)" }}>
+                Generated format:&nbsp;
+                <strong style={{ color: "var(--accent)" }}>tk_</strong>
+                <span style={{ color: "var(--text-3)" }}>{"x".repeat(20)}…</span>
+              </span>
+            </div>
+
+            {/* Description (used as key name) */}
             <div>
-              <label className="form-lbl">Key name</label>
+              <label className="form-lbl">Description</label>
               <input
                 className="form-inp"
-                style={{ marginTop: 6, width: "100%" }}
-                placeholder="e.g. ci-cd-deploy"
+                style={{ width: "100%" }}
+                placeholder="e.g. ci-cd-deploy, production-server"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && onCreate()}
+                onKeyDown={(e) => e.key === "Enter" && !dropOpen && onCreate()}
                 autoFocus
               />
-            </div>
-            <div>
-              <label className="form-lbl">Scopes (comma-separated)</label>
-              <input
-                className="form-inp"
-                style={{ marginTop: 6, width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
-                value={scopes}
-                onChange={(e) => setScopes(e.target.value)}
-              />
-              <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 6, lineHeight: 1.5 }}>
-                Available: tunnel:create, tunnel:read, tunnel:delete, key:manage
+              <p style={{ fontSize: 11, color: "var(--text-3)", marginTop: 5, lineHeight: 1.5 }}>
+                A short label to identify this key later
               </p>
             </div>
+
+            {/* Scope multi-select checklist dropdown */}
+            <div>
+              <label className="form-lbl">Permissions</label>
+              <div style={{ position: "relative" }}>
+
+                {/* Trigger */}
+                <div
+                  className="form-inp"
+                  style={{
+                    cursor: "pointer", display: "flex", alignItems: "center",
+                    justifyContent: "space-between", minHeight: 40, userSelect: "none",
+                  }}
+                  onClick={() => setDropOpen((o) => !o)}
+                >
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", flex: 1 }}>
+                    {scopes.length === 0
+                      ? <span style={{ color: "var(--text-3)", fontSize: 12 }}>Select permissions…</span>
+                      : scopes.map((s) => (
+                          <span key={s} className="chip chip-purple" style={{ fontSize: 10 }}>{s}</span>
+                        ))}
+                  </div>
+                  <i
+                    className={`ti ti-chevron-${dropOpen ? "up" : "down"}`}
+                    style={{ fontSize: 13, color: "var(--text-3)", marginLeft: 8, flexShrink: 0 }}
+                  />
+                </div>
+
+                {/* Checklist panel */}
+                {dropOpen && (
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 120,
+                    background: "var(--bg-card)", border: "1px solid var(--border)",
+                    borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.14)", overflow: "hidden",
+                  }}>
+                    {AVAILABLE_SCOPES.map((scope, idx) => {
+                      const checked = scopes.includes(scope.value);
+                      return (
+                        <label
+                          key={scope.value}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12, padding: "11px 14px",
+                            cursor: "pointer", background: checked ? "var(--accent-bg)" : "transparent",
+                            borderBottom: idx < AVAILABLE_SCOPES.length - 1 ? "1px solid var(--border)" : "none",
+                            transition: "background 0.1s",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleScope(scope.value)}
+                            style={{ accentColor: "var(--accent)", width: 15, height: 15, flexShrink: 0 }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{
+                              fontSize: 12.5, fontWeight: 600, fontFamily: "var(--mono)",
+                              color: checked ? "var(--accent)" : "var(--text-1)",
+                            }}>{scope.label}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 1 }}>{scope.desc}</div>
+                          </div>
+                          {checked && <i className="ti ti-check" style={{ fontSize: 13, color: "var(--accent)", flexShrink: 0 }} />}
+                        </label>
+                      );
+                    })}
+                    <div style={{ padding: "9px 14px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border)" }}>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        style={{ width: "100%", fontSize: 12, padding: "6px 0" }}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDropOpen(false); }}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {scopes.length === 0 && (
+                <p style={{ fontSize: 11, color: "var(--red)", marginTop: 5 }}>
+                  Select at least one permission
+                </p>
+              )}
+            </div>
+
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={loading || !name.trim()} onClick={onCreate}>
-            {loading ? <><i className="ti ti-loader-2 spin" /> Generating…</> : <><i className="ti ti-check" /> Generate key</>}
+          <button
+            className="btn-primary"
+            disabled={loading || !name.trim() || scopes.length === 0}
+            onClick={onCreate}
+          >
+            {loading
+              ? <><i className="ti ti-loader-2 spin" /> Generating…</>
+              : <><i className="ti ti-check" /> Generate key</>}
           </button>
         </div>
       </div>
@@ -2231,7 +2341,7 @@ export function App() {
   const [newTunnelSubdomain, setNewTunnelSubdomain] = useState("");
   const [showNewKey, setShowNewKey] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
-  const [newKeyScopes, setNewKeyScopes] = useState("tunnel:create,tunnel:read,tunnel:delete");
+  const [newKeyScopes, setNewKeyScopes] = useState<string[]>(["tunnel:create", "tunnel:read", "tunnel:delete"]);
   const [createdKeyToken, setCreatedKeyToken] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
 
@@ -2486,7 +2596,7 @@ export function App() {
     if (!newKeyName.trim()) { showToast("Enter a key name", "red"); return; }
     setLoading(true);
     api
-      .createApiKey(newKeyName.trim(), newKeyScopes.trim())
+      .createApiKey(newKeyName.trim(), newKeyScopes.join(","))
       .then((result) => {
         if (result.apiKey?.token) setCreatedKeyToken(result.apiKey.token);
         setNewKeyName("");
@@ -2779,7 +2889,7 @@ export function App() {
           setScopes={setNewKeyScopes}
           loading={loading}
           onCreate={createApiKey}
-          onClose={() => { setShowNewKey(false); setNewKeyName(""); }}
+          onClose={() => { setShowNewKey(false); setNewKeyName(""); setNewKeyScopes(["tunnel:create", "tunnel:read", "tunnel:delete"]); }}
         />
       )}
       {confirm && (

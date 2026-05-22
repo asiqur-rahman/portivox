@@ -48,7 +48,9 @@ function readSavedConfig(): SavedClientConfig {
 
 function writeSavedConfig(next: SavedClientConfig): void {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
+  // mode 0o600 = owner read/write only — prevents other users on shared machines
+  // from reading the API key stored in this file.
+  writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
 }
 
 // ── Session helpers ───────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ function readSessions(): SessionEntry[] {
 
 function writeSessions(sessions: SessionEntry[]): void {
   mkdirSync(PORTIVOX_DIR, { recursive: true });
-  writeFileSync(SESSIONS_PATH, JSON.stringify(sessions, null, 2));
+  writeFileSync(SESSIONS_PATH, JSON.stringify(sessions, null, 2), { mode: 0o600 });
 }
 
 function addSession(entry: SessionEntry): void {
@@ -175,10 +177,16 @@ async function runConfigWizard(): Promise<void> {
   // Step 1 — Gateway URL
   // eslint-disable-next-line no-console
   console.log("Step 1/6  Gateway URL");
-  const gatewayUrl = await ask(
+  let gatewayUrl = await ask(
     "  Gateway URL",
     saved.gatewayUrl ?? defaultConfig.gatewayUrl,
   );
+  try {
+    gatewayUrl = validateGatewayUrl(gatewayUrl);
+  } catch (err) {
+    console.warn(`  ⚠  ${err instanceof Error ? err.message : String(err)} — keeping previous value.`);
+    gatewayUrl = saved.gatewayUrl ?? defaultConfig.gatewayUrl;
+  }
 
   // Step 2 — API Key
   // eslint-disable-next-line no-console
@@ -306,8 +314,30 @@ function runConfigReset(): void {
   }
 }
 
+function validateGatewayUrl(v: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(v);
+  } catch {
+    throw new Error("gatewayUrl must be a valid URL (e.g. wss://host:7000/connect)");
+  }
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    throw new Error(`gatewayUrl scheme must be ws:// or wss:// (got ${parsed.protocol})`);
+  }
+  // Warn when a non-loopback plaintext ws:// URL is saved — credentials travel in cleartext.
+  if (parsed.protocol === "ws:") {
+    const host = parsed.hostname.toLowerCase();
+    const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    if (!isLoopback) {
+      console.warn("⚠  WARNING: ws:// transmits your API key and all tunnel traffic in plaintext.");
+      console.warn("   Use wss:// for any non-localhost gateway to protect your credentials.");
+    }
+  }
+  return v;
+}
+
 const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
-  gatewayUrl: (v) => v,
+  gatewayUrl: (v) => validateGatewayUrl(v),
   apiKey: (v) => v,
   defaultPort: (v) => {
     const n = Number(v);

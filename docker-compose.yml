@@ -30,7 +30,7 @@ services:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
       args:
-        DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
+        DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway
     restart: unless-stopped
     environment:
@@ -41,9 +41,7 @@ services:
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      # If DATABASE_URL is set in .env (e.g. MySQL) it wins; otherwise the
-      # PostgreSQL URL is constructed automatically from POSTGRES_PASSWORD.
-      DATABASE_URL: "${DATABASE_URL:-postgresql://portivox:${POSTGRES_PASSWORD}@postgres:5432/portivox?schema=public}"
+      DATABASE_URL: "${DATABASE_URL}"
       MAX_REQUEST_BODY_BYTES: "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
       WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
@@ -76,8 +74,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
 
   # ── Gateway node 2 — optional horizontal scale ───────────────
   gateway-2:
@@ -85,7 +81,7 @@ services:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
       args:
-        DB_PROVIDER: "${DB_PROVIDER:-postgresql}"
+        DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway-2
     profiles: ["scale"]
     restart: unless-stopped
@@ -98,7 +94,7 @@ services:
       GATEWAY_PUBLIC_BASE_URL: "${GATEWAY_PUBLIC_BASE_URL}"
       AUTH_REQUIRED: "${AUTH_REQUIRED:-true}"
       AUTH_JWT_SECRET: "${AUTH_JWT_SECRET}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://portivox:${POSTGRES_PASSWORD}@postgres:5432/portivox?schema=public}"
+      DATABASE_URL: "${DATABASE_URL}"
       MAX_REQUEST_BODY_BYTES: "1048576"
       TUNNEL_RESPONSE_TIMEOUT_MS: "${TUNNEL_RESPONSE_TIMEOUT_MS:-20000}"
       WS_IDLE_TIMEOUT_MS: "${WS_IDLE_TIMEOUT_MS:-30000}"
@@ -118,8 +114,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
 
   # ── Redis — tunnel registry backend ──────────────────────────
   redis:
@@ -137,28 +131,8 @@ services:
     # No host port binding — gateway connects via Docker network.
     # Add "ports: - 127.0.0.1:6379:6379" in docker-compose.override.yml for local GUI access.
 
-  # ── PostgreSQL — auth + tunnel metadata ──────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: portivox-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB:-portivox}"
-      POSTGRES_USER: "${POSTGRES_USER:-portivox}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-portivox} -d ${POSTGRES_DB:-portivox}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    # No host port binding — gateway connects via Docker network.
-    # Add "ports: - 127.0.0.1:5432:5432" in docker-compose.override.yml for local DB client access.
-
 volumes:
   redis_data:
-  postgres_data:
 
 networks:
   default:

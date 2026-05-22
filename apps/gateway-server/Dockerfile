@@ -20,7 +20,7 @@ RUN npm ci
 # ── builder: compile ─────────────────────────────────────────────────────────
 FROM deps AS builder
 COPY . .
-ARG DB_PROVIDER=postgresql
+ARG DB_PROVIDER=mysql
 ENV DB_PROVIDER=${DB_PROVIDER}
 RUN npm run db:generate
 RUN npm run -w apps/gateway-server build
