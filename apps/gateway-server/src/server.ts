@@ -1888,7 +1888,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if (code === "USER_EXISTS") {
         return reply.status(409).send({ error: { code: "USER_EXISTS", message: "User already exists" } });
       }
-      return reply.status(500).send({ error: { code: "REGISTER_FAILED", message: "Registration failed" } });
+      // Log the real error so it shows in gateway console — helps diagnose DB issues
+      app.log.error({ err: error }, "Registration failed");
+      const detail = error instanceof Error ? error.message : String(error);
+      return reply.status(500).send({
+        error: {
+          code: "REGISTER_FAILED",
+          message: process.env.NODE_ENV === "production"
+            ? "Registration failed — check gateway logs"
+            : `Registration failed: ${detail}`,
+        },
+      });
     }
   });
 
@@ -1908,19 +1918,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (!config.authJwtSecret) {
       return reply.status(503).send({ error: { code: "JWT_NOT_CONFIGURED", message: "AUTH_JWT_SECRET is required for registration/login" } });
     }
-    const user = await userAuthStore.findByEmail(body.email);
-    if (!user || !verifyPassword(body.password, user.passwordHash)) {
-      return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
+    try {
+      const user = await userAuthStore.findByEmail(body.email);
+      if (!user || !verifyPassword(body.password, user.passwordHash)) {
+        return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
+      }
+      const scopes = [...DEFAULT_USER_SCOPES];
+      const role: Principal["role"] = "owner";
+      const token = signAccessToken({ sub: user.id, role, scopes }, config.authJwtSecret, "7d");
+      await auditStore.log(user.id, "user_login", "user", user.id, { email: user.email });
+      return reply.status(200).send({
+        user: { id: user.id, email: user.email, role },
+        accessToken: token,
+        tokenType: "Bearer",
+      });
+    } catch (error) {
+      app.log.error({ err: error }, "Login failed");
+      const detail = error instanceof Error ? error.message : String(error);
+      return reply.status(500).send({
+        error: {
+          code: "LOGIN_FAILED",
+          message: process.env.NODE_ENV === "production"
+            ? "Login failed — check gateway logs"
+            : `Login failed: ${detail}`,
+        },
+      });
     }
-    const scopes = [...DEFAULT_USER_SCOPES];
-    const role: Principal["role"] = "owner";
-    const token = signAccessToken({ sub: user.id, role, scopes }, config.authJwtSecret, "7d");
-    await auditStore.log(user.id, "user_login", "user", user.id, { email: user.email });
-    return reply.status(200).send({
-      user: { id: user.id, email: user.email, role },
-      accessToken: token,
-      tokenType: "Bearer",
-    });
   });
 
   app.post("/api/auth/change-password", async (req, reply) => {
