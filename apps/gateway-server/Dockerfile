@@ -15,7 +15,7 @@ COPY packages/logger/package.json          ./packages/logger/
 COPY packages/protocol/package.json        ./packages/protocol/
 COPY packages/sdk/package.json             ./packages/sdk/
 COPY packages/portivox-client/package.json ./packages/portivox-client/
-RUN npm ci
+RUN npm ci || (echo "npm ci failed, retrying..." && sleep 5 && npm ci)
 
 # ── builder: compile ─────────────────────────────────────────────────────────
 FROM deps AS builder

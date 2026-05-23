@@ -29,6 +29,7 @@ services:
     build:
       context: .
       dockerfile: infra/nginx/Dockerfile
+      network: host
     container_name: portivox-nginx
     restart: unless-stopped
     ports:
@@ -42,6 +43,7 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
+      network: host
       args:
         DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway
@@ -95,6 +97,7 @@ services:
     build:
       context: .
       dockerfile: apps/gateway-server/Dockerfile
+      network: host
       args:
         DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway-2
