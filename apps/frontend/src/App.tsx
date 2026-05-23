@@ -996,7 +996,7 @@ function InspectorPage({
 
 function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: string) => void }) {
   const wsUrl = getWsGatewayUrl();
-  const installCmd = "npm install -g portivox";
+  const installCmd = "npm install -g portivox-client";
   const openCmd = `portivox open 3000 --gateway ${wsUrl}`;
   const openWithKeyCmd = `portivox open 3000 --gateway ${wsUrl} --key tk_YOUR_API_KEY`;
 
