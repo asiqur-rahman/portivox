@@ -1346,7 +1346,18 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
 
     metrics.increment("gateway_ws_connections_total");
+
+    // Buffer any frames that arrive while resolvePrincipal is awaiting the DB.
+    // Without this, register_tunnel is silently lost in the race window between
+    // the WebSocket upgrade and the async auth completing, causing the gateway
+    // to see the first heartbeat (5 s later) as the "first message".
+    const pendingFrames: WebSocket.RawData[] = [];
+    const earlyCollector = (raw: WebSocket.RawData): void => { pendingFrames.push(raw); };
+    socket.on("message", earlyCollector);
+
     resolvePrincipal(request.headers as Record<string, unknown>).then((principal) => {
+      socket.off("message", earlyCollector);
+
       if (!principal) {
         void auditStore.log(null, "ws_auth_failed", "tunnel_session", null);
         metrics.increment("gateway_ws_auth_failures_total");
@@ -1371,7 +1382,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
       refreshIdleTimer();
 
-      socket.on("message", async (raw) => {
+      const handleMessage = async (raw: WebSocket.RawData): Promise<void> => {
       refreshIdleTimer();
 
       let msg: WireMessage;
@@ -1754,7 +1765,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           }
           return;
         }
-      });
+      };
+
+      socket.on("message", handleMessage);
+
+      // Replay any frames that arrived during the async auth window so that
+      // register_tunnel is never silently dropped.
+      for (const raw of pendingFrames) {
+        void handleMessage(raw);
+      }
 
       socket.on("close", () => {
         if (socketIdleTimer) {
