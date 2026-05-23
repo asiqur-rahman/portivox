@@ -5,9 +5,10 @@
 set -e
 
 if [ -n "$DATABASE_URL" ]; then
-  echo "[gateway] Running database migrations (DB_PROVIDER=${DB_PROVIDER:-postgresql})..."
+  _provider="${DB_PROVIDER:-mysql}"
+  echo "[gateway] Running database migrations (DB_PROVIDER=${_provider})..."
   node /app/node_modules/.bin/prisma migrate deploy \
-    --schema "/app/prisma/${DB_PROVIDER:-postgresql}/schema.prisma" \
+    --schema "/app/prisma/${_provider}/schema.prisma" \
     && echo "[gateway] Migrations complete."
 fi
 

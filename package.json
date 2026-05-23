@@ -63,6 +63,9 @@
     "start:gateway:win": "scripts\\start-gateway.cmd",
     "start:client:win": "scripts\\start-client.cmd",
     "start:gateway:linux": "bash ./scripts/start-gateway.sh",
+    "deploy": "bash ./scripts/deploy.sh",
+    "deploy:docker": "bash ./scripts/deploy.sh --docker",
+    "deploy:docker:mysql": "bash ./scripts/deploy.sh --docker --with-mysql",
     "start:client:linux": "bash ./scripts/start-client.sh",
     "portivox": "node ./scripts/portivox-cli.cjs"
   },
