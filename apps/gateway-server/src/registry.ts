@@ -258,6 +258,21 @@ export class TunnelRegistry {
   }
 }
 
+// Subdomains that could shadow infrastructure routes, abuse trust, or mislead users.
+const RESERVED_SUBDOMAINS = new Set([
+  "www", "api", "app", "mail", "email", "smtp", "pop", "imap", "ftp", "sftp",
+  "ssh", "rdp", "vpn", "dns", "ns", "ns1", "ns2", "mx", "mx1", "mx2",
+  "admin", "administrator", "portal", "dashboard", "console", "panel",
+  "gateway", "proxy", "tunnel", "relay", "hub",
+  "status", "health", "monitor", "metrics", "logs", "log",
+  "dev", "stg", "staging", "prod", "production", "test", "demo", "sandbox",
+  "cdn", "static", "assets", "media", "files", "storage", "s3",
+  "login", "auth", "sso", "oauth", "register", "signup", "account",
+  "blog", "shop", "store", "pay", "payment", "checkout", "billing",
+  "help", "docs", "support", "forum", "community", "chat",
+  "portivox", "localhost",
+]);
+
 function sanitizeSubdomain(input: string | undefined): string {
   const raw = (input ?? "").trim().toLowerCase();
   if (!raw) {
@@ -269,6 +284,15 @@ function sanitizeSubdomain(input: string | undefined): string {
   }
 
   if (raw.startsWith("-") || raw.endsWith("-")) {
+    return "";
+  }
+
+  // Reject consecutive hyphens (not valid in DNS labels per RFC 5891)
+  if (raw.includes("--")) {
+    return "";
+  }
+
+  if (RESERVED_SUBDOMAINS.has(raw)) {
     return "";
   }
 

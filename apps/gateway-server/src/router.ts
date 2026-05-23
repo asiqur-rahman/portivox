@@ -5,7 +5,11 @@ export function extractSubdomain(hostHeader: string | undefined, rootDomain: str
     return null;
   }
 
-  const host = hostHeader.split(":")[0].trim().toLowerCase();
+  // Strip port and handle IPv6 bracket-notation (e.g. "[::1]:8080" → "::1")
+  const hostNoPort = hostHeader.startsWith("[")
+    ? hostHeader.replace(/^\[([^\]]+)\](?::\d+)?$/, "$1")
+    : hostHeader.split(":")[0];
+  const host = hostNoPort.trim().toLowerCase();
 
   if (host === rootDomain) {
     return null;

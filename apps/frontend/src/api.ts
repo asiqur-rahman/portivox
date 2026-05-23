@@ -2,6 +2,8 @@ export type TunnelRecord = {
   id: string;
   subdomain: string;
   createdAt: string;
+  /** True when a live WebSocket client is currently connected for this subdomain. */
+  active: boolean;
 };
 
 export type ApiKeyRecord = {

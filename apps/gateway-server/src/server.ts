@@ -1983,8 +1983,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
     }
     const tunnels = await store.list(principal.userId);
+    // Enrich each record with a live `active` flag so the UI can distinguish
+    // DB-reserved subdomains from ones with an actual connected client.
+    const enriched = tunnels.map((t) => ({ ...t, active: !!registry.findBySubdomain(t.subdomain) }));
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
-    return reply.status(200).send({ count: tunnels.length, tunnels });
+    return reply.status(200).send({ count: enriched.length, tunnels: enriched });
   });
 
   app.post("/api/tunnels", async (req, reply) => {

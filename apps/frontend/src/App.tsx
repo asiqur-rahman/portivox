@@ -559,11 +559,11 @@ function TunnelsPage({
             <div className="metric-icon"><i className="ti ti-plug-connected" /></div>
             Active tunnels
           </div>
-          <div className="metric-val">{tunnels.length}</div>
+          <div className="metric-val">{tunnels.filter((t) => t.active).length}</div>
           <div className="metric-sub">
-            {tunnels.length > 0
-              ? <span className="up">↑ {tunnels.length} running</span>
-              : "None active"}
+            {tunnels.filter((t) => t.active).length > 0
+              ? <span className="up">↑ {tunnels.filter((t) => t.active).length} connected</span>
+              : tunnels.length > 0 ? `${tunnels.length} reserved, none connected` : "None active"}
           </div>
         </div>
         <div className="metric-card">
@@ -609,8 +609,10 @@ function TunnelsPage({
             <div className="ai-insight-label">AI insight</div>
             <div className="ai-insight-text">
               {tunnels.length === 0
-                ? <>No active tunnels. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
-                : <>You have <strong>{tunnels.length}</strong> active tunnel{tunnels.length !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
+                ? <>No tunnels yet. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
+                : tunnels.filter((t) => t.active).length === 0
+                  ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
+                  : <>You have <strong>{tunnels.filter((t) => t.active).length}</strong> live tunnel{tunnels.filter((t) => t.active).length !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
             </div>
           </div>
           <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
@@ -672,12 +674,18 @@ function TunnelsPage({
                     <td style={{ color: "var(--text-3)", fontSize: 12 }}>
                       {new Date(tunnel.createdAt).toLocaleString()}
                     </td>
-                    <td><span className="status-dot dot-green" />Live</td>
+                    <td>
+                      {tunnel.active
+                        ? <><span className="status-dot dot-green" />Live</>
+                        : <><span className="status-dot dot-gray" /><span style={{ color: "var(--text-3)" }}>Reserved</span></>}
+                    </td>
                     <td>
                       <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                        <div className="icon-btn" title="Inspect traffic" onClick={() => onInspect(tunnel.subdomain)}>
-                          <i className="ti ti-eye" />
-                        </div>
+                        {tunnel.active && (
+                          <div className="icon-btn" title="Inspect traffic" onClick={() => onInspect(tunnel.subdomain)}>
+                            <i className="ti ti-eye" />
+                          </div>
+                        )}
                         <div className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
                           <i className="ti ti-copy" />
                         </div>
@@ -2991,8 +2999,8 @@ export function App() {
                   onClick={() => setCurrentPage(page)}>
                   <i className={`ti ti-${page === "tunnels" ? "topology-star-3" : page === "devices" ? "device-laptop" : "sparkles"}`} />
                   {PAGE_TITLES[page]}
-                  {page === "tunnels" && tunnels.length > 0 && (
-                    <span className="nav-badge">{tunnels.length}</span>
+                  {page === "tunnels" && tunnels.filter((t) => t.active).length > 0 && (
+                    <span className="nav-badge">{tunnels.filter((t) => t.active).length}</span>
                   )}
                 </div>
               ))}

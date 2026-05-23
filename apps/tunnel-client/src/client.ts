@@ -143,6 +143,12 @@ export class TunnelClient {
           this.redirectToken = msg.redirectToken;
         }
         if (msg.subdomain) {
+          const requested = this.config.requestedSubdomain;
+          if (requested && requested !== msg.subdomain) {
+            this.logger.warn(
+              `Requested subdomain '${requested}' was unavailable or reserved — assigned: ${msg.subdomain}`,
+            );
+          }
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
         }
         if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
