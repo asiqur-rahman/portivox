@@ -113,6 +113,23 @@ type RedirectEntry = {
   disconnectedAt?: number;
 };
 
+/** Captured HTTP request/response pair stored in the per-tunnel ring buffer. */
+type CapturedRequest = {
+  id: string;
+  capturedAt: number;
+  durationMs: number | null;
+  method: string;
+  path: string;
+  statusCode: number | null;
+  requestHeaders: Record<string, string | string[] | undefined>;
+  responseHeaders: Record<string, string | string[] | undefined>;
+  requestBodyBase64: string;
+  requestBodyTruncated: boolean;
+  responseBodyBase64: string;
+  responseBodyTruncated: boolean;
+  error: string | null;
+};
+
 class TunnelStore {
   private readonly prisma: PrismaClient | null;
   private readonly memory = new Map<string, TunnelRecord>();
@@ -812,6 +829,12 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
   const usedTcpPorts = new Set<number>();
+
+  // ── Traffic Inspector ─────────────────────────────────────────────────────
+  // Keyed by subdomain → ring buffer of the most recent captured requests.
+  const capturedRequests = new Map<string, CapturedRequest[]>();
+  const MAX_INSPECT_PER_TUNNEL = 200;
+  const MAX_INSPECT_BODY_BYTES = 64 * 1024; // 64 KB body capture limit
 
   // ── IP Link Protection ──────────────────────────────────────────────────────
   // Keyed by the random accessToken. Each entry tracks which IPs have been
@@ -2600,6 +2623,60 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   });
 
   // ---------------------------------------------------------------------------
+  // Traffic Inspector: per-subdomain ring buffer of captured HTTP exchanges.
+  // ---------------------------------------------------------------------------
+
+  /** GET /api/inspect/:subdomain — list captured requests (no bodies, summary view) */
+  app.get("/api/inspect/:subdomain", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    if (!hasScope(principal.scopes, "tunnel:read")) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
+    }
+    const { subdomain } = req.params as { subdomain: string };
+    const ring = capturedRequests.get(subdomain) ?? [];
+    return reply.status(200).send({
+      subdomain,
+      count: ring.length,
+      requests: ring.map(({ requestBodyBase64: _rb, responseBodyBase64: _sb, requestHeaders: _rh, responseHeaders: _sh, ...summary }) => summary),
+    });
+  });
+
+  /** GET /api/inspect/:subdomain/:reqId — full request detail including bodies */
+  app.get("/api/inspect/:subdomain/:reqId", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    if (!hasScope(principal.scopes, "tunnel:read")) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
+    }
+    const { subdomain, reqId } = req.params as { subdomain: string; reqId: string };
+    const ring = capturedRequests.get(subdomain) ?? [];
+    const entry = ring.find((r) => r.id === reqId);
+    if (!entry) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Captured request not found" } });
+    }
+    return reply.status(200).send({ request: entry });
+  });
+
+  /** DELETE /api/inspect/:subdomain — clear the ring buffer for a tunnel */
+  app.delete("/api/inspect/:subdomain", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    if (!isAdminRole(principal.role) && !hasScope(principal.scopes, "tunnel:delete")) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin role or tunnel:delete scope required" } });
+    }
+    const { subdomain } = req.params as { subdomain: string };
+    capturedRequests.delete(subdomain);
+    return reply.status(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
   // IP Link Protection: whitelist caller's IP via one-time access link.
   // Unauthenticated — the token itself is the credential. Rate-limited via the
   // public ingress limiter to prevent token-scanning brute force.
@@ -2727,6 +2804,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(413).send(errorPayload.body);
     }
 
+    // ── Inspector capture ──────────────────────────────────────────────────
+    const reqBodyB64 = bodyBuffer.byteLength > MAX_INSPECT_BODY_BYTES
+      ? bodyBuffer.slice(0, MAX_INSPECT_BODY_BYTES).toString("base64")
+      : bodyBuffer.toString("base64");
+    const captured: CapturedRequest = {
+      id: streamId,
+      capturedAt: startedAt,
+      durationMs: null,
+      method: req.method,
+      path: req.url,
+      statusCode: null,
+      requestHeaders: req.headers as Record<string, string | string[] | undefined>,
+      responseHeaders: {},
+      requestBodyBase64: reqBodyB64,
+      requestBodyTruncated: bodyBuffer.byteLength > MAX_INSPECT_BODY_BYTES,
+      responseBodyBase64: "",
+      responseBodyTruncated: false,
+      error: null,
+    };
+    {
+      const ring = capturedRequests.get(subdomain) ?? [];
+      ring.unshift(captured);
+      if (ring.length > MAX_INSPECT_PER_TUNNEL) ring.length = MAX_INSPECT_PER_TUNNEL;
+      capturedRequests.set(subdomain, ring);
+    }
+
     // Strip proxy/forwarded headers supplied by the external caller before
     // forwarding — the gateway sets these itself from verified request metadata,
     // preventing clients from spoofing their IP or host to backend apps.
@@ -2799,7 +2902,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           reply.header(key, value as string | string[] | number);
         }
       }
-      reply.send(Buffer.from(tunnelResponse.bodyBase64, "base64"));
+      const respBody = Buffer.from(tunnelResponse.bodyBase64, "base64");
+      captured.durationMs = Date.now() - startedAt;
+      captured.statusCode = tunnelResponse.statusCode;
+      captured.responseHeaders = responseHeaders as Record<string, string | string[] | undefined>;
+      captured.responseBodyBase64 = respBody.byteLength > MAX_INSPECT_BODY_BYTES
+        ? respBody.slice(0, MAX_INSPECT_BODY_BYTES).toString("base64")
+        : tunnelResponse.bodyBase64;
+      captured.responseBodyTruncated = respBody.byteLength > MAX_INSPECT_BODY_BYTES;
+      reply.send(respBody);
     } catch (error) {
       const timeout = streamTimeouts.get(streamId);
       if (timeout) {
@@ -2807,6 +2918,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         streamTimeouts.delete(streamId);
       }
       const code = error instanceof Error ? error.message : "UNKNOWN_STREAM_ERROR";
+      captured.durationMs = Date.now() - startedAt;
+      captured.error = code;
       if (code === "TUNNEL_STREAM_LIMIT_EXCEEDED") {
         metrics.increment("gateway_request_errors_total");
         metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint: "tunnel_ingress", error_code: "TUNNEL_STREAM_LIMIT_EXCEEDED" });

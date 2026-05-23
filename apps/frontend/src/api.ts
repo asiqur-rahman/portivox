@@ -51,6 +51,25 @@ export type ChunkDiagnostics = {
   chunkIncompleteTimeouts: number;
 };
 
+export type CapturedRequestSummary = {
+  id: string;
+  capturedAt: number;
+  durationMs: number | null;
+  method: string;
+  path: string;
+  statusCode: number | null;
+  requestBodyTruncated: boolean;
+  responseBodyTruncated: boolean;
+  error: string | null;
+};
+
+export type CapturedRequestDetail = CapturedRequestSummary & {
+  requestHeaders: Record<string, string | string[] | undefined>;
+  responseHeaders: Record<string, string | string[] | undefined>;
+  requestBodyBase64: string;
+  responseBodyBase64: string;
+};
+
 export type AuthResponse = {
   user: { id: string; email: string; role: "owner" | "admin" | "viewer" };
   accessToken: string;
@@ -176,6 +195,18 @@ export class GatewayApi {
 
   async deleteTcpPortMapping(id: string): Promise<void> {
     await this.request(`/api/admin/tcp-port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async listInspectorRequests(subdomain: string): Promise<{ subdomain: string; count: number; requests: CapturedRequestSummary[] }> {
+    return this.request(`/api/inspect/${encodeURIComponent(subdomain)}`, { method: "GET" });
+  }
+
+  async getInspectorRequest(subdomain: string, reqId: string): Promise<{ request: CapturedRequestDetail }> {
+    return this.request(`/api/inspect/${encodeURIComponent(subdomain)}/${encodeURIComponent(reqId)}`, { method: "GET" });
+  }
+
+  async clearInspectorRequests(subdomain: string): Promise<void> {
+    await this.request(`/api/inspect/${encodeURIComponent(subdomain)}`, { method: "DELETE" });
   }
 
   private async request<T = unknown>(path: string, init: RequestInit & { authOverride?: GatewayAuth }): Promise<T> {
