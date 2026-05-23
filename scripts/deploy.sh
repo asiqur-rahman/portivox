@@ -7,11 +7,9 @@
 # -----
 #   bash scripts/deploy.sh              # bare-metal deploy (default)
 #   bash scripts/deploy.sh --docker     # Docker Compose deploy
-#   bash scripts/deploy.sh --docker --with-mysql   # Docker + local MySQL container
 #
 # Flags (all optional)
 #   --docker           Use Docker Compose instead of bare-metal Node
-#   --with-mysql       Include docker-compose.mysql.yml (local MySQL container)
 #   --skip-pull        Skip `git pull` (useful if you pushed files manually)
 #   --skip-build       Skip TypeScript compile (saves time if only .env changed)
 #   --skip-migrate     Skip DB migrations (not recommended)
@@ -27,7 +25,7 @@
 #   - .env present at the repo root
 #
 # The script is safe to run multiple times. Every step is idempotent:
-#   - `prisma migrate deploy` is a no-op when all migrations are applied
+#   - `prisma migrate deploy` is a no-op when all migrations are already applied
 #   - `npm ci` uses the lock-file exactly
 #   - PM2 `reload` performs a zero-downtime restart when possible
 # =============================================================================
@@ -44,7 +42,6 @@ die()  { echo -e "${RED}[deploy] ✘${NC}  $*" >&2; exit 1; }
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 USE_DOCKER=false
-WITH_MYSQL=false
 SKIP_PULL=false
 SKIP_BUILD=false
 SKIP_MIGRATE=false
@@ -52,11 +49,10 @@ BRANCH="main"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --docker)       USE_DOCKER=true    ;;
-    --with-mysql)   WITH_MYSQL=true    ;;
-    --skip-pull)    SKIP_PULL=true     ;;
-    --skip-build)   SKIP_BUILD=true    ;;
-    --skip-migrate) SKIP_MIGRATE=true  ;;
+    --docker)       USE_DOCKER=true   ;;
+    --skip-pull)    SKIP_PULL=true    ;;
+    --skip-build)   SKIP_BUILD=true   ;;
+    --skip-migrate) SKIP_MIGRATE=true ;;
     --branch)       BRANCH="$2"; shift ;;
     *) die "Unknown flag: $1" ;;
   esac
@@ -93,18 +89,12 @@ fi
 # ── Docker path ───────────────────────────────────────────────────────────────
 if $USE_DOCKER; then
 
-  COMPOSE_FILES=(-f docker-compose.yml)
-  if $WITH_MYSQL; then
-    COMPOSE_FILES+=(-f docker-compose.mysql.yml)
-    log "Including docker-compose.mysql.yml (local MySQL container)"
-  fi
-
   log "Building and starting containers..."
-  docker compose "${COMPOSE_FILES[@]}" up --build -d
+  docker compose up --build -d
 
   log "Waiting for gateway health-check..."
   RETRIES=30
-  until docker compose "${COMPOSE_FILES[@]}" exec -T gateway \
+  until docker compose exec -T gateway \
       node -e "const h=require('node:http');const r=h.get('http://127.0.0.1:8080/healthz',res=>{process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));" 2>/dev/null; do
     RETRIES=$((RETRIES - 1))
     [[ $RETRIES -le 0 ]] && die "Gateway failed to become healthy. Run: docker compose logs gateway"
@@ -113,7 +103,7 @@ if $USE_DOCKER; then
 
   ok "Gateway is healthy."
   log "Container status:"
-  docker compose "${COMPOSE_FILES[@]}" ps
+  docker compose ps
   exit 0
 fi
 
@@ -170,7 +160,6 @@ if command -v pm2 >/dev/null 2>&1; then
     pm2 reload ecosystem.config.cjs --update-env
     ok "Gateway reloaded via PM2 (zero-downtime)."
   else
-    # First start — register the app and save the process list
     pm2 start ecosystem.config.cjs
     pm2 save
     ok "Gateway started via PM2 (first start)."
@@ -193,12 +182,10 @@ else
   PIDFILE="${ROOT_DIR}/logs/gateway.pid"
   mkdir -p "${ROOT_DIR}/logs"
 
-  # Kill the running process if it exists
   if [[ -f "$PIDFILE" ]]; then
     OLD_PID=$(cat "$PIDFILE")
     if kill -0 "$OLD_PID" 2>/dev/null; then
       kill -SIGTERM "$OLD_PID"
-      # Wait up to 10s for graceful exit
       for _ in $(seq 1 10); do
         kill -0 "$OLD_PID" 2>/dev/null || break
         sleep 1
@@ -207,7 +194,6 @@ else
     fi
   fi
 
-  # Start fresh in the background, capture PID
   LOG_OUT="${ROOT_DIR}/logs/gateway-out.log"
   LOG_ERR="${ROOT_DIR}/logs/gateway-err.log"
   nohup node apps/gateway-server/dist/index.js \
