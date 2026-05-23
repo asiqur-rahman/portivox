@@ -29,7 +29,11 @@
       "Bash(cd /mnt/d/RnD/Project_Tunnelix && find . -name \"portivox-config\" -o -name \"portivox-logger\" 2>/dev/null | head -20)",
       "Bash(xargs grep -l '\"name\"')",
       "Bash(wsl.exe --list --running)",
-      "Bash(del \"D:\\\\RnD\\\\Project_Tunnelix\\\\docker-compose.override.yml\")"
+      "Bash(del \"D:\\\\RnD\\\\Project_Tunnelix\\\\docker-compose.override.yml\")",
+      "Bash(npx -w apps/gateway-server tsc -p apps/gateway-server/tsconfig.json)",
+      "Bash(npx -w apps/tunnel-client tsc -p apps/tunnel-client/tsconfig.json)",
+      "Bash(npx -w apps/frontend tsc -p apps/frontend/tsconfig.json)",
+      "Bash(node_modules\\\\.bin\\\\tsc -p tsconfig.json)"
     ]
   }
 }
