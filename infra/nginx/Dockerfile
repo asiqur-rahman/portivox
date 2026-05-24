@@ -22,7 +22,7 @@ RUN npm run -w apps/frontend build
 # ── Stage 2: nginx runner ─────────────────────────────────────
 FROM nginx:1.27-alpine AS runner
 
-COPY infra/nginx/nginx.conf    /etc/nginx/nginx.conf
+COPY infra/nginx/nginx.conf    /etc/nginx/nginx.conf.template
 COPY infra/nginx/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
