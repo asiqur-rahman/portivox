@@ -5,6 +5,7 @@ import "./styles.css";
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "";
+const INSTALL_PROMPT_REMIND_MS = 3 * 24 * 60 * 60 * 1000;
 
 type Page = "tunnels" | "devices" | "ai" | "usage" | "api" | "org" | "settings" | "billing"
   | "admin:overview" | "admin:audit" | "admin:gateway" | "admin:tcp"
@@ -33,6 +34,11 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
+
 // GatewayStatus is imported from api.ts — see import above
 
 const PAGE_TITLES: Record<Page, string> = {
@@ -53,6 +59,24 @@ const PAGE_TITLES: Record<Page, string> = {
 
 function isAdminPage(p: Page): boolean { return p.startsWith("admin:"); }
 function hasAdminRole(role?: string): boolean { return role === "admin" || role === "owner"; }
+
+function isStandaloneMode(): boolean {
+  const mediaStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches ?? false;
+  const iosStandalone = "standalone" in window.navigator && Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
+  return mediaStandalone || iosStandalone;
+}
+
+function shouldSuppressInstallPrompt(): boolean {
+  try {
+    const raw = localStorage.getItem("ptx-install-dismissed-at");
+    if (!raw) return false;
+    const dismissedAt = Number(raw);
+    if (!Number.isFinite(dismissedAt)) return false;
+    return Date.now() - dismissedAt < INSTALL_PROMPT_REMIND_MS;
+  } catch {
+    return false;
+  }
+}
 
 const AI_QUICK_ACTIONS = [
   { icon: "ti-plug", title: "Expose local port", desc: "Share a dev server via a secure tunnel", prompt: "How do I expose my local port 3000 to the internet?" },
@@ -156,6 +180,45 @@ function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onClose
             ? <button className="btn-danger" onClick={onConfirm}>{confirmLabel}</button>
             : <button className="btn-primary" onClick={onConfirm}>{confirmLabel}</button>
           }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InstallPromptModal({
+  canInstallDirectly,
+  onInstall,
+  onDismiss,
+}: {
+  canInstallDirectly: boolean;
+  onInstall: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onDismiss}>
+      <div className="modal install-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title"><i className="ti ti-download" /> Install Portivox App</div>
+          <div className="icon-btn" onClick={onDismiss}><i className="ti ti-x" /></div>
+        </div>
+        <div className="modal-body">
+          <p className="install-modal-copy">
+            Install Portivox for faster access, desktop/mobile app experience, and better offline readiness.
+          </p>
+          {!canInstallDirectly && (
+            <div className="install-help">
+              <strong>Manual install</strong>
+              <span>Browser menu → “Install app” / “Add to Home Screen”.</span>
+            </div>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn-ghost" onClick={onDismiss}>Later</button>
+          <button className="btn-primary" onClick={onInstall}>
+            <i className="ti ti-device-mobile-down" />
+            {canInstallDirectly ? "Install now" : "Got it"}
+          </button>
         </div>
       </div>
     </div>
@@ -551,6 +614,13 @@ function TunnelsPage({
   onCopy: (text: string) => void;
   onInspect: (subdomain: string) => void;
 }) {
+  const activeCount = tunnels.filter((t) => t.active).length;
+  const onboardingSteps = [
+    { label: "Reserve a subdomain", done: tunnels.length > 0 },
+    { label: "Run `portivox register <API_KEY>`", done: tunnels.length > 0 },
+    { label: "Open a tunnel with `portivox open <port>`", done: activeCount > 0 },
+  ];
+
   return (
     <div className="page">
       <div className="metrics">
@@ -559,10 +629,10 @@ function TunnelsPage({
             <div className="metric-icon"><i className="ti ti-plug-connected" /></div>
             Active tunnels
           </div>
-          <div className="metric-val">{tunnels.filter((t) => t.active).length}</div>
+          <div className="metric-val">{activeCount}</div>
           <div className="metric-sub">
-            {tunnels.filter((t) => t.active).length > 0
-              ? <span className="up">↑ {tunnels.filter((t) => t.active).length} connected</span>
+            {activeCount > 0
+              ? <span className="up">↑ {activeCount} connected</span>
               : tunnels.length > 0 ? `${tunnels.length} reserved, none connected` : "None active"}
           </div>
         </div>
@@ -612,10 +682,26 @@ function TunnelsPage({
                 ? <>No tunnels yet. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
                 : tunnels.filter((t) => t.active).length === 0
                   ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
-                  : <>You have <strong>{tunnels.filter((t) => t.active).length}</strong> live tunnel{tunnels.filter((t) => t.active).length !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
+                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
             </div>
           </div>
           <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
+        </div>
+      )}
+
+      {activeCount === 0 && (
+        <div className="section">
+          <div className="section-head">
+            <div className="section-title"><i className="ti ti-list-check" /> Quick onboarding</div>
+          </div>
+          <div className="onboarding-list">
+            {onboardingSteps.map((step) => (
+              <div key={step.label} className={`onboarding-step ${step.done ? "done" : ""}`}>
+                <i className={`ti ti-${step.done ? "circle-check" : "circle-dashed"}`} />
+                <span>{step.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -632,7 +718,14 @@ function TunnelsPage({
           </div>
         </div>
 
-        {tunnels.length === 0 ? (
+        {loading && tunnels.length === 0 ? (
+          <div className="skeleton-wrap">
+            <div className="skeleton-line w-40" />
+            <div className="skeleton-line w-90" />
+            <div className="skeleton-line w-75" />
+            <div className="skeleton-line w-60" />
+          </div>
+        ) : tunnels.length === 0 ? (
           <div className="empty">
             <i className="ti ti-topology-star-3" />
             <div className="empty-title">No active tunnels</div>
@@ -1362,7 +1455,13 @@ function ApiKeysPage({
           </div>
         </div>
 
-        {activeKeys.length === 0 ? (
+        {loading && activeKeys.length === 0 ? (
+          <div className="skeleton-wrap">
+            <div className="skeleton-line w-45" />
+            <div className="skeleton-line w-90" />
+            <div className="skeleton-line w-80" />
+          </div>
+        ) : activeKeys.length === 0 ? (
           <div className="empty">
             <i className="ti ti-key" />
             <div className="empty-title">No API keys yet</div>
@@ -2612,6 +2711,34 @@ export function App() {
     localStorage.setItem("ptx-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event as BeforeInstallPromptEvent);
+      setInstallPromptDismissed(false);
+      setIsInstalled(isStandaloneMode());
+    };
+
+    const onInstalled = () => {
+      setIsInstalled(true);
+      setDeferredInstallPrompt(null);
+      setInstallPromptDismissed(true);
+      try {
+        localStorage.setItem("ptx-install-dismissed-at", String(Date.now()));
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
   // ── Boot / screen ──────────────────────────────────────────────────────────
   const [appReady, setAppReady] = useState(false);
   const [screen, setScreen] = useState<"auth" | "app">("auth");
@@ -2620,6 +2747,9 @@ export function App() {
   const [currentPage, setCurrentPage] = useState<Page>("tunnels");
   const [inspectorSubdomain, setInspectorSubdomain] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState<boolean>(() => isStandaloneMode());
+  const [installPromptDismissed, setInstallPromptDismissed] = useState<boolean>(() => shouldSuppressInstallPrompt());
 
   // ── Auth forms ─────────────────────────────────────────────────────────────
   const [loginEmail, setLoginEmail] = useState("");
@@ -2660,6 +2790,36 @@ export function App() {
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3200);
   }, []);
+
+  const dismissInstallPrompt = useCallback(() => {
+    setInstallPromptDismissed(true);
+    try {
+      localStorage.setItem("ptx-install-dismissed-at", String(Date.now()));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const triggerInstallPrompt = useCallback(async () => {
+    if (!deferredInstallPrompt) {
+      dismissInstallPrompt();
+      return;
+    }
+    try {
+      await deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice.outcome === "accepted") {
+        setIsInstalled(true);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDeferredInstallPrompt(null);
+      dismissInstallPrompt();
+    }
+  }, [deferredInstallPrompt, dismissInstallPrompt]);
+
+  const shouldShowInstallPrompt = appReady && !isInstalled && !installPromptDismissed;
 
   // ── API instance (never null — anonymous mode uses empty auth) ─────────────
   const api = useMemo(
@@ -3207,6 +3367,24 @@ export function App() {
                 />
               )}
             </div>
+
+            <nav className="mobile-bottom-nav">
+              {[
+                { page: "tunnels" as Page, label: "Tunnels", icon: "topology-star-3" },
+                { page: "api" as Page, label: "Keys", icon: "key" },
+                { page: "inspector" as Page, label: "Inspect", icon: "eye" },
+                { page: "settings" as Page, label: "Settings", icon: "settings" },
+              ].map((item) => (
+                <button
+                  key={item.page}
+                  className={`mobile-bottom-item ${currentPage === item.page ? "active" : ""}`}
+                  onClick={() => setCurrentPage(item.page)}
+                >
+                  <i className={`ti ti-${item.icon}`} />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </nav>
           </div>
         </div>
       )}
@@ -3244,6 +3422,13 @@ export function App() {
       )}
 
       {/* ── Toasts ────────────────────────────────────────────────────────── */}
+      {shouldShowInstallPrompt && (
+        <InstallPromptModal
+          canInstallDirectly={Boolean(deferredInstallPrompt)}
+          onInstall={triggerInstallPrompt}
+          onDismiss={dismissInstallPrompt}
+        />
+      )}
       <div className="toast-wrap">
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast${toast.type !== "default" ? ` ${toast.type}` : ""}`}>

@@ -161,6 +161,10 @@ export class TunnelClient {
           }
         }
         if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
+          // For fixed-port TCP tunnels the gateway omits subdomain — log active here.
+          if (!msg.subdomain) {
+            this.logger.info(`Tunnel active (TCP)`);
+          }
           this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
         }
         if (msg.accessLink) {

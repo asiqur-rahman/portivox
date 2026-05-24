@@ -95,6 +95,9 @@ export class TunnelClient {
           }
         }
         if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
+          if (!msg.subdomain) {
+            this.logger.info(`Tunnel active (TCP)`);
+          }
           this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
         }
         if (msg.accessLink) {

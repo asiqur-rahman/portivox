@@ -39,7 +39,8 @@
       "Bash(npm view *)",
       "Bash(nslookup abc123.portivox.braintechsolution.com)",
       "Bash(npm publish *)",
-      "Bash(npm whoami *)"
+      "Bash(npm whoami *)",
+      "Bash(git tag *)"
     ]
   }
 }

@@ -1108,8 +1108,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   function buildPublicUrl(path: string): string {
     const base = (config.gatewayPublicBaseUrl ?? "").trim();
     if (base) return `${base}${path}`;
-    // Auto-detect scheme: use http only for local/loopback addresses.
-    const isLocal = /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|::1)(:\d+)?$/.test(config.rootDomain);
+    // Auto-detect scheme: use http only for local/loopback/private-range addresses.
+    const isLocal = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0\.0\.0\.0|::1)(:\d+)?$/.test(config.rootDomain);
     return `${isLocal ? "http" : "https"}://${config.rootDomain}${path}`;
   }
 
