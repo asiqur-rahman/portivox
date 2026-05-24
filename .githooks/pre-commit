@@ -1,0 +1,24 @@
+#!/bin/sh
+# Portivox pre-commit gate — mirrors the GitHub Actions 'build' job.
+# Skip with: git commit --no-verify  (for WIP / draft commits only)
+
+echo ""
+echo "┌─────────────────────────────────────────────────────────┐"
+echo "│  pre-commit: running full CI suite before committing... │"
+echo "└─────────────────────────────────────────────────────────┘"
+echo ""
+
+npm run test:ci
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  echo ""
+  echo "✖  CI checks failed — commit blocked."
+  echo "   Fix the errors above, then commit again."
+  echo "   (use --no-verify only for WIP / draft commits)"
+  exit 1
+fi
+
+echo ""
+echo "✔  All CI checks passed."
+echo ""
