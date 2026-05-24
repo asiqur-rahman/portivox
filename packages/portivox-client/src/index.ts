@@ -428,13 +428,9 @@ async function run(): Promise<void> {
   if (command === "open") {
     const saved = readSavedConfig();
     const rawPort = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
-    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 0);
+    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 3000);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      console.error(
-        rawPort
-          ? `Invalid port "${rawPort}". Usage: open <port>`
-          : "No port specified and no defaultPort saved. Run `portivox config` or pass a port.",
-      );
+      console.error(`Invalid port "${rawPort}". Usage: open [port]`);
       process.exit(1);
     }
 
@@ -454,7 +450,8 @@ async function run(): Promise<void> {
       process.exit(1);
     }
 
-    console.log(`Opening ${tcpMode ? "TCP" : "HTTP"} tunnel: ${gatewayUrl} => ${localBase}`);
+    console.log(`Connecting to gateway : ${gatewayUrl}`);
+    console.log(`Local service         : ${localBase}  [${tcpMode ? "TCP" : "HTTP"}]`);
     startClient({
       gatewayUrl,
       localBase,

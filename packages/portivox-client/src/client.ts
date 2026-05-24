@@ -82,9 +82,26 @@ export class TunnelClient {
       }
 
       if (msg.type === "registered") {
-        this.logger.info(`Tunnel active: ${msg.subdomain}`);
+        if (msg.subdomain) {
+          this.logger.info(`Tunnel active: ${msg.subdomain}`);
+          // Derive the full public tunnel URL from the redirect URL's origin.
+          if (msg.redirectUrl) {
+            try {
+              const u = new URL(msg.redirectUrl);
+              this.logger.info(`Public tunnel URL: ${u.protocol}//${msg.subdomain}.${u.hostname}`);
+            } catch {
+              // non-fatal
+            }
+          }
+        }
         if (msg.tunnelType === "tcp" && msg.publicTcpPort) {
           this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
+        }
+        if (msg.accessLink) {
+          this.logger.info(`Access link (click to whitelist your IP): ${msg.accessLink}`);
+        }
+        if (msg.redirectUrl) {
+          this.logger.info(`Status page (stable): ${msg.redirectUrl}`);
         }
         return;
       }

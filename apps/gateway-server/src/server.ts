@@ -1103,10 +1103,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   }
 
   /** Builds a public-facing URL using GATEWAY_PUBLIC_BASE_URL or falls back to
-   *  http://<rootDomain>. Used for access links and redirect URLs. */
+   *  https://<rootDomain> for non-local domains, http:// for localhost/loopback.
+   *  Used for access links and redirect URLs. */
   function buildPublicUrl(path: string): string {
-    const base = (config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}`;
-    return `${base}${path}`;
+    const base = (config.gatewayPublicBaseUrl ?? "").trim();
+    if (base) return `${base}${path}`;
+    // Auto-detect scheme: use http only for local/loopback addresses.
+    const isLocal = /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|::1)(:\d+)?$/.test(config.rootDomain);
+    return `${isLocal ? "http" : "https"}://${config.rootDomain}${path}`;
   }
 
   function isPortInRange(port: number): boolean {

@@ -524,13 +524,20 @@ async function run(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`Active tunnels (${sessions.length}):\n`);
     for (const s of sessions) {
-      const endpoint = s.subdomain
-        ? `https://${s.subdomain}`
-        : s.publicHost && s.publicPort
-          ? `${s.publicHost}:${s.publicPort}`
-          : "(unknown)";
+      // Derive the public tunnel URL from the redirect URL's origin if available.
+      const publicUrl = (() => {
+        if (s.redirectUrl) {
+          try {
+            const u = new URL(s.redirectUrl);
+            if (s.subdomain) return `${u.protocol}//${s.subdomain}.${u.hostname}`;
+          } catch { /* fall through */ }
+        }
+        if (s.subdomain) return `(subdomain: ${s.subdomain})`;
+        if (s.publicHost && s.publicPort) return `${s.publicHost}:${s.publicPort}`;
+        return "(unknown)";
+      })();
       // eslint-disable-next-line no-console
-      console.log(`  [${s.tunnelType.toUpperCase()}] ${endpoint}`);
+      console.log(`  [${s.tunnelType.toUpperCase()}] ${publicUrl}`);
       if (s.localPort) {
         // eslint-disable-next-line no-console
         console.log(`    Local port : ${s.localPort}`);
@@ -555,14 +562,10 @@ async function run(): Promise<void> {
   if (command === "open") {
     const saved = readSavedConfig();
     const rawPort = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
-    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 0);
+    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 3000);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       // eslint-disable-next-line no-console
-      console.error(
-        rawPort
-          ? `Invalid port "${rawPort}". Usage: open <port>`
-          : "No port specified and no defaultPort saved. Run `portivox config` or pass a port.",
-      );
+      console.error(`Invalid port "${rawPort}". Usage: open [port]`);
       process.exit(1);
     }
 
@@ -597,7 +600,9 @@ async function run(): Promise<void> {
     }
 
     // eslint-disable-next-line no-console
-    console.log(`Opening ${tcpMode ? "TCP" : "HTTP"} tunnel: ${gatewayUrl} => ${localBase}`);
+    console.log(`Connecting to gateway : ${gatewayUrl}`);
+    // eslint-disable-next-line no-console
+    console.log(`Local service         : ${localBase}  [${tcpMode ? "TCP" : "HTTP"}]`);
     if (tcpMode && !noIpProtection) {
       // eslint-disable-next-line no-console
       console.log("IP link protection is ON — TCP port is dark until you click the access link.");

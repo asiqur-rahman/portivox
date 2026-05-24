@@ -33,7 +33,11 @@
       "Bash(npx -w apps/gateway-server tsc -p apps/gateway-server/tsconfig.json)",
       "Bash(npx -w apps/tunnel-client tsc -p apps/tunnel-client/tsconfig.json)",
       "Bash(npx -w apps/frontend tsc -p apps/frontend/tsconfig.json)",
-      "Bash(node_modules\\\\.bin\\\\tsc -p tsconfig.json)"
+      "Bash(node_modules\\\\.bin\\\\tsc -p tsconfig.json)",
+      "Bash(node -e ' *)",
+      "PowerShell(cd \"D:\\\\RnD\\\\Project_Tunnelix\"; $env:DB_PROVIDER=\"mysql\"; node scripts/prisma-runner.cjs generate 2>&1)",
+      "Bash(npm view *)",
+      "Bash(nslookup abc123.portivox.braintechsolution.com)"
     ]
   }
 }
