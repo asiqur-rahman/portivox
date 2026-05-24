@@ -17,6 +17,8 @@ export type TunnelClientConfig = {
   responseChunkBytes?: number;
   wsHeaders?: Record<string, string>;
   heartbeatIntervalMs?: number;
+  /** Whether to request IP link protection for TCP tunnels (default: true). */
+  ipProtection?: boolean;
 };
 
 export class TunnelClient {
@@ -64,10 +66,16 @@ export class TunnelClient {
 
     this.socket.on("open", () => {
       this.reconnectAttempt = 0;
+      const isTcp = this.config.tunnelType === "tcp";
       this.send({
         type: "register_tunnel",
         requestedSubdomain: this.config.requestedSubdomain,
         tunnelType: this.config.tunnelType ?? "http",
+        // Tell the gateway which local port we're forwarding so it can apply
+        // any admin-configured fixed public port mapping for this port.
+        localPort: this.config.localTcpPort,
+        // Request IP link protection (TCP only; default true unless opted out).
+        ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
       });
       this.startHeartbeat();
     });
@@ -293,6 +301,9 @@ export class TunnelClient {
     }
 
     const conn = net.createConnection({ host, port }, () => {
+      // Disable Nagle's algorithm — flush every write immediately so
+      // interactive protocols (SSH, RDP) don't stutter.
+      conn.setNoDelay(true);
       this.logger.info("TCP tunnel connected", { connectionId, host, port });
     });
     this.tcpConnections.set(connectionId, conn);

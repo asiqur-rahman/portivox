@@ -1,5 +1,5 @@
 type WireMessage =
-  | { type: "register_tunnel"; requestedSubdomain?: string; tunnelType?: "http" | "tcp" }
+  | { type: "register_tunnel"; requestedSubdomain?: string; tunnelType?: "http" | "tcp"; localPort?: number; ipProtection?: boolean }
   | { type: "registered"; subdomain?: string; tunnelType?: "http" | "tcp"; publicTcpHost?: string; publicTcpPort?: number; accessLink?: string; redirectToken?: string; redirectUrl?: string }
   | {
       type: "http_request";

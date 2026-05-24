@@ -392,6 +392,9 @@ export class TunnelClient {
     }
 
     const conn = net.createConnection({ host, port }, () => {
+      // Disable Nagle's algorithm — flush every write immediately so
+      // interactive protocols (SSH, RDP) don't stutter.
+      conn.setNoDelay(true);
       this.logger.info("TCP tunnel connected", { connectionId, host, port });
     });
     this.tcpConnections.set(connectionId, conn);

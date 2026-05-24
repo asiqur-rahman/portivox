@@ -782,7 +782,12 @@ export type GatewayServer = {
 };
 
 export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer {
-  const app = Fastify({ logger: true });
+  // trustProxy: true tells Fastify to read req.ip from the X-Forwarded-For /
+  // X-Real-IP headers set by nginx.  Without this, req.ip resolves to the
+  // nginx container's internal Docker IP (172.22.x.x) instead of the real
+  // client IP — which breaks TCP IP-protection whitelist comparisons because
+  // the whitelisted IP never matches the actual conn.remoteAddress.
+  const app = Fastify({ logger: true, trustProxy: true });
   void app.register(swagger, {
     openapi: buildOpenApiDocument((config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}:${config.gatewayPort}`),
   });
@@ -1176,6 +1181,12 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     tcpConnectionsBySocket.set(socket, connectionIds);
 
     const server = net.createServer((conn) => {
+      // Disable Nagle's algorithm so each TCP segment is flushed immediately.
+      // Critical for interactive protocols (SSH, RDP): without this, tiny
+      // writes are buffered waiting for an ACK, adding ~200 ms latency per
+      // keystroke.
+      conn.setNoDelay(true);
+
       // Normalize IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 → 1.2.3.4)
       const remoteIp = (conn.remoteAddress ?? "").replace(/^::ffff:/, "");
 
