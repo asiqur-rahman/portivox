@@ -1069,7 +1069,7 @@ function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: s
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
               More options
             </p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div className="responsive-two-col-grid" style={{ display: "grid", gap: 10 }}>
               {[
                 { cmd: `portivox open 3000 --subdomain myapp --gateway ${wsUrl}`, label: "Custom subdomain" },
                 { cmd: `portivox open 5432 --type tcp --gateway ${wsUrl}`, label: "TCP tunnel (database)" },
@@ -1217,7 +1217,7 @@ function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number 
 
   return (
     <div className="page">
-      <div className="metrics" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+      <div className="metrics metrics-3">
         <div className="metric-card">
           <div className="metric-label">
             <div className="metric-icon"><i className="ti ti-plug-connected" /></div>
@@ -2294,7 +2294,7 @@ function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
       </div>
 
       {/* Status Cards */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
+      <div className="kpi-grid kpi-grid-2">
         <div className="kpi-card" style={{ borderLeft: `3px solid ${isHealthy ? "var(--green)" : "var(--red)"}` }}>
           <div className="kpi-card-head">
             <div className="kpi-icon" style={{ background: isHealthy ? "var(--green-bg)" : "var(--red-bg)", color: isHealthy ? "var(--green)" : "var(--red)" }}>
@@ -2436,7 +2436,7 @@ function NewTcpMappingModal({ onCreate, onClose }: {
             <label className="form-lbl">Name <span style={{ color: "var(--red)" }}>*</span></label>
             <input className="form-inp" placeholder="e.g. Postgres DB" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="responsive-two-col-grid" style={{ display: "grid", gap: 12 }}>
             <div>
               <label className="form-lbl">Local Port <span style={{ color: "var(--red)" }}>*</span></label>
               <input className="form-inp" type="number" min={1} max={65535} placeholder="5432"
@@ -2619,6 +2619,7 @@ export function App() {
   const [authTab, setAuthTab] = useState<AuthTab>("login");
   const [currentPage, setCurrentPage] = useState<Page>("tunnels");
   const [inspectorSubdomain, setInspectorSubdomain] = useState<string | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // ── Auth forms ─────────────────────────────────────────────────────────────
   const [loginEmail, setLoginEmail] = useState("");
@@ -2688,6 +2689,10 @@ export function App() {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, []);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [currentPage, screen]);
 
   // ── Gateway status poll (public endpoint, no auth) ─────────────────────────
   useEffect(() => {
@@ -2986,7 +2991,7 @@ export function App() {
       {screen === "app" && (
         <div id="screen-app" className="active">
           {/* ── Sidebar ──────────────────────────────────────────────────── */}
-          <aside className="sidebar">
+          <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
             <div className="logo">
               <div className="logo-icon"><i className="ti ti-topology-star" /></div>
               <span className="logo-wordmark">Portivox <span className="logo-badge">AI</span></span>
@@ -3085,6 +3090,13 @@ export function App() {
           <div className="main">
             <header className="topbar">
               <div className="topbar-left">
+                <button
+                  className="mobile-menu-btn"
+                  onClick={() => setMobileNavOpen((prev) => !prev)}
+                  aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+                >
+                  <i className={`ti ti-${mobileNavOpen ? "x" : "menu-2"}`} />
+                </button>
                 <div className="breadcrumb">
                   <span className="breadcrumb-root">Portivox</span>
                   <span className="breadcrumb-sep">/</span>
@@ -3119,6 +3131,8 @@ export function App() {
                 </button>
               </div>
             </header>
+
+            {mobileNavOpen && <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
 
             <div className="content">
               {currentPage === "tunnels" && (

@@ -37,7 +37,9 @@
       "Bash(node -e ' *)",
       "PowerShell(cd \"D:\\\\RnD\\\\Project_Tunnelix\"; $env:DB_PROVIDER=\"mysql\"; node scripts/prisma-runner.cjs generate 2>&1)",
       "Bash(npm view *)",
-      "Bash(nslookup abc123.portivox.braintechsolution.com)"
+      "Bash(nslookup abc123.portivox.braintechsolution.com)",
+      "Bash(npm publish *)",
+      "Bash(npm whoami *)"
     ]
   }
 }
