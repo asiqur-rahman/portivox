@@ -3,9 +3,6 @@ const http = require("node:http");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 const { TunnelClient } = require("../apps/tunnel-client/dist/client.js");
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -41,7 +38,7 @@ function startLocalApp(port) {
   });
 }
 
-function requestTunnel(gatewayHttpPort) {
+function requestTunnel(gatewayHttpPort, subdomain, rootDomain) {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -49,7 +46,7 @@ function requestTunnel(gatewayHttpPort) {
         port: gatewayHttpPort,
         path: "/",
         method: "GET",
-        headers: { Host: "demo.portivox.braintechsolution.com" },
+        headers: { Host: `${subdomain}.${rootDomain}` },
       },
       (res) => {
         const chunks = [];
@@ -87,18 +84,28 @@ async function main() {
     gateway = createGatewayServer(gatewayConfig);
     await gateway.start();
 
-    client = new TunnelClient({
-      gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
-      localBase: `http://127.0.0.1:${localAppPort}`,
-      requestedSubdomain: "demo",
-      localTimeoutMs: 15000,
-      maxResponseBodyBytes: 2097152,
+    // Wait for the gateway to confirm registration and return the actual subdomain.
+    const registeredSubdomain = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("Tunnel registration timed out after 10s")),
+        10000,
+      );
+
+      client = new TunnelClient({
+        gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
+        localBase: `http://127.0.0.1:${localAppPort}`,
+        requestedSubdomain: "demo",
+        localTimeoutMs: 15000,
+        maxResponseBodyBytes: 2097152,
+        onRegistered: (info) => {
+          clearTimeout(timeout);
+          resolve(info.subdomain);
+        },
+      });
+      client.start();
     });
-    client.start();
 
-    await sleep(2000);
-
-    const result = await requestTunnel(gatewayHttpPort);
+    const result = await requestTunnel(gatewayHttpPort, registeredSubdomain, gatewayConfig.rootDomain);
     if (result.statusCode !== 200 || result.body !== "smoke-ok") {
       throw new Error(`Smoke failed: status=${result.statusCode} body=${result.body}`);
     }
