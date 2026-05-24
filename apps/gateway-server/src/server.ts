@@ -391,21 +391,35 @@ class AuditStore {
     } catch (error) {
       const code = (error as { code?: string }).code;
       if (code === "P2003") {
-        await this.prisma.auditEvent.create({
-          data: {
-            userId: null,
-            action,
-            resource,
-            resourceId,
-            metadata: {
-              ...(metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : {}),
-              fallbackUserId: normalizedUserId,
+        // Foreign-key violation: user row missing — retry without userId so the
+        // audit event is never lost.
+        try {
+          await this.prisma.auditEvent.create({
+            data: {
+              userId: null,
+              action,
+              resource,
+              resourceId,
+              metadata: {
+                ...(metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : {}),
+                fallbackUserId: normalizedUserId,
+              },
             },
-          },
-        });
-        return;
+          });
+        } catch {
+          // Prisma still failing after retry — fall back to in-memory.
+          this.memory.push({ id: randomUUID(), ...auditEvent });
+        }
+      } else {
+        // Engine not yet connected, DB offline, transient error, etc.
+        // Never propagate — audit failures must not crash callers that use
+        // `void auditStore.log(...)` (fire-and-forget), which would turn a
+        // thrown error into an unhandled rejection and exit the process.
+        this.memory.push({ id: randomUUID(), ...auditEvent });
       }
-      throw error;
+      // Emit to configured sinks (JSONL file, webhook) regardless of DB state.
+      await this.sink.emit(auditEvent);
+      return;
     }
     await this.sink.emit(auditEvent);
   }

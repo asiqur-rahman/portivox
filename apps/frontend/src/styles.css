@@ -551,6 +551,22 @@ a:hover{text-decoration:underline}
 
 .mobile-bottom-nav { display:none; }
 
+.app-footer {
+  margin-top:auto;
+  border-top:1px solid var(--border);
+  background:var(--bg-primary);
+  color:var(--text-3);
+  text-align:center;
+  font-size:11.5px;
+  padding:10px 14px;
+}
+.app-footer a {
+  color:var(--accent);
+  text-decoration:none;
+  font-weight:600;
+}
+.app-footer a:hover { text-decoration:underline; }
+
 .onboarding-list {
   display:grid;
   gap:10px;
@@ -1649,5 +1665,9 @@ a:hover{text-decoration:underline}
     color:var(--accent);
     background:var(--accent-bg);
     font-weight:600;
+  }
+  .app-footer {
+    padding-bottom:72px;
+    font-size:11px;
   }
 }

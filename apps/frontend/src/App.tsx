@@ -3370,10 +3370,10 @@ export function App() {
 
             <nav className="mobile-bottom-nav">
               {[
-                { page: "tunnels" as Page, label: "Tunnels", icon: "topology-star-3" },
-                { page: "api" as Page, label: "Keys", icon: "key" },
-                { page: "inspector" as Page, label: "Inspect", icon: "eye" },
-                { page: "settings" as Page, label: "Settings", icon: "settings" },
+                { page: "tunnels" as Page, label: "Sessions", icon: "topology-star-3" },
+                { page: "api" as Page, label: "API", icon: "key" },
+                { page: "inspector" as Page, label: "Inspector", icon: "scan-eye" },
+                { page: "settings" as Page, label: "Account", icon: "user-cog" },
               ].map((item) => (
                 <button
                   key={item.page}
@@ -3385,6 +3385,15 @@ export function App() {
                 </button>
               ))}
             </nav>
+
+            <footer className="app-footer">
+              <span>
+                Developed and maintained by Md. Asiqur Rahman Khan ·{" "}
+                <a href="https://github.com/asiqur-rahman" target="_blank" rel="noreferrer">
+                  github.com/asiqur-rahman
+                </a>
+              </span>
+            </footer>
           </div>
         </div>
       )}

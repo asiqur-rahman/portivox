@@ -40,7 +40,10 @@
       "Bash(nslookup abc123.portivox.braintechsolution.com)",
       "Bash(npm publish *)",
       "Bash(npm whoami *)",
-      "Bash(git tag *)"
+      "Bash(git tag *)",
+      "Bash(git config *)",
+      "Bash(git commit --no-verify -m ' *)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }
