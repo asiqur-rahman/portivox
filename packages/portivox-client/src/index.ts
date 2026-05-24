@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "readline";
 import { TunnelClient } from "./client";
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 
@@ -193,7 +193,7 @@ function runConfigShow(): void {
 
 function runConfigReset(): void {
   if (existsSync(CONFIG_PATH)) {
-    rmSync(CONFIG_PATH);
+    unlinkSync(CONFIG_PATH);
     console.log(`Config deleted: ${CONFIG_PATH}`);
   } else {
     console.log("No config file found — nothing to reset.");

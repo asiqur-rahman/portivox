@@ -1,6 +1,6 @@
 {
   "name": "portivox-client",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Portivox client CLI for exposing local ports through Portivox gateway",
   "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=14.14.0"
+    "node": ">=12.0.0"
   },
   "keywords": [
     "tunnel",
