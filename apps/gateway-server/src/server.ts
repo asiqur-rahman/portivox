@@ -822,7 +822,24 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
 
-  const wsServer = new WebSocketServer({ port: config.wsPort, path: "/connect" });
+  const wsServer = new WebSocketServer({
+    port: config.wsPort,
+    path: "/connect",
+    // Cap individual frame size at 64 MiB — prevents a single malformed frame
+    // from allocating the full ws-library default of 100 MiB per connection.
+    maxPayload: 64 * 1024 * 1024,
+    // Enable per-message deflate (zlib) compression.
+    // Tunnel wire messages are JSON wrappers around base64 bodies — they compress
+    // well for text content (HTML, JS, CSS, API JSON). Threshold of 512 bytes
+    // avoids overhead on small heartbeat/control frames.
+    perMessageDeflate: {
+      zlibDeflateOptions: { level: 6 },   // balanced CPU vs ratio (zlib default)
+      zlibInflateOptions: { chunkSize: 16 * 1024 },
+      clientNoContextTakeover: true,       // memory-efficient: reset context per message
+      serverNoContextTakeover: true,
+      threshold: 512,                      // only compress frames > 512 bytes
+    },
+  });
   const apiReadLimiter = new RateLimiter(config.apiRateLimitReadPerMin ?? 600, 60_000);
   const apiWriteLimiter = new RateLimiter(config.apiRateLimitWritePerMin ?? 300, 60_000);
   const apiAdminLimiter = new RateLimiter(config.apiRateLimitAdminPerMin ?? 120, 60_000);

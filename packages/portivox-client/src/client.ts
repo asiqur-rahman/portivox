@@ -29,6 +29,11 @@ export class TunnelClient {
   private stopped = false;
   private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createConsoleLogger("client");
+  // Keep-alive agents reuse the loopback TCP connection across requests,
+  // eliminating the ~1–5 ms handshake overhead on every proxied request.
+  private readonly httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64, keepAliveMsecs: 30_000 });
+  // rejectUnauthorized: false — local backends use self-signed certs in dev.
+  private readonly httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64, keepAliveMsecs: 30_000, rejectUnauthorized: false });
 
   constructor(private readonly config: TunnelClientConfig) {}
 
@@ -50,6 +55,8 @@ export class TunnelClient {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.close(1000, "client_stop");
     }
+    this.httpAgent.destroy();
+    this.httpsAgent.destroy();
   }
 
   private connect(): void {
@@ -62,6 +69,12 @@ export class TunnelClient {
       headers: this.config.wsHeaders,
       // Always enforce TLS certificate verification.
       rejectUnauthorized: true,
+      // Enable per-message deflate to match the gateway's setting.
+      perMessageDeflate: {
+        threshold: 512,
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true,
+      },
     });
 
     this.socket.on("open", () => {
@@ -221,7 +234,8 @@ export class TunnelClient {
         meta: msg.meta,
       }];
     }
-    const transport = target.protocol === "https:" ? https : http;
+    const isHttps = target.protocol === "https:";
+    const transport = isHttps ? https : http;
     const outboundHeaders = filterHopByHopHeaders(msg.headers);
     outboundHeaders.host = target.host;
 
@@ -232,6 +246,7 @@ export class TunnelClient {
           method: msg.method,
           headers: outboundHeaders,
           timeout: this.config.localTimeoutMs,
+          agent: isHttps ? this.httpsAgent : this.httpAgent,
         },
         (res) => {
           const chunks: Buffer[] = [];
