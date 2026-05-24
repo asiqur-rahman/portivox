@@ -56,20 +56,18 @@ function containerLogs(name) {
   });
 }
 
-// Poll the client container logs until "Tunnel active: <subdomain>" appears.
-// The gateway may assign a different subdomain than requested (e.g. if the
-// requested one is reserved), so we always use the one the gateway confirms.
-async function waitForClientSubdomain(timeoutMs = 30_000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const logs = await containerLogs(CLIENT_CONTAINER);
-    const match = logs.match(/\[client\]\s+INFO\s+Tunnel active:\s+(\S+)/);
-    if (match) {
-      return match[1];
-    }
-    await new Promise((r) => setTimeout(r, 800));
+// Extract the LAST "Tunnel active: <subdomain>" from client logs.
+// Using the last match (not the first) means we follow reconnects:
+// if the client disconnects and gets a new subdomain we pick it up
+// on the next poll cycle instead of being stuck on the stale one.
+function latestSubdomainFromLogs(logs) {
+  const re = /\[client\]\s+INFO\s+Tunnel active:\s+(\S+)/g;
+  let lastMatch = null;
+  let m;
+  while ((m = re.exec(logs)) !== null) {
+    lastMatch = m[1];
   }
-  throw new Error(`Client container never registered — no "Tunnel active" in logs after ${timeoutMs}ms`);
+  return lastMatch;
 }
 
 function requestGateway(subdomain) {
@@ -96,25 +94,45 @@ function requestGateway(subdomain) {
   });
 }
 
-async function waitForTunnel(subdomain, timeoutMs = 45_000) {
+// Combined wait: reads the latest registered subdomain from the client
+// container logs and immediately probes the gateway with it. This loop
+// handles client reconnects gracefully — on each tick we use whatever
+// subdomain the client most recently logged, so a stale first-registration
+// subdomain can never permanently block the test.
+async function waitForTunnelReady(timeoutMs = 75_000) {
   const started = Date.now();
+  let lastSubdomain = null;
   let lastStatus = 0;
   let lastBody = "";
+
   while (Date.now() - started < timeoutMs) {
-    try {
-      const result = await requestGateway(subdomain);
-      lastStatus = result.statusCode;
-      lastBody = result.body;
-      if (result.statusCode === 200 && result.body.includes("hello-from-docker-local-app")) {
-        return;
+    const logs = await containerLogs(CLIENT_CONTAINER);
+    const subdomain = latestSubdomainFromLogs(logs);
+
+    if (subdomain) {
+      lastSubdomain = subdomain;
+      try {
+        const result = await requestGateway(subdomain);
+        lastStatus = result.statusCode;
+        lastBody = result.body;
+        if (result.statusCode === 200 && result.body.includes("hello-from-docker-local-app")) {
+          console.log(`Tunnel verified: ${subdomain}.${ROOT_DOMAIN}`);
+          return;
+        }
+      } catch {
+        // network error — retry
       }
-    } catch {
-      // retry
     }
+
     await new Promise((r) => setTimeout(r, 1200));
   }
-  const snippet = (lastBody || "").slice(0, 300);
-  throw new Error(`Timed out waiting for docker tunnel ingress response (lastStatus=${lastStatus}, lastBody=${JSON.stringify(snippet)})`);
+
+  const snippet = (lastBody || "").slice(0, 400);
+  throw new Error(
+    `Timed out waiting for docker tunnel ingress response` +
+    ` (lastSubdomain=${lastSubdomain ?? "none"}, lastStatus=${lastStatus},` +
+    ` lastBody=${JSON.stringify(snippet)})`,
+  );
 }
 
 async function waitForGatewayHealthy(timeoutMs = 60_000) {
@@ -152,10 +170,23 @@ async function printLogsFor(service) {
   try { await run("docker", ["compose", "logs", "--no-color", service]); } catch { /* ignore */ }
 }
 
+// Print the smoke client container's own logs (not the compose service logs).
+async function printClientContainerLogs() {
+  const logs = await containerLogs(CLIENT_CONTAINER);
+  if (logs.trim()) {
+    console.error(`=== ${CLIENT_CONTAINER} logs ===\n${logs}\n=== end ===`);
+  } else {
+    console.error(`=== ${CLIENT_CONTAINER} logs: (empty) ===`);
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
   try {
+    // Remove any stale smoke-client container from a previous interrupted run
+    // before compose down so the named container doesn't linger.
+    try { await run("docker", ["rm", "-f", CLIENT_CONTAINER]); } catch { /* ignore */ }
     await run("docker", ["compose", "down", "--remove-orphans"]);
 
     try {
@@ -191,33 +222,25 @@ async function main() {
         break;
       } catch (error) {
         lastError = error;
+        // If the container name is already taken (stale from a failed attempt),
+        // remove it and retry.
+        try { await run("docker", ["rm", "-f", CLIENT_CONTAINER]); } catch { /* ignore */ }
         await new Promise((r) => setTimeout(r, 1500 * attempt));
       }
     }
     if (!launched) {
-      await printLogsFor("client");
+      await printClientContainerLogs();
       await printLogsFor("gateway");
       throw lastError instanceof Error ? lastError : new Error("Failed to launch client smoke container");
     }
 
-    // Wait until the client logs "Tunnel active: <subdomain>" and grab
-    // the actual assigned subdomain (may differ from any requested value).
-    let registeredSubdomain;
+    // Wait for the tunnel to become active AND successfully proxy a request.
+    // Re-reads the latest assigned subdomain on every tick so reconnects are
+    // handled transparently.
     try {
-      registeredSubdomain = await waitForClientSubdomain();
+      await waitForTunnelReady();
     } catch (error) {
-      const logs = await containerLogs(CLIENT_CONTAINER);
-      console.error("Client logs:\n", logs);
-      await printLogsFor("gateway");
-      throw error;
-    }
-
-    console.log(`Client registered subdomain: ${registeredSubdomain}`);
-
-    try {
-      await waitForTunnel(registeredSubdomain);
-    } catch (error) {
-      await printLogsFor("client");
+      await printClientContainerLogs();
       await printLogsFor("gateway");
       await printLogsFor("nginx");
       throw error;
