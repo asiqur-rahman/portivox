@@ -1,15 +1,16 @@
 {
   "name": "portivox-client",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Portivox client CLI for exposing local ports through Portivox gateway",
   "author": "Md. Asiqur Rahman Khan <https://github.com/asiqur-rahman>",
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
   "bin": {
-    "portivox": "dist/index.js"
+    "portivox": "bin/portivox.js"
   },
   "files": [
+    "bin",
     "dist"
   ],
   "scripts": {
