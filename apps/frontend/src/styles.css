@@ -1753,6 +1753,46 @@ a:hover{text-decoration:underline}
     gap:5px;
     margin-bottom:10px;
   }
+  .mobile-card-meta {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    border-top:1px solid var(--border);
+    padding-top:9px;
+    margin-top:9px;
+    font-size:12px;
+    min-width:0;
+  }
+  .mobile-card-meta span {
+    color:var(--text-3);
+    flex-shrink:0;
+  }
+  .mobile-card-meta strong,
+  .mobile-card-meta code {
+    min-width:0;
+    color:var(--text-1);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    text-align:right;
+  }
+  .mobile-card-meta code {
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--text-3);
+  }
+  .mobile-card-meta.block {
+    display:block;
+  }
+  .mobile-card-meta.block strong,
+  .mobile-card-meta.block code {
+    display:block;
+    margin-top:5px;
+    text-align:left;
+    white-space:normal;
+    word-break:break-word;
+  }
   .mobile-card-actions {
     display:flex;
     align-items:center;
@@ -1765,6 +1805,19 @@ a:hover{text-decoration:underline}
   .mobile-card-actions .stop-btn {
     flex:1 1 96px;
     min-height:38px;
+  }
+  .mobile-card-actions .btn-ghost.danger {
+    color:var(--red);
+    border-color:var(--red-bg);
+    background:var(--red-bg);
+  }
+  .billing-plan-row {
+    align-items:flex-start;
+    flex-direction:column;
+    gap:10px;
+  }
+  .plan-chip {
+    align-self:flex-start;
   }
   .code-block {
     flex-direction:column;

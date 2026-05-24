@@ -1,82 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GatewayApi, type ApiKeyRecord, type AuditItem, type CapturedRequestDetail, type CapturedRequestSummary, type GatewayStatus, type TcpPortMapping, type TunnelRecord } from "./api";
+import { DEFAULT_GATEWAY, PAGE_TITLES } from "./app/constants";
+import { hasAdminRole, isAdminPage, isStandaloneMode, shouldSuppressInstallPrompt } from "./app/helpers";
+import type { AuthTab, BeforeInstallPromptEvent, ConfirmState, Page, Theme, Toast, UserInfo } from "./app/types";
+import { ConfirmModal as SharedConfirmModal, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
+import { AiPage as SharedAiPage } from "./pages/AiPage";
+import { BillingPage as SharedBillingPage } from "./pages/BillingPage";
+import { DevicesPage as SharedDevicesPage } from "./pages/DevicesPage";
+import { OrgPage as SharedOrgPage } from "./pages/OrgPage";
+import { SettingsPage as SharedSettingsPage } from "./pages/SettingsPage";
 import "./styles.css";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "";
-const INSTALL_PROMPT_REMIND_MS = 3 * 24 * 60 * 60 * 1000;
 
-type Page = "tunnels" | "devices" | "ai" | "usage" | "api" | "org" | "settings" | "billing"
-  | "admin:overview" | "admin:audit" | "admin:gateway" | "admin:tcp"
-  | "inspector";
-type Theme = "light" | "dark";
-type AuthTab = "login" | "register";
-
-interface Toast {
-  id: number;
-  message: string;
-  type: "default" | "green" | "red";
-}
-
-interface UserInfo {
-  email: string;
-  name: string;
-  initials: string;
-  role: string;
-}
-
-interface ConfirmState {
-  title: string;
-  message: string;
-  confirmLabel: string;
-  danger?: boolean;
-  onConfirm: () => void;
-}
-
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
-}
 
 // GatewayStatus is imported from api.ts — see import above
 
-const PAGE_TITLES: Record<Page, string> = {
-  tunnels: "Tunnels",
-  devices: "Devices",
-  ai: "AI Assistant",
-  usage: "Usage & Logs",
-  api: "API Keys",
-  org: "Organisation",
-  settings: "Settings",
-  billing: "Billing",
-  "admin:overview": "Admin Overview",
-  "admin:audit":    "Audit Log",
-  "admin:gateway":  "Gateway Control",
-  "admin:tcp":      "TCP Port Mappings",
-  "inspector":      "Traffic Inspector",
-};
 
-function isAdminPage(p: Page): boolean { return p.startsWith("admin:"); }
-function hasAdminRole(role?: string): boolean { return role === "admin" || role === "owner"; }
-
-function isStandaloneMode(): boolean {
-  const mediaStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches ?? false;
-  const iosStandalone = "standalone" in window.navigator && Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
-  return mediaStandalone || iosStandalone;
-}
-
-function shouldSuppressInstallPrompt(): boolean {
-  try {
-    const raw = localStorage.getItem("ptx-install-dismissed-at");
-    if (!raw) return false;
-    const dismissedAt = Number(raw);
-    if (!Number.isFinite(dismissedAt)) return false;
-    return Date.now() - dismissedAt < INSTALL_PROMPT_REMIND_MS;
-  } catch {
-    return false;
-  }
-}
 
 const AI_QUICK_ACTIONS = [
   { icon: "ti-plug", title: "Expose local port", desc: "Share a dev server via a secure tunnel", prompt: "How do I expose my local port 3000 to the internet?" },
@@ -186,7 +127,7 @@ function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onClose
   );
 }
 
-function InstallPromptModal({
+export function InstallPromptModal({
   canInstallDirectly,
   onInstall,
   onDismiss,
@@ -227,7 +168,7 @@ function InstallPromptModal({
 
 // ─── NewTunnelModal ───────────────────────────────────────────────────────────
 
-function NewTunnelModal({
+export function NewTunnelModal({
   subdomain, setSubdomain, loading, onCreate, onClose,
 }: {
   subdomain: string;
@@ -288,7 +229,7 @@ const AVAILABLE_SCOPES: { value: string; label: string; desc: string }[] = [
   { value: "key:manage",    label: "key:manage",    desc: "Create and revoke API keys" },
 ];
 
-function NewKeyModal({
+export function NewKeyModal({
   name, setName, scopes, setScopes, loading, onCreate, onClose,
 }: {
   name: string;
@@ -1127,7 +1068,7 @@ function InspectorPage({
 
 // ─── DevicesPage ──────────────────────────────────────────────────────────────
 
-function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: string) => void }) {
+export function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: string) => void }) {
   const wsUrl = getWsGatewayUrl();
   const installCmd = "npm install -g portivox-client";
   const openCmd = `portivox open 3000 --gateway ${wsUrl}`;
@@ -1231,7 +1172,7 @@ function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (text: s
 
 // ─── AiPage ───────────────────────────────────────────────────────────────────
 
-function AiPage() {
+export function AiPage() {
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1404,6 +1345,33 @@ function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number 
             <div className="empty-desc">Events will appear here as you use the system.</div>
           </div>
         ) : (
+          <>
+          <div className="mobile-card-list">
+            {auditItems.map((item, i) => (
+              <article key={item.id || i} className="mobile-list-card">
+                <div className="mobile-list-card-head">
+                  <div className="mobile-list-title">
+                    <span className="mobile-list-icon"><i className="ti ti-list-check" /></span>
+                    <div>
+                      <strong>{item.action.replace(/_/g, " ")}</strong>
+                      <span>{new Date(item.createdAt).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <span className="mobile-status">{item.resource}</span>
+                </div>
+                <div className="mobile-card-meta">
+                  <span>User</span>
+                  <strong>{item.userId ? item.userId.slice(0, 10) : "system"}</strong>
+                </div>
+                {item.resourceId && (
+                  <div className="mobile-card-meta">
+                    <span>Resource ID</span>
+                    <code>{item.resourceId.slice(0, 16)}</code>
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
           <table className="tbl">
             <thead>
               <tr>
@@ -1437,6 +1405,7 @@ function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number 
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </div>
@@ -1592,7 +1561,7 @@ function ApiKeysPage({
 
 // ─── OrgPage ──────────────────────────────────────────────────────────────────
 
-function OrgPage({ user }: { user: UserInfo | null }) {
+export function OrgPage({ user }: { user: UserInfo | null }) {
   const [showInviteNote, setShowInviteNote] = useState(false);
 
   return (
@@ -1677,7 +1646,7 @@ function OrgPage({ user }: { user: UserInfo | null }) {
 
 // ─── SettingsPage ─────────────────────────────────────────────────────────────
 
-function SettingsPage({
+export function SettingsPage({
   user, isAnonymous, api, showToast, onLogout,
 }: {
   user: UserInfo | null;
@@ -1856,7 +1825,7 @@ function SettingsPage({
 
 // ─── BillingPage ──────────────────────────────────────────────────────────────
 
-function BillingPage({ showToast }: { showToast: (msg: string, type?: Toast["type"]) => void }) {
+export function BillingPage({ showToast }: { showToast: (msg: string, type?: Toast["type"]) => void }) {
   const [invoiceOrg, setInvoiceOrg] = useState(
     () => localStorage.getItem("ptx-billing-org") ?? ""
   );
@@ -2143,6 +2112,36 @@ function AdminOverviewPage({
             <div className="empty-desc">Events will appear here as users interact with the system.</div>
           </div>
         ) : (
+          <>
+          <div className="mobile-card-list">
+            {recentAudit.map((item) => {
+              const badge = actionBadge(item.action);
+              return (
+                <article key={item.id} className="mobile-list-card">
+                  <div className="mobile-list-card-head">
+                    <div className="mobile-list-title">
+                      <span className="mobile-list-icon"><i className={`ti ${badge.icon}`} /></span>
+                      <div>
+                        <strong>{item.action.replace(/_/g, " ")}</strong>
+                        <span>{timeAgo(item.createdAt)}</span>
+                      </div>
+                    </div>
+                    <span className={`mobile-status ${badge.cls === "create" ? "live" : ""}`}>{item.resource}</span>
+                  </div>
+                  <div className="mobile-card-meta">
+                    <span>User</span>
+                    <strong>{item.userId ? item.userId.slice(0, 10) : "system"}</strong>
+                  </div>
+                  {item.resourceId && (
+                    <div className="mobile-card-meta">
+                      <span>Resource ID</span>
+                      <code>{item.resourceId.slice(0, 16)}</code>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
           <table className="tbl">
             <thead>
               <tr>
@@ -2177,6 +2176,7 @@ function AdminOverviewPage({
               })}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </div>
@@ -2319,6 +2319,44 @@ function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: 
           </div>
         ) : (
           <>
+            <div className="mobile-card-list">
+              {items.map((item) => {
+                const badge = actionBadge(item.action);
+                const metadata = item.metadata && Object.keys(item.metadata).length > 0
+                  ? JSON.stringify(item.metadata)
+                  : "";
+                return (
+                  <article key={item.id} className="mobile-list-card">
+                    <div className="mobile-list-card-head">
+                      <div className="mobile-list-title">
+                        <span className="mobile-list-icon"><i className={`ti ${badge.icon}`} /></span>
+                        <div>
+                          <strong>{item.action.replace(/_/g, " ")}</strong>
+                          <span>{timeAgo(item.createdAt)}</span>
+                        </div>
+                      </div>
+                      <span className={`mobile-status ${badge.cls === "create" ? "live" : ""}`}>{item.resource}</span>
+                    </div>
+                    {item.resourceId && (
+                      <div className="mobile-card-meta">
+                        <span>Resource ID</span>
+                        <code>{item.resourceId.slice(0, 18)}{item.resourceId.length > 18 ? "..." : ""}</code>
+                      </div>
+                    )}
+                    <div className="mobile-card-meta">
+                      <span>User</span>
+                      <strong>{item.userId ? `${item.userId.slice(0, 12)}${item.userId.length > 12 ? "..." : ""}` : "system"}</strong>
+                    </div>
+                    {metadata && (
+                      <div className="mobile-card-meta block">
+                        <span>Metadata</span>
+                        <code>{metadata.slice(0, 90)}{metadata.length > 90 ? "..." : ""}</code>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
             <table className="tbl">
               <thead>
                 <tr>
@@ -2544,7 +2582,32 @@ function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
             <div className="empty-desc">Tunnels appear here as users connect via the CLI.</div>
           </div>
         ) : (
-          <table className="tbl">
+          <>
+            <div className="mobile-card-list">
+              {allTunnels.map((t) => (
+                <article key={t.id} className="mobile-list-card">
+                  <div className="mobile-list-card-head">
+                    <div className="mobile-list-title">
+                      <span className="mobile-list-icon"><i className="ti ti-topology-star-3" /></span>
+                      <div>
+                        <strong>{t.subdomain}</strong>
+                        <span>{timeAgo(t.createdAt)}</span>
+                      </div>
+                    </div>
+                    <span className="mobile-status live">Active</span>
+                  </div>
+                  <button className="mobile-url-row" onClick={() => window.open(`//${t.subdomain}.${window.location.hostname}`, "_blank", "noreferrer")}>
+                    <span>{t.subdomain}.{window.location.hostname}</span>
+                    <i className="ti ti-external-link" />
+                  </button>
+                  <div className="mobile-card-meta">
+                    <span>Tunnel ID</span>
+                    <code>{t.id.slice(0, 18)}{t.id.length > 18 ? "..." : ""}</code>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <table className="tbl">
             <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th></tr></thead>
             <tbody>
               {allTunnels.map((t) => (
@@ -2561,7 +2624,8 @@ function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </>
         )}
       </div>
     </div>
@@ -2721,7 +2785,39 @@ function AdminTcpPage({ api, showToast, onConfirm }: {
             </button>
           </div>
         ) : (
-          <table className="tbl">
+          <>
+            <div className="mobile-card-list">
+              {mappings.map((m) => (
+                <article key={m.id} className="mobile-list-card">
+                  <div className="mobile-list-card-head">
+                    <div className="mobile-list-title">
+                      <span className="mobile-list-icon"><i className="ti ti-network" /></span>
+                      <div>
+                        <strong>{m.name}</strong>
+                        <span>{timeAgo(m.createdAt)}</span>
+                      </div>
+                    </div>
+                    <span className={`mobile-status ${m.enabled ? "live" : ""}`}>{m.enabled ? "Enabled" : "Disabled"}</span>
+                  </div>
+                  <div className="mobile-chip-row">
+                    <span className="port-tag">Local {m.localPort}</span>
+                    <span className="port-tag public">Public {m.publicPort}</span>
+                  </div>
+                  {m.description && (
+                    <div className="mobile-card-meta block">
+                      <span>Description</span>
+                      <strong>{m.description}</strong>
+                    </div>
+                  )}
+                  <div className="mobile-card-actions">
+                    <button className="btn-ghost danger" onClick={() => requestDelete(m.id, m.name)}>
+                      <i className="ti ti-trash" /> Delete
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <table className="tbl">
             <thead>
               <tr>
                 <th>Name</th>
@@ -2757,7 +2853,8 @@ function AdminTcpPage({ api, showToast, onConfirm }: {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </>
         )}
       </div>
 
@@ -3380,9 +3477,9 @@ export function App() {
                 />
               )}
               {currentPage === "devices" && (
-                <DevicesPage user={user} onCopy={copyToClipboard} />
+                <SharedDevicesPage user={user} onCopy={copyToClipboard} />
               )}
-              {currentPage === "ai" && <AiPage />}
+              {currentPage === "ai" && <SharedAiPage />}
               {currentPage === "usage" && (
                 <UsagePage api={api} tunnelCount={tunnels.length} />
               )}
@@ -3398,9 +3495,9 @@ export function App() {
                   onRefresh={loadApiKeys}
                 />
               )}
-              {currentPage === "org" && <OrgPage user={user} />}
+              {currentPage === "org" && <SharedOrgPage user={user} />}
               {currentPage === "settings" && (
-                <SettingsPage
+                <SharedSettingsPage
                   user={user}
                   isAnonymous={isAnonymous}
                   api={api}
@@ -3408,7 +3505,7 @@ export function App() {
                   onLogout={doLogout}
                 />
               )}
-              {currentPage === "billing" && <BillingPage showToast={showToast} />}
+              {currentPage === "billing" && <SharedBillingPage showToast={showToast} />}
 
               {/* ── Admin pages ── */}
               {currentPage === "admin:overview" && hasAdminRole(user?.role) && (
@@ -3534,7 +3631,7 @@ export function App() {
 
       {/* ── Modals ────────────────────────────────────────────────────────── */}
       {showNewTunnel && (
-        <NewTunnelModal
+        <SharedNewTunnelModal
           subdomain={newTunnelSubdomain}
           setSubdomain={setNewTunnelSubdomain}
           loading={loading}
@@ -3543,7 +3640,7 @@ export function App() {
         />
       )}
       {showNewKey && (
-        <NewKeyModal
+        <SharedNewKeyModal
           name={newKeyName}
           setName={setNewKeyName}
           scopes={newKeyScopes}
@@ -3554,7 +3651,7 @@ export function App() {
         />
       )}
       {confirm && (
-        <ConfirmModal
+        <SharedConfirmModal
           title={confirm.title}
           message={confirm.message}
           confirmLabel={confirm.confirmLabel}
@@ -3566,7 +3663,7 @@ export function App() {
 
       {/* ── Toasts ────────────────────────────────────────────────────────── */}
       {shouldShowInstallPrompt && (
-        <InstallPromptModal
+        <SharedInstallPromptModal
           canInstallDirectly={Boolean(deferredInstallPrompt)}
           onInstall={triggerInstallPrompt}
           onDismiss={dismissInstallPrompt}
