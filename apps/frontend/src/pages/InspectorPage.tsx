@@ -59,7 +59,12 @@ export function InspectorPage({
   initialSubdomain: string | null;
   onBack: () => void;
 }) {
-  const [subdomain, setSubdomain] = useState<string>(initialSubdomain ?? tunnels[0]?.subdomain ?? "");
+  // CLI sessions are TCP tunnels — HTTP inspector has nothing to show for them.
+  // Only expose HTTP (non-CLI) tunnels in the dropdown.
+  const httpTunnels = tunnels.filter((t) => !t.isCliSession);
+  const [subdomain, setSubdomain] = useState<string>(
+    initialSubdomain ?? httpTunnels[0]?.subdomain ?? ""
+  );
   const [requests, setRequests] = useState<CapturedRequestSummary[]>([]);
   const [selected, setSelected] = useState<CapturedRequestDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -160,7 +165,7 @@ export function InspectorPage({
           {autoRefresh && <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {tunnels.length > 0 && (
+          {httpTunnels.length > 0 && (
             <select
               className="form-inp"
               style={{ height: 32, width: "auto", padding: "0 10px", fontSize: 12 }}
@@ -171,7 +176,7 @@ export function InspectorPage({
                 setSelected(null);
               }}
             >
-              {tunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain}>{tunnel.subdomain}</option>)}
+              {httpTunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain}>{tunnel.subdomain}</option>)}
             </select>
           )}
           <button className="btn-ghost" title={autoRefresh ? "Pause auto-refresh" : "Resume auto-refresh"} onClick={() => setAutoRefresh((value) => !value)}>
@@ -185,7 +190,22 @@ export function InspectorPage({
         </div>
       </div>
 
-      {!subdomain ? (
+      {httpTunnels.length === 0 ? (
+        <div className="empty">
+          <i className="ti ti-plug-connected" />
+          <div className="empty-title">No HTTP tunnels active</div>
+          <div className="empty-desc">
+            The Traffic Inspector captures <strong>HTTP</strong> requests only.
+            TCP tunnels (CLI sessions) forward raw bytes and have no request log.
+            <br /><br />
+            Run <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code> from
+            the portal (New tunnel → Connect) to start an HTTP session, then come back here to inspect traffic.
+          </div>
+          <button className="btn-ghost" onClick={onBack} style={{ margin: "0 auto" }}>
+            <i className="ti ti-arrow-left" /> Back to tunnels
+          </button>
+        </div>
+      ) : !subdomain ? (
         <div className="empty">
           <i className="ti ti-eye-off" />
           <div className="empty-title">No tunnel selected</div>
@@ -201,8 +221,9 @@ export function InspectorPage({
             <div className="inspector-list-scroll">
               {requests.length === 0 ? (
                 <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-3)" }}>
-                  <i className="ti ti-wifi-off" style={{ fontSize: 28, display: "block", marginBottom: 10, opacity: 0.4 }} />
-                  <p style={{ fontSize: 12 }}>Waiting for requests...</p>
+                  <i className="ti ti-antenna-bars-1" style={{ fontSize: 28, display: "block", marginBottom: 10, opacity: 0.4 }} />
+                  <p style={{ fontSize: 12, marginBottom: 6 }}>Waiting for HTTP requests…</p>
+                  <p style={{ fontSize: 11, opacity: 0.7 }}>Send a request to your public URL to see it here.</p>
                 </div>
               ) : requests.map((request) => (
                 <div key={request.id} className={`inspector-row${selected?.id === request.id ? " active" : ""}`} onClick={() => selectRequest(request.id)}>
