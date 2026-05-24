@@ -949,7 +949,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   });
 
   app.addHook("onSend", async (req, reply, payload) => {
-    if (securityHeadersEnabled) {
+    // Tunnel proxy responses are served on subdomains (demo.portivox.example.com).
+    // The gateway's own routes live on the root domain (no subdomain).
+    // We must NOT inject gateway-level security headers onto tunnel responses:
+    //   - CSP "default-src 'none'" would block every JS/CSS/image/font in the tunneled app
+    //   - x-frame-options DENY would prevent the app from using iframes
+    // The tunneled app's own headers (its own CSP, framing policy) are passed through instead.
+    const isTunnelProxy = extractSubdomain(req.headers.host as string | undefined, config.rootDomain) !== null;
+    if (securityHeadersEnabled && !isTunnelProxy) {
       reply.header("x-content-type-options", "nosniff");
       reply.header("x-frame-options", "DENY");
       reply.header("referrer-policy", "no-referrer");
@@ -982,23 +989,19 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return payload;
   });
 
-  // Constant header blocklist defined once — used in tunnel ingress to prevent
-  // tunnel operators from overriding gateway-level security headers.
+  // Headers that tunnel operators must never override on gateway subdomain responses.
+  //
+  // HSTS is the only header blocked unconditionally: a tunnel returning
+  // "Strict-Transport-Security: max-age=…; includeSubDomains" would pin HTTPS for
+  // the ENTIRE root-domain tree for all future visitors — a cross-tenant attack vector.
+  //
+  // Everything else (CORS, CSP, set-cookie, framing, referrer…) is intentionally
+  // passed through so that tunneled apps work correctly in the browser:
+  //   - CORS headers are per-origin and do not bleed across subdomains.
+  //   - set-cookie without an explicit Domain= attribute is scoped to the subdomain.
+  //   - The app's own CSP/framing headers should reach the browser unchanged.
   const BLOCKED_RESPONSE_HEADERS = new Set([
-    "content-security-policy",
-    "content-security-policy-report-only",
     "strict-transport-security",
-    "x-frame-options",
-    "x-content-type-options",
-    "referrer-policy",
-    "permissions-policy",
-    "set-cookie",
-    "access-control-allow-origin",
-    "access-control-allow-credentials",
-    "access-control-allow-headers",
-    "access-control-allow-methods",
-    "access-control-expose-headers",
-    "access-control-max-age",
   ]);
 
   // Default scopes granted to newly registered users and JWT fallback.
@@ -2990,10 +2993,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
       metrics.observeRequestLatency(Date.now() - startedAt);
       reply.code(tunnelResponse.statusCode);
-      // Strip hop-by-hop headers first, then additionally block headers that
-      // tunnel operators must not be allowed to override on the gateway domain —
-      // otherwise a rogue tunnel could poison browser state across the root domain.
+      // Strip hop-by-hop headers, then pass everything else through to the browser.
       const responseHeaders = filterHopByHopHeaders(tunnelResponse.headers);
+
+      // Rewrite absolute Location headers that point to localhost so that
+      // server-side redirects (301/302/307/308) keep the browser on the public
+      // tunnel URL instead of sending it to an unreachable localhost address.
+      const rawLocation = (responseHeaders as Record<string, unknown>)["location"];
+      if (typeof rawLocation === "string" && rawLocation.length > 0) {
+        try {
+          const loc = new URL(rawLocation);
+          if (
+            loc.hostname === "localhost" ||
+            loc.hostname === "127.0.0.1" ||
+            /^127\./.test(loc.hostname) ||
+            loc.hostname === "::1" ||
+            loc.hostname.endsWith(".localhost")
+          ) {
+            loc.protocol = "https:";
+            loc.host = `${subdomain}.${config.rootDomain}`;
+            (responseHeaders as Record<string, unknown>)["location"] = loc.toString();
+          }
+        } catch {
+          // Relative redirect (e.g. "/login") — already correct, leave as-is.
+        }
+      }
+
       for (const [key, value] of Object.entries(responseHeaders)) {
         if (typeof value !== "undefined" && !BLOCKED_RESPONSE_HEADERS.has(key.toLowerCase())) {
           reply.header(key, value as string | string[] | number);
