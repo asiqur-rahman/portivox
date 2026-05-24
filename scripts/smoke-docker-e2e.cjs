@@ -1,5 +1,19 @@
 const { spawn } = require("node:child_process");
 const http = require("node:http");
+const crypto = require("node:crypto");
+
+// The docker-smoke test runs in CI without any secrets configured.
+// docker-compose.yml defaults AUTH_REQUIRED=true which requires AUTH_JWT_SECRET —
+// that would crash the gateway before it can serve any request.
+// We disable auth here (tunnel routing is what we're testing; auth correctness is
+// covered by test:auth) and supply a one-time JWT secret so a real deployment
+// that passes AUTH_REQUIRED=true in the environment still works correctly.
+if (!process.env.AUTH_REQUIRED) {
+  process.env.AUTH_REQUIRED = "false";
+}
+if (!process.env.AUTH_JWT_SECRET) {
+  process.env.AUTH_JWT_SECRET = crypto.randomBytes(32).toString("hex");
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
