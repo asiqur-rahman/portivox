@@ -4,10 +4,6 @@ const WebSocket = require("ws");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 const { TunnelClient } = require("../apps/tunnel-client/dist/client.js");
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const probe = http.createServer();
@@ -42,7 +38,7 @@ function startLocalApp(port, payload) {
   });
 }
 
-function requestTunnel({ gatewayHttpPort, hostHeader = "demo.portivox.braintechsolution.com", path = "/" }) {
+function requestTunnel(gatewayHttpPort, subdomain, rootDomain, path = "/") {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -50,7 +46,7 @@ function requestTunnel({ gatewayHttpPort, hostHeader = "demo.portivox.braintechs
         port: gatewayHttpPort,
         path,
         method: "GET",
-        headers: { Host: hostHeader },
+        headers: { Host: `${subdomain}.${rootDomain}` },
       },
       (res) => {
         const chunks = [];
@@ -73,12 +69,13 @@ async function runChunkReassemblyHappyPath() {
     const gatewayHttpPort = await getFreePort();
     const gatewayWsPort = await getFreePort();
     const expectedBody = "chunk-ok-".repeat(4000);
+    const rootDomain = "portivox.braintechsolution.com";
 
     localServer = await startLocalApp(localAppPort, expectedBody);
     gateway = createGatewayServer({
       gatewayPort: gatewayHttpPort,
       wsPort: gatewayWsPort,
-      rootDomain: "portivox.braintechsolution.com",
+      rootDomain,
       tunnelResponseTimeoutMs: 8000,
       streamIdleTimeoutMs: 5000,
       wsIdleTimeoutMs: 30000,
@@ -86,18 +83,28 @@ async function runChunkReassemblyHappyPath() {
     });
     await gateway.start();
 
-    client = new TunnelClient({
-      gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
-      localBase: `http://127.0.0.1:${localAppPort}`,
-      requestedSubdomain: "demo",
-      localTimeoutMs: 15000,
-      maxResponseBodyBytes: 2097152,
-      responseChunkBytes: 1024,
-    });
-    client.start();
-    await sleep(2000);
+    // Wait for gateway to confirm registration and return the actual assigned subdomain.
+    const registeredSubdomain = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("Tunnel registration timed out after 10s")),
+        10000,
+      );
 
-    const result = await requestTunnel({ gatewayHttpPort });
+      client = new TunnelClient({
+        gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
+        localBase: `http://127.0.0.1:${localAppPort}`,
+        localTimeoutMs: 15000,
+        maxResponseBodyBytes: 2097152,
+        responseChunkBytes: 1024,
+        onRegistered: (info) => {
+          clearTimeout(timeout);
+          resolve(info.subdomain);
+        },
+      });
+      client.start();
+    });
+
+    const result = await requestTunnel(gatewayHttpPort, registeredSubdomain, rootDomain);
     if (result.statusCode !== 200 || result.body !== expectedBody) {
       throw new Error(`Chunk happy-path failed: status=${result.statusCode} bodyLen=${result.body.length}`);
     }
@@ -114,11 +121,12 @@ async function runChunkIncompleteTimeoutPath() {
   try {
     const gatewayHttpPort = await getFreePort();
     const gatewayWsPort = await getFreePort();
+    const rootDomain = "portivox.braintechsolution.com";
 
     gateway = createGatewayServer({
       gatewayPort: gatewayHttpPort,
       wsPort: gatewayWsPort,
-      rootDomain: "portivox.braintechsolution.com",
+      rootDomain,
       tunnelResponseTimeoutMs: 3000,
       streamIdleTimeoutMs: 1200,
       wsIdleTimeoutMs: 30000,
@@ -128,18 +136,21 @@ async function runChunkIncompleteTimeoutPath() {
 
     socket = new WebSocket(`ws://127.0.0.1:${gatewayWsPort}/connect`);
 
-    await new Promise((resolve, reject) => {
+    // Register and capture the actual subdomain assigned by the gateway.
+    const registeredSubdomain = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timed out registering raw tunnel client")), 4000);
       socket.on("open", () => {
-        socket.send(JSON.stringify({ v: 2, type: "register_tunnel", requestedSubdomain: "demo" }));
+        socket.send(JSON.stringify({ v: 2, type: "register_tunnel" }));
       });
       socket.on("message", (raw) => {
         const msg = JSON.parse(String(raw));
         if (msg.type === "registered") {
           clearTimeout(timeout);
-          resolve();
+          resolve(msg.subdomain);
           return;
         }
+        // Respond to any http_request with a partial (incomplete) chunked response
+        // so the gateway's stream-idle-timeout fires.
         if (msg.type === "http_request") {
           socket.send(JSON.stringify({
             v: 2,
@@ -154,7 +165,7 @@ async function runChunkIncompleteTimeoutPath() {
       });
     });
 
-    const result = await requestTunnel({ gatewayHttpPort });
+    const result = await requestTunnel(gatewayHttpPort, registeredSubdomain, rootDomain);
     if (result.statusCode !== 504 || !result.body.includes("TUNNEL_STREAM_IDLE_TIMEOUT")) {
       throw new Error(`Chunk timeout-path failed: status=${result.statusCode} body=${result.body}`);
     }
@@ -176,4 +187,3 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
-
