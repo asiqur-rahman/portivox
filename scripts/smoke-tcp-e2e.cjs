@@ -3,10 +3,6 @@ const net = require("node:net");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 const { TunnelClient } = require("../apps/tunnel-client/dist/client.js");
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const probe = net.createServer();
@@ -97,21 +93,33 @@ async function main() {
     gateway = createGatewayServer(gatewayConfig);
     await gateway.start();
 
-    client = new TunnelClient({
-      gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
-      localBase: `http://127.0.0.1:${localTcpPort}`,
-      tunnelType: "tcp",
-      localTcpHost: "127.0.0.1",
-      localTcpPort,
-      requestedSubdomain: "demotcp",
-      localTimeoutMs: 15000,
-      maxResponseBodyBytes: 2097152,
-      ipProtection: false,
-    });
-    client.start();
+    // Wait for the gateway to confirm registration and return the actual public TCP port.
+    const publicTcpPort = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("TCP tunnel registration timed out after 10s")),
+        10000,
+      );
 
-    await sleep(1500);
-    const publicTcpPort = tcpPublicPortStart;
+      client = new TunnelClient({
+        gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
+        localBase: `http://127.0.0.1:${localTcpPort}`,
+        tunnelType: "tcp",
+        localTcpHost: "127.0.0.1",
+        localTcpPort,
+        localTimeoutMs: 15000,
+        maxResponseBodyBytes: 2097152,
+        ipProtection: false,
+        onRegistered: (info) => {
+          clearTimeout(timeout);
+          if (!info.publicTcpPort) {
+            reject(new Error("Gateway did not assign a public TCP port"));
+            return;
+          }
+          resolve(info.publicTcpPort);
+        },
+      });
+      client.start();
+    });
 
     const input = "hello-portivox";
     const response = await requestTcpEcho("127.0.0.1", publicTcpPort, input);
