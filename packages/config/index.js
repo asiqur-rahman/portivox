@@ -146,7 +146,7 @@ function loadGatewayConfig() {
 
 function loadClientConfig() {
   return {
-    gatewayUrl: parseUrl("TUNNEL_GATEWAY_URL", "ws://localhost:7000/connect"),
+    gatewayUrl: parseUrl("TUNNEL_GATEWAY_URL", "wss://portivox.braintechsolution.com/connect"),
     localUrl: parseUrl("TUNNEL_LOCAL_URL", "http://localhost:3000"),
     localTimeoutMs: parseInteger("LOCAL_REQUEST_TIMEOUT_MS", 15000),
     maxLocalResponseBodyBytes: parseInteger("MAX_LOCAL_RESPONSE_BODY_BYTES", 2097152),

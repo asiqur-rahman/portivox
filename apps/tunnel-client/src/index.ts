@@ -18,10 +18,6 @@ const SESSIONS_PATH = join(PORTIVOX_DIR, "sessions.json");
 type SavedClientConfig = {
   gatewayUrl?: string;
   apiKey?: string;
-  defaultPort?: number;
-  defaultTunnelType?: "http" | "tcp";
-  reconnectMode?: "always" | "once";
-  heartbeatIntervalMs?: number;
 };
 
 type SessionEntry = {
@@ -135,27 +131,23 @@ function printUsage(): void {
   console.log(
     [
       "Portivox client commands:",
-      "  config                    Interactive setup wizard",
+      "  config                    Interactive setup (gateway URL + API key)",
       "  config --show             Print saved configuration",
       "  config <key> <value>      Set a single config field",
       "  config --reset            Delete saved configuration",
-      "  register <apiKey> [--gateway url]   (deprecated — use config instead)",
       "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
-      "       [--tcp] [--http] [--no-ip-protection]",
-      "       [--exit-after <seconds>] [--heartbeat <ms>]",
+      "       [--tcp] [--no-ip-protection] [--exit-after <seconds>] [--heartbeat <ms>]",
       "  list",
       "",
-      "Config keys: gatewayUrl, apiKey, defaultPort, defaultTunnelType,",
-      "             reconnectMode, heartbeatIntervalMs",
+      "Config keys: gatewayUrl, apiKey",
       "",
       "Examples:",
       "  portivox config",
       "  portivox config --show",
-      "  portivox config defaultPort 8080",
+      "  portivox config apiKey tk_abc123",
+      "  portivox open",
       "  portivox open 3000",
       "  portivox open 22 --tcp",
-      "  portivox open 22 --tcp --no-ip-protection",
-      "  portivox open 3000 --exit-after 10",
       "  portivox list",
     ].join("\n"),
   );
@@ -176,7 +168,7 @@ async function runConfigWizard(): Promise<void> {
 
   // Step 1 — Gateway URL
   // eslint-disable-next-line no-console
-  console.log("Step 1/6  Gateway URL");
+  console.log("Step 1/2  Gateway URL");
   let gatewayUrl = await ask(
     "  Gateway URL",
     saved.gatewayUrl ?? defaultConfig.gatewayUrl,
@@ -190,7 +182,7 @@ async function runConfigWizard(): Promise<void> {
 
   // Step 2 — API Key
   // eslint-disable-next-line no-console
-  console.log("\nStep 2/6  API Key");
+  console.log("\nStep 2/2  API Key");
   // eslint-disable-next-line no-console
   console.log("  Leave blank to keep current / skip");
   const apiKeyDefault = saved.apiKey ? maskApiKey(saved.apiKey) : "";
@@ -201,57 +193,13 @@ async function runConfigWizard(): Promise<void> {
       ? saved.apiKey
       : apiKeyInput || saved.apiKey;
 
-  // Step 3 — Default local port
-  // eslint-disable-next-line no-console
-  console.log("\nStep 3/6  Default Local Port");
-  const defaultPortRaw = await ask("  Default local port", String(saved.defaultPort ?? 3000));
-  const defaultPort = Number(defaultPortRaw);
-
-  // Step 4 — Default tunnel type
-  const typeChoice = await choose(
-    "Step 4/6  Default Tunnel Type",
-    ["HTTP (expose a web server)", "TCP (raw socket, SSH, etc.)"],
-    saved.defaultTunnelType === "tcp" ? 1 : 0,
-  );
-  const defaultTunnelType: "http" | "tcp" = typeChoice.startsWith("TCP") ? "tcp" : "http";
-
-  // Step 5 — Reconnect mode
-  const reconnectChoice = await choose(
-    "Step 5/6  Reconnect Behaviour",
-    [
-      "Always reconnect on disconnect",
-      "Connect once, exit on disconnect",
-    ],
-    saved.reconnectMode === "once" ? 1 : 0,
-  );
-  const reconnectMode: "always" | "once" = reconnectChoice.includes("once") ? "once" : "always";
-
-  // Step 6 — Heartbeat interval
-  // eslint-disable-next-line no-console
-  console.log("\nStep 6/6  Heartbeat Interval");
-  const heartbeatRaw = await ask(
-    "  Heartbeat interval ms",
-    String(saved.heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs ?? 5000),
-  );
-  const heartbeatIntervalMs = Math.max(500, Number(heartbeatRaw) || 5000);
-
   // Summary
   // eslint-disable-next-line no-console
   console.log("\n──────────────────────────────────────────────────");
   // eslint-disable-next-line no-console
-  console.log("  Summary");
+  console.log(`  gateway   ${gatewayUrl}`);
   // eslint-disable-next-line no-console
-  console.log(`  gateway        ${gatewayUrl}`);
-  // eslint-disable-next-line no-console
-  console.log(`  apiKey         ${apiKey ? maskApiKey(apiKey) : "(none)"}`);
-  // eslint-disable-next-line no-console
-  console.log(`  defaultPort    ${Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000}`);
-  // eslint-disable-next-line no-console
-  console.log(`  tunnelType     ${defaultTunnelType}`);
-  // eslint-disable-next-line no-console
-  console.log(`  reconnect      ${reconnectMode}`);
-  // eslint-disable-next-line no-console
-  console.log(`  heartbeat      ${heartbeatIntervalMs} ms`);
+  console.log(`  apiKey    ${apiKey ? maskApiKey(apiKey) : "(none)"}`);
   // eslint-disable-next-line no-console
   console.log("──────────────────────────────────────────────────");
 
@@ -265,10 +213,6 @@ async function runConfigWizard(): Promise<void> {
   const next: SavedClientConfig = {
     gatewayUrl,
     ...(apiKey ? { apiKey } : {}),
-    defaultPort: Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000,
-    defaultTunnelType,
-    reconnectMode,
-    heartbeatIntervalMs,
   };
   writeSavedConfig(next);
   // eslint-disable-next-line no-console
@@ -334,25 +278,6 @@ function validateGatewayUrl(v: string): string {
 const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
   gatewayUrl: (v) => validateGatewayUrl(v),
   apiKey: (v) => v,
-  defaultPort: (v) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n <= 0 || n > 65535) throw new Error("defaultPort must be 1–65535");
-    return n;
-  },
-  defaultTunnelType: (v) => {
-    if (v !== "http" && v !== "tcp") throw new Error("defaultTunnelType must be 'http' or 'tcp'");
-    return v;
-  },
-  reconnectMode: (v) => {
-    if (v !== "always" && v !== "once")
-      throw new Error("reconnectMode must be 'always' or 'once'");
-    return v;
-  },
-  heartbeatIntervalMs: (v) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 500) throw new Error("heartbeatIntervalMs must be >= 500");
-    return n;
-  },
 };
 
 function runConfigSet(key: string, value: string): void {
@@ -562,16 +487,15 @@ async function run(): Promise<void> {
   if (command === "open") {
     const saved = readSavedConfig();
     const rawPort = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
-    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 3000);
+    const port = rawPort ? Number(rawPort) : 3000;
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       // eslint-disable-next-line no-console
       console.error(`Invalid port "${rawPort}". Usage: open [port]`);
       process.exit(1);
     }
 
-    // --tcp flag overrides saved type; --http flag forces http
-    const tcpMode =
-      args.includes("--tcp") || (!args.includes("--http") && saved.defaultTunnelType === "tcp");
+    // --tcp flag → TCP tunnel; default is HTTP
+    const tcpMode = args.includes("--tcp");
     const noIpProtection = args.includes("--no-ip-protection");
 
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
@@ -584,12 +508,7 @@ async function run(): Promise<void> {
     const exitAfterMs = exitAfterRaw ? Number(exitAfterRaw) * 1000 : undefined;
 
     const heartbeatRaw = pickArg(args, "--heartbeat");
-    const heartbeatIntervalMs = heartbeatRaw
-      ? Number(heartbeatRaw)
-      : (saved.heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs);
-
-    const reconnectMode = saved.reconnectMode ?? "always";
-    const noReconnect = reconnectMode === "once";
+    const heartbeatIntervalMs = heartbeatRaw ? Number(heartbeatRaw) : defaultConfig.heartbeatIntervalMs;
 
     if (!apiKey) {
       // eslint-disable-next-line no-console
@@ -607,10 +526,6 @@ async function run(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log("IP link protection is ON — TCP port is dark until you click the access link.");
     }
-    if (reconnectMode === "once") {
-      // eslint-disable-next-line no-console
-      console.log("Reconnect mode: once — will exit on disconnect.");
-    }
 
     startClient({
       gatewayUrl,
@@ -623,7 +538,7 @@ async function run(): Promise<void> {
       ipProtection: tcpMode ? !noIpProtection : false,
       exitAfterMs,
       heartbeatIntervalMs,
-      noReconnect,
+      noReconnect: false,
     });
     return;
   }

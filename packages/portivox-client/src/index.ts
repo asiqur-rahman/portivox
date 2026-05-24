@@ -14,10 +14,6 @@ const CONFIG_PATH = join(homedir(), ".portivox", "client.json");
 type SavedClientConfig = {
   gatewayUrl?: string;
   apiKey?: string;
-  defaultPort?: number;
-  defaultTunnelType?: "http" | "tcp";
-  reconnectMode?: "always" | "once" | "ask";
-  heartbeatIntervalMs?: number;
 };
 
 type ClientConfig = {
@@ -119,21 +115,20 @@ function printUsage(): void {
   console.log(
     [
       "Portivox client commands:",
-      "  config                    Interactive setup wizard",
+      "  config                    Interactive setup (gateway URL + API key)",
       "  config --show             Print saved configuration",
       "  config <key> <value>      Set a single config field",
       "  config --reset            Delete saved configuration",
-      "  register <apiKey> [--gateway url]   (deprecated — use config instead)",
       "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
-      "       [--tcp] [--http]",
+      "       [--tcp] [--no-ip-protection]",
       "",
-      "Config keys: gatewayUrl, apiKey, defaultPort, defaultTunnelType,",
-      "             reconnectMode, heartbeatIntervalMs",
+      "Config keys: gatewayUrl, apiKey",
       "",
       "Examples:",
       "  portivox config",
       "  portivox config --show",
-      "  portivox config defaultPort 8080",
+      "  portivox config apiKey tk_abc123",
+      "  portivox open",
       "  portivox open 3000",
       "  portivox open 22 --tcp",
     ].join("\n"),
@@ -150,7 +145,7 @@ async function runConfigWizard(): Promise<void> {
   console.log("└─────────────────────────────────────────────────┘\n");
 
   // Step 1 — Gateway URL
-  console.log("Step 1/6  Gateway URL");
+  console.log("Step 1/2  Gateway URL");
   let gatewayUrl = await ask("  Gateway URL", saved.gatewayUrl ?? defaultConfig.gatewayUrl);
   try {
     gatewayUrl = validateGatewayUrl(gatewayUrl);
@@ -160,7 +155,7 @@ async function runConfigWizard(): Promise<void> {
   }
 
   // Step 2 — API Key
-  console.log("\nStep 2/6  API Key");
+  console.log("\nStep 2/2  API Key");
   console.log("  Leave blank to keep current / skip");
   const apiKeyDefault = saved.apiKey ? maskApiKey(saved.apiKey) : "";
   const apiKeyInput = await ask("  API Key", apiKeyDefault);
@@ -169,52 +164,10 @@ async function runConfigWizard(): Promise<void> {
       ? saved.apiKey
       : apiKeyInput || saved.apiKey;
 
-  // Step 3 — Default local port
-  console.log("\nStep 3/6  Default Local Port");
-  const defaultPortRaw = await ask("  Default local port", String(saved.defaultPort ?? 3000));
-  const defaultPort = Number(defaultPortRaw);
-
-  // Step 4 — Default tunnel type
-  const typeChoice = await choose(
-    "Step 4/6  Default Tunnel Type",
-    ["HTTP (expose a web server)", "TCP (raw socket, SSH, etc.)"],
-    saved.defaultTunnelType === "tcp" ? 1 : 0,
-  );
-  const defaultTunnelType: "http" | "tcp" = typeChoice.startsWith("TCP") ? "tcp" : "http";
-
-  // Step 5 — Reconnect mode
-  const reconnectChoice = await choose(
-    "Step 5/6  Reconnect Behaviour",
-    [
-      "Always reconnect on disconnect",
-      "Connect once, exit on disconnect",
-      "Ask before each reconnect",
-    ],
-    saved.reconnectMode === "once" ? 1 : saved.reconnectMode === "ask" ? 2 : 0,
-  );
-  const reconnectMode: "always" | "once" | "ask" = reconnectChoice.includes("once")
-    ? "once"
-    : reconnectChoice.includes("Ask")
-      ? "ask"
-      : "always";
-
-  // Step 6 — Heartbeat interval
-  console.log("\nStep 6/6  Heartbeat Interval");
-  const heartbeatRaw = await ask(
-    "  Heartbeat interval ms",
-    String(saved.heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs),
-  );
-  const heartbeatIntervalMs = Math.max(500, Number(heartbeatRaw) || 5000);
-
   // Summary
   console.log("\n──────────────────────────────────────────────────");
-  console.log("  Summary");
-  console.log(`  gateway        ${gatewayUrl}`);
-  console.log(`  apiKey         ${apiKey ? maskApiKey(apiKey) : "(none)"}`);
-  console.log(`  defaultPort    ${Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000}`);
-  console.log(`  tunnelType     ${defaultTunnelType}`);
-  console.log(`  reconnect      ${reconnectMode}`);
-  console.log(`  heartbeat      ${heartbeatIntervalMs} ms`);
+  console.log(`  gateway   ${gatewayUrl}`);
+  console.log(`  apiKey    ${apiKey ? maskApiKey(apiKey) : "(none)"}`);
   console.log("──────────────────────────────────────────────────");
 
   const save = await confirm("\nSave configuration?", true);
@@ -226,10 +179,6 @@ async function runConfigWizard(): Promise<void> {
   const next: SavedClientConfig = {
     gatewayUrl,
     ...(apiKey ? { apiKey } : {}),
-    defaultPort: Number.isInteger(defaultPort) && defaultPort > 0 ? defaultPort : 3000,
-    defaultTunnelType,
-    reconnectMode,
-    heartbeatIntervalMs,
   };
   writeSavedConfig(next);
   console.log(`\n✔ Config saved to ${CONFIG_PATH}`);
@@ -287,25 +236,6 @@ function validateGatewayUrl(v: string): string {
 const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
   gatewayUrl: (v) => validateGatewayUrl(v),
   apiKey: (v) => v,
-  defaultPort: (v) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n <= 0 || n > 65535) throw new Error("defaultPort must be 1–65535");
-    return n;
-  },
-  defaultTunnelType: (v) => {
-    if (v !== "http" && v !== "tcp") throw new Error("defaultTunnelType must be 'http' or 'tcp'");
-    return v;
-  },
-  reconnectMode: (v) => {
-    if (v !== "always" && v !== "once" && v !== "ask")
-      throw new Error("reconnectMode must be 'always', 'once', or 'ask'");
-    return v;
-  },
-  heartbeatIntervalMs: (v) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 500) throw new Error("heartbeatIntervalMs must be >= 500");
-    return n;
-  },
 };
 
 function runConfigSet(key: string, value: string): void {
@@ -428,14 +358,14 @@ async function run(): Promise<void> {
   if (command === "open") {
     const saved = readSavedConfig();
     const rawPort = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
-    const port = rawPort ? Number(rawPort) : (saved.defaultPort ?? 3000);
+    const port = rawPort ? Number(rawPort) : 3000;
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       console.error(`Invalid port "${rawPort}". Usage: open [port]`);
       process.exit(1);
     }
 
-    const tcpMode =
-      args.includes("--tcp") || (!args.includes("--http") && saved.defaultTunnelType === "tcp");
+    // --tcp flag → TCP tunnel; default is HTTP
+    const tcpMode = args.includes("--tcp");
 
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
