@@ -27,7 +27,7 @@ type ClientConfig = {
 
 function loadClientConfig(): ClientConfig {
   return {
-    gatewayUrl: process.env.TUNNEL_GATEWAY_URL?.trim() || "ws://localhost:7000/connect",
+    gatewayUrl: process.env.TUNNEL_GATEWAY_URL?.trim() || "wss://portivox.braintechsolution.com/connect",
     localUrl: process.env.TUNNEL_LOCAL_URL?.trim() || "http://localhost:3000",
     localTimeoutMs: parseIntSafe(process.env.LOCAL_REQUEST_TIMEOUT_MS, 15000),
     maxLocalResponseBodyBytes: parseIntSafe(process.env.MAX_LOCAL_RESPONSE_BODY_BYTES, 2_097_152),
@@ -84,18 +84,6 @@ async function ask(question: string, defaultVal = ""): Promise<string> {
   });
 }
 
-async function choose(question: string, options: string[], defaultIdx = 0): Promise<string> {
-  console.log(`\n${question}`);
-  options.forEach((o, i) => console.log(`  ${i + 1}) ${o}${i === defaultIdx ? "  (default)" : ""}`));
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(`Select [1-${options.length}]: `, (answer) => {
-      rl.close();
-      const n = Number(answer.trim());
-      resolve(options[Number.isInteger(n) && n >= 1 && n <= options.length ? n - 1 : defaultIdx]);
-    });
-  });
-}
 
 async function confirm(question: string, defaultYes = true): Promise<boolean> {
   const hint = defaultYes ? "Y/n" : "y/N";
