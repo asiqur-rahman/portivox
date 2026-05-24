@@ -1,7 +1,7 @@
-import http from "node:http";
-import https from "node:https";
-import net from "node:net";
-import { URL } from "node:url";
+import http from "http";
+import https from "https";
+import net from "net";
+import { URL } from "url";
 import WebSocket from "ws";
 import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protocol";
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline";
+import { createInterface } from "readline";
 import { TunnelClient } from "./client";
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "fs";
+import { dirname, join } from "path";
+import { homedir } from "os";
 
 const args = process.argv.slice(2);
 const defaultConfig = loadClientConfig();
