@@ -5,10 +5,19 @@ import { hasAdminRole, isAdminPage, isStandaloneMode, shouldSuppressInstallPromp
 import type { AuthTab, BeforeInstallPromptEvent, ConfirmState, Page, Theme, Toast, UserInfo } from "./app/types";
 import { ConfirmModal as SharedConfirmModal, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
 import { AiPage as SharedAiPage } from "./pages/AiPage";
+import { ApiKeysPage as SharedApiKeysPage } from "./pages/ApiKeysPage";
+import { AdminAuditPage as SharedAdminAuditPage } from "./pages/AdminAuditPage";
+import { AdminGatewayPage as SharedAdminGatewayPage } from "./pages/AdminGatewayPage";
+import { AdminOverviewPage as SharedAdminOverviewPage } from "./pages/AdminOverviewPage";
+import { AdminTcpPage as SharedAdminTcpPage } from "./pages/AdminTcpPage";
+import { AuthScreen as SharedAuthScreen } from "./pages/AuthScreen";
 import { BillingPage as SharedBillingPage } from "./pages/BillingPage";
 import { DevicesPage as SharedDevicesPage } from "./pages/DevicesPage";
 import { OrgPage as SharedOrgPage } from "./pages/OrgPage";
 import { SettingsPage as SharedSettingsPage } from "./pages/SettingsPage";
+import { TunnelsPage as SharedTunnelsPage } from "./pages/TunnelsPage";
+import { UsagePage as SharedUsagePage } from "./pages/UsagePage";
+import { InspectorPage as SharedInspectorPage } from "./pages/InspectorPage";
 import "./styles.css";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -391,7 +400,7 @@ export function NewKeyModal({
 
 // ─── AuthScreen ───────────────────────────────────────────────────────────────
 
-function AuthScreen({
+export function AuthScreen({
   authTab, setAuthTab, theme, setTheme,
   loginEmail, setLoginEmail, loginPassword, setLoginPassword, loginPassShow, setLoginPassShow,
   regFirstName, setRegFirstName, regLastName, setRegLastName,
@@ -540,7 +549,7 @@ function AuthScreen({
 
 // ─── TunnelsPage ──────────────────────────────────────────────────────────────
 
-function TunnelsPage({
+export function TunnelsPage({
   tunnels, loading, gatewayStatus, aiInsightVisible, setAiInsightVisible,
   onRefresh, onNewTunnel, onDeleteTunnel, onCopy, onInspect,
 }: {
@@ -557,9 +566,9 @@ function TunnelsPage({
 }) {
   const activeCount = tunnels.filter((t) => t.active).length;
   const onboardingSteps = [
-    { label: "Reserve a subdomain", done: tunnels.length > 0 },
-    { label: "Run `portivox register <API_KEY>`", done: tunnels.length > 0 },
-    { label: "Open a tunnel with `portivox open <port>`", done: activeCount > 0 },
+    { label: "Install the CLI: npm install -g portivox-client", done: tunnels.length > 0 || activeCount > 0 },
+    { label: "Authenticate: portivox config apiKey <YOUR_API_KEY>", done: tunnels.length > 0 || activeCount > 0 },
+    { label: "Open a tunnel: portivox open <port>", done: activeCount > 0 },
   ];
 
   return (
@@ -623,7 +632,7 @@ function TunnelsPage({
                 ? <>No tunnels yet. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
                 : tunnels.filter((t) => t.active).length === 0
                   ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
-                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox list</code> from the CLI to view status on any device.</>}
+                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. Traffic is flowing — use the <strong>Inspect</strong> button to replay and debug requests in real time.</>}
             </div>
           </div>
           <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
@@ -690,7 +699,12 @@ function TunnelsPage({
                         <span className="mobile-list-icon"><i className="ti ti-topology-star-3" /></span>
                         <div>
                           <strong>{tunnel.subdomain}</strong>
-                          <span>{new Date(tunnel.createdAt).toLocaleDateString()}</span>
+                          {tunnel.isCliSession && (
+                            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+                              background: "var(--accent-bg)", color: "var(--accent)", borderRadius: 4,
+                              padding: "1px 5px", verticalAlign: "middle" }}>CLI</span>
+                          )}
+                          <span>{tunnel.isCliSession ? "Connected " : ""}{new Date(tunnel.createdAt).toLocaleDateString()}</span>
                         </div>
                       </div>
                       <span className={`mobile-status ${tunnel.active ? "live" : ""}`}>
@@ -710,9 +724,11 @@ function TunnelsPage({
                       <button className="btn-ghost" onClick={() => window.open(url, "_blank", "noreferrer")}>
                         <i className="ti ti-external-link" /> Open
                       </button>
-                      <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                        Stop
-                      </button>
+                      {!tunnel.isCliSession && (
+                        <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                          Stop
+                        </button>
+                      )}
                     </div>
                   </article>
                 );
@@ -738,14 +754,24 @@ function TunnelsPage({
                           <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <i className="ti ti-topology-star-3" style={{ fontSize: 14, color: "var(--accent)" }} />
                           </div>
-                          <strong>{tunnel.subdomain}</strong>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <strong>{tunnel.subdomain}</strong>
+                            {tunnel.isCliSession && (
+                              <span title="Created via portivox CLI — use Ctrl+C in your terminal to disconnect"
+                                style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+                                  background: "var(--accent-bg)", color: "var(--accent)", borderRadius: 4,
+                                  padding: "1px 5px", cursor: "default" }}>CLI</span>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td>
                         <span className="url-pill">{url}</span>
                       </td>
                       <td style={{ color: "var(--text-3)", fontSize: 12 }}>
-                        {new Date(tunnel.createdAt).toLocaleString()}
+                        {tunnel.isCliSession
+                          ? <span title="Time the CLI client connected">{new Date(tunnel.createdAt).toLocaleString()}</span>
+                          : new Date(tunnel.createdAt).toLocaleString()}
                       </td>
                       <td>
                         {tunnel.active
@@ -766,10 +792,12 @@ function TunnelsPage({
                             onClick={() => window.open(url, "_blank", "noreferrer")}>
                             <i className="ti ti-external-link" />
                           </div>
-                          <button className="stop-btn" disabled={loading}
-                            onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                            Stop
-                          </button>
+                          {!tunnel.isCliSession && (
+                            <button className="stop-btn" disabled={loading}
+                              onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                              Stop
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -833,7 +861,7 @@ function buildCurlCommand(req: CapturedRequestDetail, baseUrl: string): string {
   return `curl -X ${req.method} '${url}' \\\n  ${headerArgs}${bodyArg}`;
 }
 
-function InspectorPage({
+export function InspectorPage({
   api, tunnels, initialSubdomain, onBack,
 }: {
   api: GatewayApi;
@@ -1274,7 +1302,7 @@ export function AiPage() {
 
 // ─── UsagePage ────────────────────────────────────────────────────────────────
 
-function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number }) {
+export function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number }) {
   const [gwStatus, setGwStatus] = useState<GatewayStatus | null>(null);
   const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [loadingStatus, setLoadingStatus] = useState(true);
@@ -1414,7 +1442,7 @@ function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number 
 
 // ─── ApiKeysPage ──────────────────────────────────────────────────────────────
 
-function ApiKeysPage({
+export function ApiKeysPage({
   apiKeys, loading, createdKeyToken, onDismissToken, onNewKey, onRevokeKey, onCopy, onRefresh,
 }: {
   apiKeys: ApiKeyRecord[];
@@ -1928,7 +1956,7 @@ function actionBadge(action: string): { cls: string; icon: string } {
 
 // ─── AdminOverviewPage ────────────────────────────────────────────────────────
 
-function AdminOverviewPage({
+export function AdminOverviewPage({
   api, showToast,
 }: {
   api: GatewayApi;
@@ -2185,7 +2213,7 @@ function AdminOverviewPage({
 
 // ─── AdminAuditPage ───────────────────────────────────────────────────────────
 
-function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: string, type?: Toast["type"]) => void }) {
+export function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: string, type?: Toast["type"]) => void }) {
   const [items, setItems] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -2438,7 +2466,7 @@ function AdminAuditPage({ api, showToast }: { api: GatewayApi; showToast: (msg: 
 
 // ─── AdminGatewayPage ─────────────────────────────────────────────────────────
 
-function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
+export function AdminGatewayPage({ api, tunnels: allTunnels, showToast, onConfirm }: {
   api: GatewayApi;
   tunnels: TunnelRecord[];
   showToast: (msg: string, type?: Toast["type"]) => void;
@@ -2695,7 +2723,7 @@ function NewTcpMappingModal({ onCreate, onClose }: {
   );
 }
 
-function AdminTcpPage({ api, showToast, onConfirm }: {
+export function AdminTcpPage({ api, showToast, onConfirm }: {
   api: GatewayApi;
   showToast: (msg: string, type?: Toast["type"]) => void;
   onConfirm: (state: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => void;
@@ -3299,7 +3327,7 @@ export function App() {
     <>
       {/* ── AUTH SCREEN ──────────────────────────────────────────────────── */}
       {screen === "auth" && (
-        <AuthScreen
+        <SharedAuthScreen
           authTab={authTab} setAuthTab={setAuthTab}
           theme={theme} setTheme={setThemeState}
           loginEmail={loginEmail} setLoginEmail={setLoginEmail}
@@ -3463,7 +3491,7 @@ export function App() {
 
             <div className="content">
               {currentPage === "tunnels" && (
-                <TunnelsPage
+                <SharedTunnelsPage
                   tunnels={tunnels}
                   loading={loading}
                   gatewayStatus={gatewayStatus}
@@ -3481,10 +3509,10 @@ export function App() {
               )}
               {currentPage === "ai" && <SharedAiPage />}
               {currentPage === "usage" && (
-                <UsagePage api={api} tunnelCount={tunnels.length} />
+                <SharedUsagePage api={api} tunnelCount={tunnels.length} />
               )}
               {currentPage === "api" && (
-                <ApiKeysPage
+                <SharedApiKeysPage
                   apiKeys={apiKeys}
                   loading={loading}
                   createdKeyToken={createdKeyToken}
@@ -3509,13 +3537,13 @@ export function App() {
 
               {/* ── Admin pages ── */}
               {currentPage === "admin:overview" && hasAdminRole(user?.role) && (
-                <AdminOverviewPage api={api} showToast={showToast} />
+                <SharedAdminOverviewPage api={api} showToast={showToast} />
               )}
               {currentPage === "admin:audit" && hasAdminRole(user?.role) && (
-                <AdminAuditPage api={api} showToast={showToast} />
+                <SharedAdminAuditPage api={api} showToast={showToast} />
               )}
               {currentPage === "admin:gateway" && hasAdminRole(user?.role) && (
-                <AdminGatewayPage
+                <SharedAdminGatewayPage
                   api={api}
                   tunnels={tunnels}
                   showToast={showToast}
@@ -3523,10 +3551,10 @@ export function App() {
                 />
               )}
               {currentPage === "admin:tcp" && hasAdminRole(user?.role) && (
-                <AdminTcpPage api={api} showToast={showToast} onConfirm={setConfirm} />
+                <SharedAdminTcpPage api={api} showToast={showToast} onConfirm={setConfirm} />
               )}
               {currentPage === "inspector" && (
-                <InspectorPage
+                <SharedInspectorPage
                   api={api}
                   tunnels={tunnels}
                   initialSubdomain={inspectorSubdomain}

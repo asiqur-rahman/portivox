@@ -4,6 +4,17 @@ export type TunnelRecord = {
   createdAt: string;
   /** True when a live WebSocket client is currently connected for this subdomain. */
   active: boolean;
+  /**
+   * True for tunnels created via `portivox open` that have no DB record.
+   * These sessions cannot be stopped from the dashboard — the user must
+   * press Ctrl+C in their terminal to disconnect.
+   */
+  isCliSession?: boolean;
+  /**
+   * Stable status-page URL (e.g. https://host/r/:token). Present for most
+   * sessions; may be null if the redirect entry has not yet been created.
+   */
+  redirectUrl?: string | null;
 };
 
 export type ApiKeyRecord = {

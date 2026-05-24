@@ -2045,9 +2045,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const tunnels = await store.list(principal.userId);
     // Enrich each record with a live `active` flag so the UI can distinguish
     // DB-reserved subdomains from ones with an actual connected client.
+    const dbSubdomains = new Set(tunnels.map((t) => t.subdomain));
     const enriched = tunnels.map((t) => ({ ...t, active: !!registry.findBySubdomain(t.subdomain) }));
+
+    // Append live CLI sessions: tunnels registered via `portivox open` that have
+    // no DB record (the client never called POST /api/tunnels to reserve a subdomain).
+    // We identify these by cross-referencing ownershipBySubdomain (populated at
+    // WebSocket registration time) against the registry's active sessions.
+    const liveSessions = registry.listSessions()
+      .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain))
+      .map((s) => {
+        const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
+        const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
+        return {
+          id: `cli_${s.subdomain}`,
+          userId: principal.userId,
+          subdomain: s.subdomain,
+          createdAt: new Date(s.connectedAt).toISOString(),
+          active: true,
+          isCliSession: true,
+          redirectUrl,
+        };
+      });
+
+    const allTunnels = [...enriched, ...liveSessions];
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
-    return reply.status(200).send({ count: enriched.length, tunnels: enriched });
+    return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
   });
 
   app.post("/api/tunnels", async (req, reply) => {

@@ -1,0 +1,273 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { GatewayApi, type CapturedRequestDetail, type CapturedRequestSummary, type TunnelRecord } from "../api";
+
+function methodClass(method: string): string {
+  switch (method.toUpperCase()) {
+    case "GET": return "method-get";
+    case "POST": return "method-post";
+    case "PUT": return "method-put";
+    case "PATCH": return "method-patch";
+    case "DELETE": return "method-delete";
+    default: return "method-other";
+  }
+}
+
+function statusClass(code: number | null, error: string | null): string {
+  if (error) return "status-err";
+  if (code === null) return "status-pending";
+  if (code < 300) return "status-2xx";
+  if (code < 400) return "status-3xx";
+  if (code < 500) return "status-4xx";
+  return "status-5xx";
+}
+
+function decodeBase64Body(b64: string): string {
+  try {
+    return atob(b64);
+  } catch {
+    return b64;
+  }
+}
+
+function tryPrettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function buildCurlCommand(req: CapturedRequestDetail, baseUrl: string): string {
+  const url = `${baseUrl}${req.path}`;
+  const headerArgs = Object.entries(req.requestHeaders)
+    .filter(([, value]) => value !== undefined && !["host"].includes(String(value).toLowerCase()))
+    .map(([key, value]) => `-H '${key}: ${Array.isArray(value) ? value.join(", ") : value}'`)
+    .join(" \\\n  ");
+  const body = req.requestBodyBase64 ? decodeBase64Body(req.requestBodyBase64) : "";
+  const bodyArg = body ? ` \\\n  -d '${body.replace(/'/g, "'\\''")}' ` : "";
+  return `curl -X ${req.method} '${url}' \\\n  ${headerArgs}${bodyArg}`;
+}
+
+export function InspectorPage({
+  api,
+  tunnels,
+  initialSubdomain,
+  onBack,
+}: {
+  api: GatewayApi;
+  tunnels: TunnelRecord[];
+  initialSubdomain: string | null;
+  onBack: () => void;
+}) {
+  const [subdomain, setSubdomain] = useState<string>(initialSubdomain ?? tunnels[0]?.subdomain ?? "");
+  const [requests, setRequests] = useState<CapturedRequestSummary[]>([]);
+  const [selected, setSelected] = useState<CapturedRequestDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [activeTab, setActiveTab] = useState<"req-headers" | "req-body" | "res-headers" | "res-body">("res-body");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [clearing, setClearing] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchList = useCallback(() => {
+    if (!subdomain) return;
+    api.listInspectorRequests(subdomain)
+      .then((data) => setRequests(data.requests))
+      .catch(() => {});
+  }, [api, subdomain]);
+
+  useEffect(() => {
+    fetchList();
+    if (autoRefresh) {
+      timerRef.current = setInterval(fetchList, 2000);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [fetchList, autoRefresh]);
+
+  const selectRequest = (id: string) => {
+    setLoadingDetail(true);
+    setActiveTab("res-body");
+    api.getInspectorRequest(subdomain, id)
+      .then((data) => setSelected(data.request))
+      .catch(() => setSelected(null))
+      .finally(() => setLoadingDetail(false));
+  };
+
+  const clearRequests = () => {
+    setClearing(true);
+    api.clearInspectorRequests(subdomain)
+      .then(() => {
+        setRequests([]);
+        setSelected(null);
+      })
+      .catch(() => {})
+      .finally(() => setClearing(false));
+  };
+
+  const copyAsCurl = () => {
+    if (!selected) return;
+    const base = `${window.location.protocol}//${subdomain}.${window.location.hostname}`;
+    const command = buildCurlCommand(selected, base);
+    navigator.clipboard.writeText(command).catch(() => {});
+  };
+
+  const renderBody = () => {
+    if (!selected) return null;
+    if (activeTab === "req-headers" || activeTab === "res-headers") {
+      const headers = activeTab === "req-headers" ? selected.requestHeaders : selected.responseHeaders;
+      const entries = Object.entries(headers).filter(([, value]) => value !== undefined);
+      if (entries.length === 0) return <p className="inspector-no-body">No headers.</p>;
+      return (
+        <table className="inspector-headers-tbl">
+          <tbody>
+            {entries.map(([key, value]) => (
+              <tr key={key}>
+                <td>{key}</td>
+                <td>{Array.isArray(value) ? value.join(", ") : String(value ?? "")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    const b64 = activeTab === "req-body" ? selected.requestBodyBase64 : selected.responseBodyBase64;
+    const truncated = activeTab === "req-body" ? selected.requestBodyTruncated : selected.responseBodyTruncated;
+    if (!b64) return <p className="inspector-no-body">Empty body.</p>;
+    const raw = decodeBase64Body(b64);
+    const display = tryPrettyJson(raw);
+    return (
+      <>
+        {truncated && (
+          <div className="inspector-truncated-note">
+            <i className="ti ti-alert-triangle" />
+            Body truncated at 64 KB, full payload not stored.
+          </div>
+        )}
+        <pre className="inspector-body-pre">{display}</pre>
+      </>
+    );
+  };
+
+  const selectedReqInfo = selected ? requests.find((request) => request.id === selected.id) : null;
+
+  return (
+    <div className="page">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="btn-ghost" onClick={onBack}><i className="ti ti-arrow-left" /></button>
+          <span style={{ fontSize: 15, fontWeight: 700 }}>Traffic Inspector</span>
+          {autoRefresh && <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {tunnels.length > 0 && (
+            <select
+              className="form-inp"
+              style={{ height: 32, width: "auto", padding: "0 10px", fontSize: 12 }}
+              value={subdomain}
+              onChange={(event) => {
+                setSubdomain(event.target.value);
+                setRequests([]);
+                setSelected(null);
+              }}
+            >
+              {tunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain}>{tunnel.subdomain}</option>)}
+            </select>
+          )}
+          <button className="btn-ghost" title={autoRefresh ? "Pause auto-refresh" : "Resume auto-refresh"} onClick={() => setAutoRefresh((value) => !value)}>
+            <i className={`ti ti-${autoRefresh ? "player-pause" : "player-play"}`} />
+            {autoRefresh ? "Pause" : "Resume"}
+          </button>
+          <button className="btn-ghost" onClick={fetchList}><i className="ti ti-refresh" /> Refresh</button>
+          <button className="btn-ghost" disabled={clearing || requests.length === 0} onClick={clearRequests}>
+            <i className="ti ti-trash" /> Clear
+          </button>
+        </div>
+      </div>
+
+      {!subdomain ? (
+        <div className="empty">
+          <i className="ti ti-eye-off" />
+          <div className="empty-title">No tunnel selected</div>
+          <div className="empty-desc">Start a tunnel first, then open the inspector to see live traffic.</div>
+        </div>
+      ) : (
+        <div className="inspector-layout">
+          <div className="inspector-list-pane">
+            <div className="inspector-list-head">
+              <span className="inspector-subdomain">{subdomain}</span>
+              <span style={{ fontSize: 11, color: "var(--text-3)" }}>{requests.length} req{requests.length !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="inspector-list-scroll">
+              {requests.length === 0 ? (
+                <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-3)" }}>
+                  <i className="ti ti-wifi-off" style={{ fontSize: 28, display: "block", marginBottom: 10, opacity: 0.4 }} />
+                  <p style={{ fontSize: 12 }}>Waiting for requests...</p>
+                </div>
+              ) : requests.map((request) => (
+                <div key={request.id} className={`inspector-row${selected?.id === request.id ? " active" : ""}`} onClick={() => selectRequest(request.id)}>
+                  <div className="inspector-row-top">
+                    <span className={`inspector-method ${methodClass(request.method)}`}>{request.method}</span>
+                    <span className={`inspector-status ${statusClass(request.statusCode, request.error)}`}>
+                      {request.error ? "ERR" : request.statusCode ?? "..."}
+                    </span>
+                    <span className="inspector-path">{request.path}</span>
+                  </div>
+                  <div className="inspector-row-meta">
+                    <span>{new Date(request.capturedAt).toLocaleTimeString()}</span>
+                    {request.durationMs !== null && <span className="inspector-duration">{request.durationMs} ms</span>}
+                    {request.error && <span style={{ color: "var(--red)" }}>{request.error}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="inspector-detail-pane">
+            {!selected ? (
+              <div className="inspector-empty-detail">
+                <i className="ti ti-click" />
+                <p>Select a request to inspect</p>
+              </div>
+            ) : (
+              <>
+                <div className="inspector-detail-head">
+                  <div className="inspector-detail-title">
+                    <span className={`inspector-method ${methodClass(selected.method)}`}>{selected.method}</span>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.path}</span>
+                    {selectedReqInfo && (
+                      <span className={`inspector-status ${statusClass(selected.statusCode, selected.error)}`}>
+                        {selected.error ? "ERR" : selected.statusCode ?? "..."}
+                      </span>
+                    )}
+                    {selected.durationMs !== null && (
+                      <span style={{ fontSize: 11, color: "var(--text-3)", marginLeft: 4 }}>{selected.durationMs} ms</span>
+                    )}
+                  </div>
+                  <div className="inspector-detail-actions">
+                    {loadingDetail && <i className="ti ti-loader-2 spin" style={{ fontSize: 16, color: "var(--text-3)" }} />}
+                    <button className="btn-ghost" onClick={copyAsCurl} title="Copy as cURL">
+                      <i className="ti ti-terminal" /> cURL
+                    </button>
+                  </div>
+                </div>
+
+                <div className="inspector-tabs">
+                  {(["res-body", "res-headers", "req-body", "req-headers"] as const).map((tab) => (
+                    <button key={tab} className={`inspector-tab${activeTab === tab ? " active" : ""}`} onClick={() => setActiveTab(tab)}>
+                      {tab === "res-body" ? "Response Body" : tab === "res-headers" ? "Response Headers" : tab === "req-body" ? "Request Body" : "Request Headers"}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="inspector-body-scroll">
+                  {renderBody()}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
