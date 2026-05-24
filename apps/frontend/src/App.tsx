@@ -738,65 +738,105 @@ function TunnelsPage({
             </button>
           </div>
         ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Subdomain</th>
-                <th>Public URL</th>
-                <th>Created</th>
-                <th>Status</th>
-                <th style={{ textAlign: "right" }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <>
+            <div className="mobile-card-list">
               {tunnels.map((tunnel) => {
                 const url = getTunnelUrl(tunnel.subdomain);
                 return (
-                  <tr key={tunnel.id}>
-                    <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <i className="ti ti-topology-star-3" style={{ fontSize: 14, color: "var(--accent)" }} />
+                  <article key={tunnel.id} className="mobile-list-card">
+                    <div className="mobile-list-card-head">
+                      <div className="mobile-list-title">
+                        <span className="mobile-list-icon"><i className="ti ti-topology-star-3" /></span>
+                        <div>
+                          <strong>{tunnel.subdomain}</strong>
+                          <span>{new Date(tunnel.createdAt).toLocaleDateString()}</span>
                         </div>
-                        <strong>{tunnel.subdomain}</strong>
                       </div>
-                    </td>
-                    <td>
-                      <span className="url-pill">{url}</span>
-                    </td>
-                    <td style={{ color: "var(--text-3)", fontSize: 12 }}>
-                      {new Date(tunnel.createdAt).toLocaleString()}
-                    </td>
-                    <td>
-                      {tunnel.active
-                        ? <><span className="status-dot dot-green" />Live</>
-                        : <><span className="status-dot dot-gray" /><span style={{ color: "var(--text-3)" }}>Reserved</span></>}
-                    </td>
-                    <td>
-                      <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                        {tunnel.active && (
-                          <div className="icon-btn" title="Inspect traffic" onClick={() => onInspect(tunnel.subdomain)}>
-                            <i className="ti ti-eye" />
-                          </div>
-                        )}
-                        <div className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
-                          <i className="ti ti-copy" />
-                        </div>
-                        <div className="icon-btn" title="Open in browser"
-                          onClick={() => window.open(url, "_blank", "noreferrer")}>
-                          <i className="ti ti-external-link" />
-                        </div>
-                        <button className="stop-btn" disabled={loading}
-                          onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                          Stop
+                      <span className={`mobile-status ${tunnel.active ? "live" : ""}`}>
+                        {tunnel.active ? "Live" : "Reserved"}
+                      </span>
+                    </div>
+                    <button className="mobile-url-row" onClick={() => onCopy(url)}>
+                      <span>{url}</span>
+                      <i className="ti ti-copy" />
+                    </button>
+                    <div className="mobile-card-actions">
+                      {tunnel.active && (
+                        <button className="btn-ghost" onClick={() => onInspect(tunnel.subdomain)}>
+                          <i className="ti ti-eye" /> Inspect
                         </button>
-                      </div>
-                    </td>
-                  </tr>
+                      )}
+                      <button className="btn-ghost" onClick={() => window.open(url, "_blank", "noreferrer")}>
+                        <i className="ti ti-external-link" /> Open
+                      </button>
+                      <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                        Stop
+                      </button>
+                    </div>
+                  </article>
                 );
               })}
-            </tbody>
-          </table>
+            </div>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Subdomain</th>
+                  <th>Public URL</th>
+                  <th>Created</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tunnels.map((tunnel) => {
+                  const url = getTunnelUrl(tunnel.subdomain);
+                  return (
+                    <tr key={tunnel.id}>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <i className="ti ti-topology-star-3" style={{ fontSize: 14, color: "var(--accent)" }} />
+                          </div>
+                          <strong>{tunnel.subdomain}</strong>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="url-pill">{url}</span>
+                      </td>
+                      <td style={{ color: "var(--text-3)", fontSize: 12 }}>
+                        {new Date(tunnel.createdAt).toLocaleString()}
+                      </td>
+                      <td>
+                        {tunnel.active
+                          ? <><span className="status-dot dot-green" />Live</>
+                          : <><span className="status-dot dot-gray" /><span style={{ color: "var(--text-3)" }}>Reserved</span></>}
+                      </td>
+                      <td>
+                        <div className="row-actions" style={{ justifyContent: "flex-end" }}>
+                          {tunnel.active && (
+                            <div className="icon-btn" title="Inspect traffic" onClick={() => onInspect(tunnel.subdomain)}>
+                              <i className="ti ti-eye" />
+                            </div>
+                          )}
+                          <div className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
+                            <i className="ti ti-copy" />
+                          </div>
+                          <div className="icon-btn" title="Open in browser"
+                            onClick={() => window.open(url, "_blank", "noreferrer")}>
+                            <i className="ti ti-external-link" />
+                          </div>
+                          <button className="stop-btn" disabled={loading}
+                            onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                            Stop
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
     </div>
@@ -1474,48 +1514,76 @@ function ApiKeysPage({
             </button>
           </div>
         ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Scopes</th>
-                <th>Created</th>
-                <th style={{ textAlign: "right" }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <>
+            <div className="mobile-card-list">
               {activeKeys.map((key) => (
-                <tr key={key.id}>
-                  <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                      <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <i className="ti ti-key" style={{ fontSize: 13, color: "var(--accent)" }} />
+                <article key={key.id} className="mobile-list-card">
+                  <div className="mobile-list-card-head">
+                    <div className="mobile-list-title">
+                      <span className="mobile-list-icon"><i className="ti ti-key" /></span>
+                      <div>
+                        <strong>{key.name}</strong>
+                        <span>{new Date(key.createdAt).toLocaleDateString()}</span>
                       </div>
-                      <strong>{key.name}</strong>
                     </div>
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {key.scopes.map((s) => (
-                        <span key={s} className="chip chip-purple" style={{ fontSize: 10 }}>{s}</span>
-                      ))}
-                    </div>
-                  </td>
-                  <td style={{ color: "var(--text-3)", fontSize: 12 }}>
-                    {new Date(key.createdAt).toLocaleDateString()}
-                  </td>
-                  <td>
-                    <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                      <button className="stop-btn" disabled={loading}
-                        onClick={() => onRevokeKey(key.id, key.name)}>
-                        Revoke
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                    <span className="mobile-status live">Active</span>
+                  </div>
+                  <div className="mobile-chip-row">
+                    {key.scopes.map((scope) => (
+                      <span key={scope} className="chip chip-purple">{scope}</span>
+                    ))}
+                  </div>
+                  <div className="mobile-card-actions">
+                    <button className="stop-btn" disabled={loading} onClick={() => onRevokeKey(key.id, key.name)}>
+                      Revoke
+                    </button>
+                  </div>
+                </article>
               ))}
-            </tbody>
-          </table>
+            </div>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Scopes</th>
+                  <th>Created</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeKeys.map((key) => (
+                  <tr key={key.id}>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <i className="ti ti-key" style={{ fontSize: 13, color: "var(--accent)" }} />
+                        </div>
+                        <strong>{key.name}</strong>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {key.scopes.map((s) => (
+                          <span key={s} className="chip chip-purple" style={{ fontSize: 10 }}>{s}</span>
+                        ))}
+                      </div>
+                    </td>
+                    <td style={{ color: "var(--text-3)", fontSize: 12 }}>
+                      {new Date(key.createdAt).toLocaleDateString()}
+                    </td>
+                    <td>
+                      <div className="row-actions" style={{ justifyContent: "flex-end" }}>
+                        <button className="stop-btn" disabled={loading}
+                          onClick={() => onRevokeKey(key.id, key.name)}>
+                          Revoke
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
     </div>
@@ -2747,6 +2815,7 @@ export function App() {
   const [currentPage, setCurrentPage] = useState<Page>("tunnels");
   const [inspectorSubdomain, setInspectorSubdomain] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState<boolean>(() => isStandaloneMode());
   const [installPromptDismissed, setInstallPromptDismissed] = useState<boolean>(() => shouldSuppressInstallPrompt());
@@ -2852,6 +2921,7 @@ export function App() {
 
   useEffect(() => {
     setMobileNavOpen(false);
+    setMobileMoreOpen(false);
   }, [currentPage, screen]);
 
   // ── Gateway status poll (public endpoint, no auth) ─────────────────────────
@@ -3373,7 +3443,6 @@ export function App() {
                 { page: "tunnels" as Page, label: "Sessions", icon: "topology-star-3" },
                 { page: "api" as Page, label: "API", icon: "key" },
                 { page: "inspector" as Page, label: "Inspector", icon: "scan-eye" },
-                { page: "settings" as Page, label: "Account", icon: "user-cog" },
               ].map((item) => (
                 <button
                   key={item.page}
@@ -3384,7 +3453,72 @@ export function App() {
                   <span>{item.label}</span>
                 </button>
               ))}
+              <button
+                className={`mobile-bottom-item ${mobileMoreOpen || !["tunnels", "api", "inspector"].includes(currentPage) ? "active" : ""}`}
+                onClick={() => setMobileMoreOpen((prev) => !prev)}
+              >
+                <i className="ti ti-dots" />
+                <span>More</span>
+              </button>
             </nav>
+
+            {mobileMoreOpen && (
+              <div className="mobile-sheet-backdrop" onClick={() => setMobileMoreOpen(false)}>
+                <div className="mobile-more-sheet" onClick={(e) => e.stopPropagation()}>
+                  <div className="mobile-sheet-handle" />
+                  <div className="mobile-sheet-head">
+                    <div>
+                      <div className="mobile-sheet-title">More</div>
+                      <div className="mobile-sheet-sub">{user?.name ?? "Portivox workspace"}</div>
+                    </div>
+                    <button className="icon-btn" onClick={() => setMobileMoreOpen(false)} aria-label="Close menu">
+                      <i className="ti ti-x" />
+                    </button>
+                  </div>
+                  <div className="mobile-sheet-grid">
+                    {[
+                      { page: "devices" as Page, label: "Devices", icon: "device-laptop" },
+                      { page: "ai" as Page, label: "AI Assistant", icon: "sparkles" },
+                      { page: "usage" as Page, label: "Usage", icon: "chart-bar" },
+                      { page: "org" as Page, label: "Organisation", icon: "building" },
+                      { page: "billing" as Page, label: "Billing", icon: "credit-card" },
+                      { page: "settings" as Page, label: "Account", icon: "user-cog" },
+                    ].map((item) => (
+                      <button
+                        key={item.page}
+                        className={`mobile-sheet-item ${currentPage === item.page ? "active" : ""}`}
+                        onClick={() => setCurrentPage(item.page)}
+                      >
+                        <i className={`ti ti-${item.icon}`} />
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {hasAdminRole(user?.role) && (
+                    <>
+                      <div className="mobile-sheet-section">Administration</div>
+                      <div className="mobile-sheet-grid">
+                        {[
+                          { page: "admin:overview" as Page, label: "Overview", icon: "layout-dashboard" },
+                          { page: "admin:audit" as Page, label: "Audit", icon: "clipboard-list" },
+                          { page: "admin:gateway" as Page, label: "Gateway", icon: "server-cog" },
+                          { page: "admin:tcp" as Page, label: "TCP Ports", icon: "network" },
+                        ].map((item) => (
+                          <button
+                            key={item.page}
+                            className={`mobile-sheet-item ${currentPage === item.page ? "active" : ""}`}
+                            onClick={() => setCurrentPage(item.page)}
+                          >
+                            <i className={`ti ti-${item.icon}`} />
+                            <span>{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
 
             <footer className="app-footer">
               <span>

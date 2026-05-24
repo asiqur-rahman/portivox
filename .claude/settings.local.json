@@ -43,7 +43,12 @@
       "Bash(git tag *)",
       "Bash(git config *)",
       "Bash(git commit --no-verify -m ' *)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(where gh *)",
+      "Bash(git remote *)",
+      "Bash(curl -s \"https://api.github.com/repos/asiqur-rahman/Project_Portivox/actions/runs?per_page=5\")",
+      "Bash(curl -s \"https://api.github.com/repos/asiqur-rahman/Project_Portivox/actions/runs?per_page=5\" -o \"%TEMP%\\\\ci_runs.json\")",
+      "Bash(node -e \"const j=JSON.parse\\(require\\('fs'\\).readFileSync\\('%TEMP%/ci_runs.json','utf8'\\)\\);\\(j.workflow_runs||[]\\).slice\\(0,5\\).forEach\\(r=>console.log\\(r.id,r.status,r.conclusion||'pending',r.head_sha.slice\\(0,7\\),r.created_at,r.name\\)\\);\")"
     ]
   }
 }
