@@ -158,17 +158,16 @@ export function InspectorPage({
 
   return (
     <div className="page">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="inspector-toolbar">
+        <div className="inspector-toolbar-left">
           <button className="btn-ghost" onClick={onBack}><i className="ti ti-arrow-left" /></button>
-          <span style={{ fontSize: 15, fontWeight: 700 }}>Traffic Inspector</span>
+          <span className="inspector-toolbar-title">Traffic Inspector</span>
           {autoRefresh && <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="inspector-toolbar-right">
           {httpTunnels.length > 0 && (
             <select
-              className="form-inp"
-              style={{ height: 32, width: "auto", padding: "0 10px", fontSize: 12 }}
+              className="form-inp inspector-tunnel-select"
               value={subdomain}
               onChange={(event) => {
                 setSubdomain(event.target.value);
@@ -201,7 +200,7 @@ export function InspectorPage({
             Run <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code> from
             the portal (New tunnel → Connect) to start an HTTP session, then come back here to inspect traffic.
           </div>
-          <button className="btn-ghost" onClick={onBack} style={{ margin: "0 auto" }}>
+          <button className="btn-ghost empty-cta-btn" onClick={onBack}>
             <i className="ti ti-arrow-left" /> Back to tunnels
           </button>
         </div>
@@ -216,14 +215,14 @@ export function InspectorPage({
           <div className="inspector-list-pane">
             <div className="inspector-list-head">
               <span className="inspector-subdomain">{subdomain}</span>
-              <span style={{ fontSize: 11, color: "var(--text-3)" }}>{requests.length} req{requests.length !== 1 ? "s" : ""}</span>
+              <span className="inspector-request-count">{requests.length} req{requests.length !== 1 ? "s" : ""}</span>
             </div>
             <div className="inspector-list-scroll">
               {requests.length === 0 ? (
-                <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-3)" }}>
-                  <i className="ti ti-antenna-bars-1" style={{ fontSize: 28, display: "block", marginBottom: 10, opacity: 0.4 }} />
-                  <p style={{ fontSize: 12, marginBottom: 6 }}>Waiting for HTTP requests…</p>
-                  <p style={{ fontSize: 11, opacity: 0.7 }}>Send a request to your public URL to see it here.</p>
+                <div className="inspector-list-empty">
+                  <i className="ti ti-antenna-bars-1" />
+                  <p className="inspector-list-empty-title">Waiting for HTTP requests…</p>
+                  <p className="inspector-list-empty-copy">Send a request to your public URL to see it here.</p>
                 </div>
               ) : requests.map((request) => (
                 <div key={request.id} className={`inspector-row${selected?.id === request.id ? " active" : ""}`} onClick={() => selectRequest(request.id)}>
@@ -237,7 +236,7 @@ export function InspectorPage({
                   <div className="inspector-row-meta">
                     <span>{new Date(request.capturedAt).toLocaleTimeString()}</span>
                     {request.durationMs !== null && <span className="inspector-duration">{request.durationMs} ms</span>}
-                    {request.error && <span style={{ color: "var(--red)" }}>{request.error}</span>}
+                    {request.error && <span className="inspector-error-text">{request.error}</span>}
                   </div>
                 </div>
               ))}
@@ -255,14 +254,14 @@ export function InspectorPage({
                 <div className="inspector-detail-head">
                   <div className="inspector-detail-title">
                     <span className={`inspector-method ${methodClass(selected.method)}`}>{selected.method}</span>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.path}</span>
+                    <span className="inspector-detail-path">{selected.path}</span>
                     {selectedReqInfo && (
                       <span className={`inspector-status ${statusClass(selected.statusCode, selected.error)}`}>
                         {selected.error ? "ERR" : selected.statusCode ?? "..."}
                       </span>
                     )}
                     {selected.durationMs !== null && (
-                      <span style={{ fontSize: 11, color: "var(--text-3)", marginLeft: 4 }}>{selected.durationMs} ms</span>
+                      <span className="inspector-detail-duration">{selected.durationMs} ms</span>
                     )}
                   </div>
                   <div className="inspector-detail-actions">

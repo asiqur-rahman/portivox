@@ -128,7 +128,7 @@ export function AdminTcpPage({
           <div className="admin-hero-sub">Reserve public ports for TCP tunnels, databases, SSH, and custom protocols</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }} onClick={refresh} disabled={loading}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={refresh} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
           </button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>
@@ -155,7 +155,7 @@ export function AdminTcpPage({
               Create a mapping to reserve a public port for TCP tunnels.
               Clients connect to the public port and the gateway forwards traffic to the local port.
             </div>
-            <button className="btn-primary" style={{ margin: "0 auto" }} onClick={() => setShowCreate(true)}>
+            <button className="btn-primary empty-cta-btn" onClick={() => setShowCreate(true)}>
               <i className="ti ti-plus" /> New mapping
             </button>
           </div>

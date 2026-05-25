@@ -787,7 +787,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // nginx container's internal Docker IP (172.22.x.x) instead of the real
   // client IP — which breaks TCP IP-protection whitelist comparisons because
   // the whitelisted IP never matches the actual conn.remoteAddress.
-  const app = Fastify({ logger: true, trustProxy: true });
+  // trustProxy: 1 — trust exactly ONE upstream proxy hop (nginx).
+  // This correctly resolves req.ip from X-Forwarded-For while preventing
+  // IP spoofing by clients who send a fake X-Forwarded-For header.
+  // (trustProxy: true would trust ALL hops and allow spoofing.)
+  const app = Fastify({ logger: true, trustProxy: 1 });
   void app.register(swagger, {
     openapi: buildOpenApiDocument((config.gatewayPublicBaseUrl ?? "").trim() || `http://${config.rootDomain}:${config.gatewayPort}`),
   });
@@ -2753,6 +2757,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
     }
     const { subdomain } = req.params as { subdomain: string };
+    // Ownership check: non-admin users may only inspect their own tunnels.
+    const tunnelOwner = ownershipBySubdomain.get(subdomain);
+    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
+    }
     const ring = capturedRequests.get(subdomain) ?? [];
     return reply.status(200).send({
       subdomain,
@@ -2771,6 +2780,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
     }
     const { subdomain, reqId } = req.params as { subdomain: string; reqId: string };
+    // Ownership check: non-admin users may only inspect their own tunnels.
+    const tunnelOwner = ownershipBySubdomain.get(subdomain);
+    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
+    }
     const ring = capturedRequests.get(subdomain) ?? [];
     const entry = ring.find((r) => r.id === reqId);
     if (!entry) {
@@ -2789,6 +2803,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin role or tunnel:delete scope required" } });
     }
     const { subdomain } = req.params as { subdomain: string };
+    // Ownership check: non-admin users may only clear their own tunnel's buffer.
+    const tunnelOwner = ownershipBySubdomain.get(subdomain);
+    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
+    }
     capturedRequests.delete(subdomain);
     return reply.status(204).send();
   });
@@ -3095,6 +3114,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     app,
     async start(): Promise<void> {
       await app.listen({ port: config.gatewayPort, host: "0.0.0.0" });
+      if (!config.authRequired) {
+        // Loud warning — anonymous principal has full admin access in this mode.
+        console.warn(
+          "\n⚠  WARNING: authRequired is false — all requests are treated as full admin.\n" +
+          "   Do NOT expose this gateway publicly without enabling authentication.\n",
+        );
+      }
       if ((config.startupGraceMs ?? 0) > 0) {
         await new Promise((resolve) => setTimeout(resolve, config.startupGraceMs));
       }

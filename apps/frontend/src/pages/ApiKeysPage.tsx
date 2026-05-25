@@ -30,12 +30,12 @@ export function ApiKeysPage({
           </div>
           <div style={{ flex: 1 }}>
             <div className="ai-insight-label" style={{ color: "var(--green)" }}>Key generated, copy now</div>
-            <div className="ai-insight-text" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 4 }}>
-              <span className="url-pill" style={{ userSelect: "all", cursor: "text" }}>{createdKeyToken}</span>
+            <div className="ai-insight-text token-callout-row" style={{ marginTop: 4 }}>
+              <span className="url-pill token-pill" style={{ userSelect: "all", cursor: "text" }}>{createdKeyToken}</span>
               <span style={{ fontSize: 12, color: "var(--text-2)" }}>This token is shown only once.</span>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div className="token-callout-actions">
             <div className="icon-btn" onClick={() => onCopy(createdKeyToken)} title="Copy token">
               <i className="ti ti-copy" />
             </div>
@@ -71,7 +71,7 @@ export function ApiKeysPage({
               Generate a key to automate tunnel management, integrate with CI/CD pipelines,
               or build on top of the Portivox API.
             </div>
-            <button className="btn-primary" style={{ margin: "0 auto" }} onClick={onNewKey}>
+            <button className="btn-primary empty-cta-btn" onClick={onNewKey}>
               <i className="ti ti-plus" /> Generate your first key
             </button>
           </div>

@@ -87,7 +87,7 @@ export function SettingsPage({
             <label className="form-lbl">Email address</label>
             <input type="email" className="form-inp" value={user?.email ?? ""} disabled />
           </div>
-          <button className="btn-save" onClick={saveDisplayName}>
+          <button className="btn-save form-action-btn" onClick={saveDisplayName}>
             <i className="ti ti-check" /> Save name
           </button>
         </div>
@@ -118,7 +118,7 @@ export function SettingsPage({
                 onKeyDown={(event) => event.key === "Enter" && doChangePassword()}
               />
             </div>
-            <button className="btn-save" disabled={passLoading} onClick={doChangePassword}>
+            <button className="btn-save form-action-btn" disabled={passLoading} onClick={doChangePassword}>
               {passLoading ? <><i className="ti ti-loader-2 spin" /> Saving...</> : <><i className="ti ti-check" /> Change password</>}
             </button>
           </div>
@@ -146,10 +146,10 @@ export function SettingsPage({
             <i className="ti ti-alert-triangle" style={{ color: "var(--red)" }} /> Danger zone
           </div>
         </div>
-        <div style={{ padding: "18px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-          <div>
-            <div style={{ fontSize: "13.5px", fontWeight: 500 }}>Sign out</div>
-            <div style={{ fontSize: "12.5px", color: "var(--text-2)", marginTop: 3 }}>
+        <div className="settings-danger-row">
+          <div className="settings-danger-copy">
+            <div className="settings-danger-title">Sign out</div>
+            <div className="settings-danger-desc">
               Sign out of this session. Your tunnels will remain active.
             </div>
           </div>
@@ -158,14 +158,14 @@ export function SettingsPage({
           </button>
         </div>
         {!isAnonymous && (
-          <div style={{ padding: "0 22px 18px", borderTop: "1px solid var(--border)", paddingTop: 18, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-            <div>
-              <div style={{ fontSize: "13.5px", fontWeight: 500 }}>Delete account</div>
-              <div style={{ fontSize: "12.5px", color: "var(--text-2)", marginTop: 3 }}>
+          <div className="settings-danger-row settings-danger-row-bordered">
+            <div className="settings-danger-copy">
+              <div className="settings-danger-title">Delete account</div>
+              <div className="settings-danger-desc">
                 Remove your user account from this self-hosted instance.
               </div>
             </div>
-            <button className="btn-danger" style={{ opacity: 0.8 }} onClick={() => setShowDeleteConfirm(true)}>
+            <button className="btn-danger btn-danger-muted" onClick={() => setShowDeleteConfirm(true)}>
               Delete account
             </button>
           </div>

@@ -75,7 +75,7 @@ export function AdminAuditPage({
           <div className="admin-hero-sub">Full event history with user, resource, and timestamp details</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }} onClick={exportCsv} disabled={items.length === 0}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={exportCsv} disabled={items.length === 0}>
             <i className="ti ti-download" /> Export CSV
           </button>
         </div>
@@ -106,17 +106,17 @@ export function AdminAuditPage({
         </select>
 
         <label>From</label>
-        <input type="date" value={filterFrom} onChange={(event) => setFilterFrom(event.target.value)} style={{ width: 140 }} />
+        <input className="audit-date-input" type="date" value={filterFrom} onChange={(event) => setFilterFrom(event.target.value)} />
 
         <label>To</label>
-        <input type="date" value={filterTo} onChange={(event) => setFilterTo(event.target.value)} style={{ width: 140 }} />
+        <input className="audit-date-input" type="date" value={filterTo} onChange={(event) => setFilterTo(event.target.value)} />
 
         <label>Limit</label>
         <select value={filterLimit} onChange={(event) => setFilterLimit(Number(event.target.value))}>
           {[10, 25, 50, 100].map((count) => <option key={count} value={count}>{count}</option>)}
         </select>
 
-        <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => {
+        <button className="btn-ghost audit-filter-clear" onClick={() => {
           setFilterAction("");
           setFilterResource("");
           setFilterFrom("");
@@ -212,30 +212,30 @@ export function AdminAuditPage({
                           {item.action.replace(/_/g, " ")}
                         </span>
                       </td>
-                      <td style={{ color: "var(--text-2)", fontSize: 12 }}>{item.resource}</td>
+                      <td className="audit-cell-resource">{item.resource}</td>
                       <td>
                         {item.resourceId
-                          ? <code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>{item.resourceId.slice(0, 16)}{item.resourceId.length > 16 ? "..." : ""}</code>
-                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>-</span>}
+                          ? <code className="audit-cell-code">{item.resourceId.slice(0, 16)}{item.resourceId.length > 16 ? "..." : ""}</code>
+                          : <span className="audit-cell-empty">-</span>}
                       </td>
                       <td>
                         {item.userId
                           ? <span className="tunnel-user-chip"><i className="ti ti-user" />{item.userId.slice(0, 10)}{item.userId.length > 10 ? "..." : ""}</span>
-                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>system</span>}
+                          : <span className="audit-cell-empty">system</span>}
                       </td>
-                      <td style={{ maxWidth: 200 }}>
+                      <td className="audit-cell-metadata">
                         {item.metadata && Object.keys(item.metadata).length > 0
                           ? (() => {
                               const metadata = JSON.stringify(item.metadata);
                               return (
-                                <code style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", wordBreak: "break-all" }}>
+                                <code className="audit-cell-code audit-cell-code-wrap">
                                   {metadata.slice(0, 60)}{metadata.length > 60 ? "..." : ""}
                                 </code>
                               );
                             })()
-                          : <span style={{ color: "var(--text-3)", fontSize: 11 }}>-</span>}
+                          : <span className="audit-cell-empty">-</span>}
                       </td>
-                      <td style={{ color: "var(--text-3)", fontSize: 12, whiteSpace: "nowrap" }} title={new Date(item.createdAt).toLocaleString()}>
+                      <td className="audit-cell-time" title={new Date(item.createdAt).toLocaleString()}>
                         {timeAgo(item.createdAt)}
                       </td>
                     </tr>
@@ -244,7 +244,7 @@ export function AdminAuditPage({
               </tbody>
             </table>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+            <div className="audit-pagination">
               <button className="btn-ghost" disabled={cursorStack.length === 0 || loading} onClick={() => {
                 const stack = [...cursorStack];
                 stack.pop();
@@ -254,7 +254,7 @@ export function AdminAuditPage({
               }}>
                 <i className="ti ti-chevron-left" /> Prev
               </button>
-              <span style={{ fontSize: 12, color: "var(--text-3)" }}>Page {cursorStack.length + 1}</span>
+              <span className="audit-pagination-label">Page {cursorStack.length + 1}</span>
               <button className="btn-ghost" disabled={!nextCursor || loading} onClick={() => {
                 if (nextCursor) load(nextCursor, nextCursor);
               }}>

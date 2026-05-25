@@ -9,9 +9,17 @@
  *
  * Registry: ~/.portivox/services.json — maps service name → ServiceEntry.
  * Logs:     ~/.portivox/logs/<name>.log
+ *
+ * Security notes:
+ *  - All OS service commands use spawnSync() with explicit argument arrays;
+ *    no string is ever passed through a shell interpreter.
+ *  - Service names are re-validated on every read from the registry to guard
+ *    against tampered registry files.
+ *  - Directories are created with mode 0o700 (owner-only access).
+ *  - process.argv[1] is resolved to an absolute path at install time.
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   writeFileSync,
@@ -19,7 +27,7 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
@@ -73,7 +81,7 @@ function readRegistry(): ServiceRegistry {
 }
 
 function writeRegistry(reg: ServiceRegistry): void {
-  mkdirSync(PORTIVOX_DIR, { recursive: true });
+  mkdirSync(PORTIVOX_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(SERVICES_PATH, JSON.stringify(reg, null, 2), { mode: 0o600 });
 }
 
@@ -94,7 +102,12 @@ function buildOpenArgs(entry: ServiceEntry): string[] {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 export function resolvePortivoxPaths(): { nodeBin: string; scriptPath: string } {
-  return { nodeBin: process.execPath, scriptPath: process.argv[1] };
+  return {
+    nodeBin: process.execPath,
+    // Resolve to an absolute path at install time so the service unit file
+    // is never left with a relative path that resolves differently at start time.
+    scriptPath: resolvePath(process.argv[1]),
+  };
 }
 
 export function validateServiceName(name: string): void {
@@ -116,18 +129,14 @@ function getPlatform(): "linux" | "darwin" | "win32" {
   );
 }
 
-function execQuiet(cmd: string): void {
-  execSync(cmd, { stdio: "pipe" });
-}
-
-function execOrFail(cmd: string, label: string): void {
-  try {
-    execSync(cmd, { stdio: "pipe" });
-  } catch (err) {
-    const detail =
-      err instanceof Error
-        ? ((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr?.toString().trim() || err.message)
-        : String(err);
+/**
+ * Run a command via spawnSync (no shell — no injection risk).
+ * Throws on non-zero exit.
+ */
+function spawnOrFail(cmd: string, argv: string[], label: string): void {
+  const r = spawnSync(cmd, argv, { encoding: "utf8" });
+  if (r.status !== 0) {
+    const detail = r.stderr?.trim() || r.stdout?.trim() || "unknown error";
     throw new Error(`${label}: ${detail}`);
   }
 }
@@ -140,14 +149,17 @@ function systemdUnitPath(name: string): string {
 
 /**
  * Quote a token for systemd ExecStart.
- * systemd has its own C-string escaping — wrap tokens that contain spaces,
- * backslashes, or double-quotes in double-quotes.
+ * - Escapes $ → $$ to prevent systemd environment-variable expansion.
+ * - Wraps tokens containing whitespace, backslashes, or double-quotes in double-quotes.
  */
 function sdQuote(s: string): string {
+  // Escape $ → $$ first (systemd expands $VAR and ${VAR} in ExecStart).
+  const dollarEscaped = s.replace(/\$/g, "$$$$");
   if (/[\s"\\]/.test(s)) {
-    return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    // Escape backslashes then double-quotes, then wrap.
+    return `"${dollarEscaped.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
-  return s;
+  return dollarEscaped;
 }
 
 function buildSystemdUnit(entry: ServiceEntry): string {
@@ -178,9 +190,9 @@ function installSystemd(entry: ServiceEntry): void {
   const unitDir = join(homedir(), ".config", "systemd", "user");
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(systemdUnitPath(entry.name), buildSystemdUnit(entry));
-  execOrFail("systemctl --user daemon-reload", "daemon-reload");
-  execOrFail(`systemctl --user enable portivox-${entry.name}.service`, "enable");
-  execOrFail(`systemctl --user start portivox-${entry.name}.service`, "start");
+  spawnOrFail("systemctl", ["--user", "daemon-reload"], "daemon-reload");
+  spawnOrFail("systemctl", ["--user", "enable", `portivox-${entry.name}.service`], "enable");
+  spawnOrFail("systemctl", ["--user", "start",  `portivox-${entry.name}.service`], "start");
 
   // Suggest linger if not already enabled (needed to run when not logged in)
   try {
@@ -195,16 +207,22 @@ function installSystemd(entry: ServiceEntry): void {
 }
 
 function removeSystemd(name: string): void {
-  try { execQuiet(`systemctl --user stop portivox-${name}.service`); } catch { /* already stopped */ }
-  try { execQuiet(`systemctl --user disable portivox-${name}.service`); } catch { /* already disabled */ }
+  spawnSync("systemctl", ["--user", "stop",    `portivox-${name}.service`]); // ignore result
+  spawnSync("systemctl", ["--user", "disable", `portivox-${name}.service`]); // ignore result
   const unitPath = systemdUnitPath(name);
   if (existsSync(unitPath)) rmSync(unitPath);
-  try { execQuiet("systemctl --user daemon-reload"); } catch { /* non-fatal */ }
+  spawnSync("systemctl", ["--user", "daemon-reload"]); // ignore result
 }
 
-function startSystemd(name: string): void   { execOrFail(`systemctl --user start portivox-${name}.service`,   `start ${name}`); }
-function stopSystemd(name: string): void    { execOrFail(`systemctl --user stop portivox-${name}.service`,    `stop ${name}`); }
-function restartSystemd(name: string): void { execOrFail(`systemctl --user restart portivox-${name}.service`, `restart ${name}`); }
+function startSystemd(name: string): void {
+  spawnOrFail("systemctl", ["--user", "start",   `portivox-${name}.service`], `start ${name}`);
+}
+function stopSystemd(name: string): void {
+  spawnOrFail("systemctl", ["--user", "stop",    `portivox-${name}.service`], `stop ${name}`);
+}
+function restartSystemd(name: string): void {
+  spawnOrFail("systemctl", ["--user", "restart", `portivox-${name}.service`], `restart ${name}`);
+}
 
 function statusTextSystemd(name: string): string {
   const r = spawnSync("systemctl", ["--user", "status", `portivox-${name}.service`], { encoding: "utf8" });
@@ -266,22 +284,27 @@ function installLaunchd(entry: ServiceEntry): void {
   mkdirSync(agentsDir, { recursive: true });
   const plistPath = launchdPlistPath(entry.name);
   writeFileSync(plistPath, buildLaunchdPlist(entry));
-  execOrFail(`launchctl load -w "${plistPath}"`, "launchctl load");
+  // Use spawnSync (no shell) to safely pass the plist path even if it has spaces.
+  spawnOrFail("launchctl", ["load", "-w", plistPath], "launchctl load");
 }
 
 function removeLaunchd(name: string): void {
   const plistPath = launchdPlistPath(name);
   if (existsSync(plistPath)) {
-    try { execQuiet(`launchctl unload "${plistPath}"`); } catch { /* already unloaded */ }
+    spawnSync("launchctl", ["unload", plistPath]); // ignore result
     rmSync(plistPath);
   }
 }
 
-function startLaunchd(name: string): void   { execOrFail(`launchctl start ${launchdLabel(name)}`, `start ${name}`); }
-function stopLaunchd(name: string): void    { execOrFail(`launchctl stop ${launchdLabel(name)}`,  `stop ${name}`); }
+function startLaunchd(name: string): void {
+  spawnOrFail("launchctl", ["start", launchdLabel(name)], `start ${name}`);
+}
+function stopLaunchd(name: string): void {
+  spawnOrFail("launchctl", ["stop",  launchdLabel(name)], `stop ${name}`);
+}
 function restartLaunchd(name: string): void {
-  try { execQuiet(`launchctl stop ${launchdLabel(name)}`); } catch { /* already stopped */ }
-  execOrFail(`launchctl start ${launchdLabel(name)}`, `restart ${name}`);
+  spawnSync("launchctl", ["stop", launchdLabel(name)]); // ignore result
+  spawnOrFail("launchctl", ["start", launchdLabel(name)], `restart ${name}`);
 }
 
 function statusTextLaunchd(name: string): string {
@@ -291,7 +314,6 @@ function statusTextLaunchd(name: string): string {
 
 function isRunningLaunchd(name: string): boolean {
   const r = spawnSync("launchctl", ["list", launchdLabel(name)], { encoding: "utf8" });
-  // launchd returns JSON-like output; a non-zero PID means it's running
   return r.status === 0 && /^\{/.test(r.stdout.trim()) && !/"PID"\s*=\s*0\s*;/.test(r.stdout);
 }
 
@@ -301,22 +323,31 @@ function taskName(name: string): string       { return `Portivox_${name}`; }
 function cmdWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.cmd`); }
 
 /**
+ * Escape a string for safe embedding inside a double-quoted cmd.exe argument.
+ * - Escapes % → %% to prevent environment-variable expansion.
+ * - Wraps in double-quotes.
+ * Windows file paths cannot contain ", so no inner-quote escaping is needed
+ * for paths; other values (URLs, subdomains) are also escaped defensively.
+ */
+function escapeCmdArg(a: string): string {
+  return `"${a.replace(/%/g, "%%")}"`;
+}
+
+/**
  * Build a .cmd wrapper with an auto-restart loop.
  * If portivox exits (crash / network drop), it waits 5 s and restarts.
  * `schtasks /End` terminates the cmd.exe process tree, stopping the loop.
  */
 function buildCmdWrapper(entry: ServiceEntry): string {
-  const openArgs = buildOpenArgs(entry);
-  // Quote tokens that contain spaces or cmd-special chars.
-  // Windows file paths cannot contain `"`, so no inner-quote escaping is needed.
-  const quotedArgs = openArgs.map((a) =>
-    /[\s&^|<>]/.test(a) ? `"${a}"` : a,
-  );
-  const logFile = join(LOGS_DIR, `${entry.name}.log`);
+  const openArgs   = buildOpenArgs(entry);
+  const quotedArgs = openArgs.map(escapeCmdArg);
+  const quotedNode = escapeCmdArg(entry.nodeBin);
+  const logFile    = join(LOGS_DIR, `${entry.name}.log`);
+  const quotedLog  = escapeCmdArg(logFile);
   return [
     "@echo off",
     ":restart",
-    `"${entry.nodeBin}" ${quotedArgs.join(" ")} >> "${logFile}" 2>&1`,
+    `${quotedNode} ${quotedArgs.join(" ")} >> ${quotedLog} 2>&1`,
     "timeout /t 5 /nobreak > nul",
     "goto restart",
     "",
@@ -340,7 +371,7 @@ function spawnSchtasksOrFail(schArgs: string[], label: string): void {
 }
 
 function installWindows(entry: ServiceEntry): void {
-  mkdirSync(SERVICES_DIR, { recursive: true });
+  mkdirSync(SERVICES_DIR, { recursive: true, mode: 0o700 });
   const cmdPath = cmdWrapperPath(entry.name);
   writeFileSync(cmdPath, buildCmdWrapper(entry), { encoding: "utf8" });
   const tn = taskName(entry.name);
@@ -348,11 +379,6 @@ function installWindows(entry: ServiceEntry): void {
   // Pass /TR as a plain string in the argument array — spawnSync sends it
   // directly to schtasks.exe without any shell processing, so paths with
   // spaces reach Task Scheduler verbatim.
-  //
-  // /TR value: `cmd /c "<cmdPath>"`
-  // When the task fires, cmd.exe's /c rule preserves the outer quotes when
-  // the path contains whitespace (condition-1 of cmd's quote algorithm),
-  // so the .cmd file is invoked correctly even with spaces in the username.
   spawnSchtasksOrFail(
     ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
     "schtasks create",
@@ -373,11 +399,9 @@ function removeWindows(name: string): void {
 function startWindows(name: string): void {
   spawnSchtasksOrFail(["/Run", "/TN", taskName(name)], `start ${name}`);
 }
-
 function stopWindows(name: string): void {
   spawnSchtasksOrFail(["/End", "/TN", taskName(name)], `stop ${name}`);
 }
-
 function restartWindows(name: string): void {
   spawnSchtasks(["/End", "/TN", taskName(name)]); // ignore result
   spawnSchtasksOrFail(["/Run", "/TN", taskName(name)], `restart ${name}`);
@@ -405,9 +429,21 @@ function removePlatformService(entry: ServiceEntry): void {
   else removeWindows(entry.name);
 }
 
+/**
+ * Look up a service entry from the registry.
+ * Re-validates the service name even when read from registry — guards against
+ * tampered registry files being used to inject shell commands.
+ */
 function requireEntry(name: string): ServiceEntry {
   if (!name) {
     console.error("Service name is required.");
+    process.exit(1);
+  }
+  // Validate the caller-supplied name (primary defence).
+  try {
+    validateServiceName(name);
+  } catch (err) {
+    console.error(`Invalid service name: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
   const reg = readRegistry();
@@ -415,6 +451,16 @@ function requireEntry(name: string): ServiceEntry {
   if (!entry) {
     console.error(
       `No service named "${name}". Run 'portivox config service list' to see installed services.`,
+    );
+    process.exit(1);
+  }
+  // Also validate the stored name (defence-in-depth against registry tampering).
+  try {
+    validateServiceName(entry.name);
+  } catch {
+    console.error(
+      `Corrupted registry entry "${name}". ` +
+      `Remove it manually from ${SERVICES_PATH} and reinstall.`,
     );
     process.exit(1);
   }
@@ -437,9 +483,9 @@ export function installInfrastructure(): void {
     process.exit(1);
   }
 
-  mkdirSync(PORTIVOX_DIR, { recursive: true });
-  mkdirSync(SERVICES_DIR, { recursive: true });
-  mkdirSync(LOGS_DIR, { recursive: true });
+  mkdirSync(PORTIVOX_DIR,  { recursive: true, mode: 0o700 });
+  mkdirSync(SERVICES_DIR,  { recursive: true, mode: 0o700 });
+  mkdirSync(LOGS_DIR,      { recursive: true, mode: 0o700 });
 
   if (p === "linux") {
     const r = spawnSync("systemctl", ["--version"], { encoding: "utf8" });
@@ -503,7 +549,7 @@ export function installService(opts: InstallOpts): void {
 
   const platform = getPlatform();
   const { nodeBin, scriptPath } = resolvePortivoxPaths();
-  mkdirSync(LOGS_DIR, { recursive: true });
+  mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
 
   const entry: ServiceEntry = {
     name:        opts.name,
@@ -638,7 +684,7 @@ export function logsService(name: string, lines: number): void {
     console.error("Usage: portivox config service logs <name> [--lines 50]");
     process.exit(1);
   }
-  requireEntry(name); // validates existence
+  requireEntry(name); // validates existence and name safety
 
   const logFile = join(LOGS_DIR, `${name}.log`);
   if (!existsSync(logFile)) {

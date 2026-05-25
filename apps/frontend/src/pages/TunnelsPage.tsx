@@ -162,7 +162,7 @@ export function TunnelsPage({
               Start a tunnel from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>,
               or click below to reserve a subdomain. This list refreshes automatically.
             </div>
-            <button className="btn-primary" style={{ margin: "0 auto" }} onClick={onNewTunnel}>
+            <button className="btn-primary empty-cta-btn" onClick={onNewTunnel}>
               <i className="ti ti-plus" /> New tunnel
             </button>
           </div>

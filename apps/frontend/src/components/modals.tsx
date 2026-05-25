@@ -108,7 +108,7 @@ export function NewTunnelModal({
             will be routed automatically.
           </p>
           <label className="form-lbl">Subdomain</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+          <div className="modal-inline-input-row">
             <input
               className="form-inp"
               style={{ flex: 1 }}
@@ -118,7 +118,7 @@ export function NewTunnelModal({
               onKeyDown={(event) => event.key === "Enter" && onCreate()}
               autoFocus
             />
-            <span style={{ fontSize: 12, color: "var(--text-3)", whiteSpace: "nowrap" }}>
+            <span className="modal-inline-suffix">
               .{host}
             </span>
           </div>
@@ -176,19 +176,9 @@ export function NewKeyModal({
         </div>
         <div className="modal-body">
           <div style={{ display: "grid", gap: 18 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                background: "var(--accent-bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                padding: "9px 13px",
-              }}
-            >
+            <div className="modal-info-banner">
               <i className="ti ti-info-circle" style={{ color: "var(--accent)", fontSize: 15, flexShrink: 0 }} />
-              <span style={{ fontSize: 11.5, color: "var(--text-2)", fontFamily: "var(--mono)" }}>
+              <span className="modal-info-banner-text">
                 Generated format: <strong style={{ color: "var(--accent)" }}>tk_</strong>
                 <span style={{ color: "var(--text-3)" }}>{"x".repeat(20)}...</span>
               </span>
@@ -294,11 +284,10 @@ export function NewKeyModal({
                         </label>
                       );
                     })}
-                    <div style={{ padding: "9px 14px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border)" }}>
+                    <div className="modal-dropdown-foot">
                       <button
                         type="button"
-                        className="btn-ghost"
-                        style={{ width: "100%", fontSize: 12, padding: "6px 0" }}
+                        className="btn-ghost modal-dropdown-action"
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();

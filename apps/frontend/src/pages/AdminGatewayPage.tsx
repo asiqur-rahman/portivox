@@ -74,7 +74,7 @@ export function AdminGatewayPage({
           <div className="admin-hero-sub">Live status, tunnel management, and runtime controls</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost" style={{ color: "#fff", borderColor: "rgba(255,255,255,0.2)" }} onClick={refresh} disabled={loading}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={refresh} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} /> Refresh
           </button>
         </div>
