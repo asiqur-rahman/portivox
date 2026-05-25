@@ -297,7 +297,7 @@ function isRunningLaunchd(name: string): boolean {
 
 // ── Platform: Task Scheduler (Windows) ───────────────────────────────────────
 
-function taskName(name: string): string    { return `Portivox_${name}`; }
+function taskName(name: string): string       { return `Portivox_${name}`; }
 function cmdWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.cmd`); }
 
 /**
@@ -307,8 +307,10 @@ function cmdWrapperPath(name: string): string { return join(SERVICES_DIR, `${nam
  */
 function buildCmdWrapper(entry: ServiceEntry): string {
   const openArgs = buildOpenArgs(entry);
+  // Quote tokens that contain spaces or cmd-special chars.
+  // Windows file paths cannot contain `"`, so no inner-quote escaping is needed.
   const quotedArgs = openArgs.map((a) =>
-    /[\s&^|<>"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a,
+    /[\s&^|<>]/.test(a) ? `"${a}"` : a,
   );
   const logFile = join(LOGS_DIR, `${entry.name}.log`);
   return [
@@ -321,41 +323,77 @@ function buildCmdWrapper(entry: ServiceEntry): string {
   ].join("\r\n");
 }
 
+/**
+ * Run schtasks.exe via spawnSync (bypasses cmd.exe entirely).
+ * This avoids the quote-escaping minefield when cmd.exe parses a command
+ * string that itself contains quoted sub-strings (e.g. the /TR value).
+ */
+function spawnSchtasks(schArgs: string[]): { ok: boolean; detail: string } {
+  const r = spawnSync("schtasks", schArgs, { encoding: "utf8", windowsHide: true });
+  const detail = (r.stderr?.trim() || r.stdout?.trim() || "").replace(/\r\n/g, " ");
+  return { ok: r.status === 0, detail };
+}
+
+function spawnSchtasksOrFail(schArgs: string[], label: string): void {
+  const { ok, detail } = spawnSchtasks(schArgs);
+  if (!ok) throw new Error(`${label}: ${detail || "unknown error"}`);
+}
+
 function installWindows(entry: ServiceEntry): void {
   mkdirSync(SERVICES_DIR, { recursive: true });
   const cmdPath = cmdWrapperPath(entry.name);
   writeFileSync(cmdPath, buildCmdWrapper(entry), { encoding: "utf8" });
   const tn = taskName(entry.name);
-  execOrFail(
-    `schtasks /Create /TN "${tn}" /TR "cmd /c \\"${cmdPath}\\"" /SC ONLOGON /RL LIMITED /F`,
+
+  // Pass /TR as a plain string in the argument array — spawnSync sends it
+  // directly to schtasks.exe without any shell processing, so paths with
+  // spaces reach Task Scheduler verbatim.
+  //
+  // /TR value: `cmd /c "<cmdPath>"`
+  // When the task fires, cmd.exe's /c rule preserves the outer quotes when
+  // the path contains whitespace (condition-1 of cmd's quote algorithm),
+  // so the .cmd file is invoked correctly even with spaces in the username.
+  spawnSchtasksOrFail(
+    ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
     "schtasks create",
   );
-  // Start immediately — non-fatal if it fails (will run at next logon)
-  try { execQuiet(`schtasks /Run /TN "${tn}"`); } catch { /* non-fatal */ }
+
+  // Start immediately — non-fatal (will run at next logon if this fails)
+  spawnSchtasks(["/Run", "/TN", tn]);
 }
 
 function removeWindows(name: string): void {
   const tn = taskName(name);
-  try { execQuiet(`schtasks /End /TN "${tn}"`); } catch { /* already stopped */ }
-  try { execQuiet(`schtasks /Delete /TN "${tn}" /F`); } catch { /* already gone */ }
+  spawnSchtasks(["/End",    "/TN", tn]);        // ignore result — may already be stopped
+  spawnSchtasks(["/Delete", "/TN", tn, "/F"]);  // ignore result — may already be gone
   const cmdPath = cmdWrapperPath(name);
   if (existsSync(cmdPath)) rmSync(cmdPath);
 }
 
-function startWindows(name: string): void   { execOrFail(`schtasks /Run /TN "${taskName(name)}"`, `start ${name}`); }
-function stopWindows(name: string): void    { execOrFail(`schtasks /End /TN "${taskName(name)}"`, `stop ${name}`); }
+function startWindows(name: string): void {
+  spawnSchtasksOrFail(["/Run", "/TN", taskName(name)], `start ${name}`);
+}
+
+function stopWindows(name: string): void {
+  spawnSchtasksOrFail(["/End", "/TN", taskName(name)], `stop ${name}`);
+}
+
 function restartWindows(name: string): void {
-  try { execQuiet(`schtasks /End /TN "${taskName(name)}"`); } catch { /* already stopped */ }
-  execOrFail(`schtasks /Run /TN "${taskName(name)}"`, `restart ${name}`);
+  spawnSchtasks(["/End", "/TN", taskName(name)]); // ignore result
+  spawnSchtasksOrFail(["/Run", "/TN", taskName(name)], `restart ${name}`);
 }
 
 function statusTextWindows(name: string): string {
-  const r = spawnSync("schtasks", ["/Query", "/TN", taskName(name), "/FO", "LIST", "/V"], { encoding: "utf8" });
+  const r = spawnSync("schtasks", ["/Query", "/TN", taskName(name), "/FO", "LIST", "/V"], {
+    encoding: "utf8", windowsHide: true,
+  });
   return r.stdout || r.stderr || "(not found)";
 }
 
 function isRunningWindows(name: string): boolean {
-  const r = spawnSync("schtasks", ["/Query", "/TN", taskName(name), "/FO", "CSV"], { encoding: "utf8" });
+  const r = spawnSync("schtasks", ["/Query", "/TN", taskName(name), "/FO", "CSV"], {
+    encoding: "utf8", windowsHide: true,
+  });
   return r.status === 0 && r.stdout.includes('"Running"');
 }
 
