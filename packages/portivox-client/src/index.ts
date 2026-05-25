@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 import { createInterface } from "readline";
 import { TunnelClient } from "./client";
+import {
+  installInfrastructure,
+  uninstallAllServices,
+  installService,
+  uninstallService,
+  startService,
+  stopService,
+  restartService,
+  statusService,
+  listServices,
+  logsService,
+} from "./service";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
@@ -103,12 +115,28 @@ function printUsage(): void {
   console.log(
     [
       "Portivox client commands:",
-      "  config                    Interactive setup (gateway URL + API key)",
-      "  config --show             Print saved configuration",
-      "  config <key> <value>      Set a single config field",
-      "  config --reset            Delete saved configuration",
+      "",
+      "  config                        Interactive setup (gateway URL + API key)",
+      "  config --show                 Print saved configuration",
+      "  config <key> <value>          Set a single config field",
+      "  config --reset                Delete saved configuration",
+      "",
+      "  config service install        Set up OS service infrastructure (run once)",
+      "  config service uninstall      Remove ALL persistent services",
+      "  config service list           List installed persistent services + status",
+      "  config service status [name]  Detailed status for one or all services",
+      "  config service stop    <name> Stop a running service",
+      "  config service start   <name> Start a stopped service",
+      "  config service restart <name> Restart a service",
+      "  config service remove  <name> Stop + permanently uninstall a service",
+      "  config service logs    <name> [--lines 50]  Tail the service log",
+      "",
       "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
       "       [--tcp] [--no-ip-protection]",
+      "       [--persistent] [--name <service-name>]",
+      "",
+      "       --persistent   Register + start as an OS background service (survives reboots).",
+      "                      Returns immediately.  Use 'config service *' to manage it.",
       "",
       "Config keys: gatewayUrl, apiKey",
       "",
@@ -116,9 +144,13 @@ function printUsage(): void {
       "  portivox config",
       "  portivox config --show",
       "  portivox config apiKey tk_abc123",
-      "  portivox open",
+      "  portivox config service install",
       "  portivox open 3000",
-      "  portivox open 22 --tcp",
+      "  portivox open 3000 --persistent",
+      "  portivox open 3000 --persistent --name myapp",
+      "  portivox open 22 --tcp --persistent",
+      "  portivox config service list",
+      "  portivox config service logs myapp",
     ].join("\n"),
   );
 }
@@ -314,6 +346,51 @@ async function run(): Promise<void> {
       return;
     }
 
+    // ── config service <sub-sub-command> ───────────────────────────────────
+    if (sub === "service") {
+      const sub2 = args[2];
+      if (!sub2 || sub2 === "install") {
+        installInfrastructure();
+        return;
+      }
+      if (sub2 === "uninstall") {
+        uninstallAllServices();
+        return;
+      }
+      if (sub2 === "list") {
+        listServices();
+        return;
+      }
+      if (sub2 === "status") {
+        statusService(args[3]);
+        return;
+      }
+      if (sub2 === "stop") {
+        stopService(args[3]);
+        return;
+      }
+      if (sub2 === "start") {
+        startService(args[3]);
+        return;
+      }
+      if (sub2 === "restart") {
+        restartService(args[3]);
+        return;
+      }
+      if (sub2 === "remove") {
+        uninstallService(args[3]);
+        return;
+      }
+      if (sub2 === "logs") {
+        const svcName = args[3];
+        const lines = Number(pickArg(args, "--lines") ?? "50");
+        logsService(svcName, Number.isFinite(lines) && lines > 0 ? lines : 50);
+        return;
+      }
+      printUsage();
+      return;
+    }
+
     if (sub && !sub.startsWith("--")) {
       const value = args[2];
       if (!value) {
@@ -368,6 +445,23 @@ async function run(): Promise<void> {
       process.exit(1);
     }
 
+    // ── persistent service mode ────────────────────────────────────────────
+    const persistent  = args.includes("--persistent");
+    const serviceName = pickArg(args, "--name") ?? `portivox-${port}`;
+
+    if (persistent) {
+      installService({
+        name:        serviceName,
+        port,
+        tunnelType:  tcpMode ? "tcp" : "http",
+        gatewayUrl:  gatewayUrl,
+        subdomain:   requestedSubdomain,
+        host,
+      });
+      return;
+    }
+
+    // ── one-shot foreground mode (default) ────────────────────────────────
     console.log(`Connecting to gateway : ${gatewayUrl}`);
     console.log(`Local service         : ${localBase}  [${tcpMode ? "TCP" : "HTTP"}]`);
     startClient({
