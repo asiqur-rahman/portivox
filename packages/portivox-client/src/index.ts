@@ -20,6 +20,7 @@ import { homedir } from "os";
 const args = process.argv.slice(2);
 const defaultConfig = loadClientConfig();
 const CONFIG_PATH = join(homedir(), ".portivox", "client.json");
+const PACKAGE_VERSION = readPackageVersion();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,16 @@ function loadClientConfig(): ClientConfig {
     responseChunkBytes: parseNonNegIntSafe(process.env.RESPONSE_CHUNK_BYTES, 0),
     heartbeatIntervalMs: parseIntSafe(process.env.HEARTBEAT_INTERVAL_MS, 5000),
   };
+}
+
+function readPackageVersion(): string {
+  try {
+    const raw = readFileSync(join(__dirname, "..", "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version?.trim() || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function parseIntSafe(raw: string | undefined, fallback: number): number {
@@ -326,6 +337,11 @@ function startClient({
 
 async function run(): Promise<void> {
   const command = args[0];
+
+  if (command === "--version" || command === "-v" || command === "version") {
+    console.log(PACKAGE_VERSION);
+    return;
+  }
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printUsage();
