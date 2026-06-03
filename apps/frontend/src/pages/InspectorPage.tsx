@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type CapturedRequestDetail, type CapturedRequestSummary, type TunnelRecord } from "../api";
+import { subscribeGatewayLiveEvents } from "../app/live-events";
 
 function methodClass(method: string): string {
   switch (method.toUpperCase()) {
@@ -69,9 +70,7 @@ export function InspectorPage({
   const [selected, setSelected] = useState<CapturedRequestDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [activeTab, setActiveTab] = useState<"req-headers" | "req-body" | "res-headers" | "res-body">("res-body");
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [clearing, setClearing] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchList = useCallback(() => {
     if (!subdomain) return;
@@ -82,13 +81,55 @@ export function InspectorPage({
 
   useEffect(() => {
     fetchList();
-    if (autoRefresh) {
-      timerRef.current = setInterval(fetchList, 2000);
+  }, [fetchList]);
+
+  useEffect(() => {
+    if (!subdomain) {
+      return;
     }
+
+    let listTimer: ReturnType<typeof setTimeout> | null = null;
+    let detailTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const unsubscribe = subscribeGatewayLiveEvents((event) => {
+      if (event.kind !== "inspector_changed") {
+        return;
+      }
+      if (event.subdomain && event.subdomain !== subdomain) {
+        return;
+      }
+
+      if (listTimer) {
+        clearTimeout(listTimer);
+      }
+      listTimer = setTimeout(() => {
+        listTimer = null;
+        fetchList();
+      }, 120);
+
+      if (selected) {
+        if (detailTimer) {
+          clearTimeout(detailTimer);
+        }
+        detailTimer = setTimeout(() => {
+          detailTimer = null;
+          api.getInspectorRequest(subdomain, selected.id)
+            .then((data) => setSelected(data.request))
+            .catch(() => {});
+        }, 150);
+      }
+    });
+
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      unsubscribe();
+      if (listTimer) {
+        clearTimeout(listTimer);
+      }
+      if (detailTimer) {
+        clearTimeout(detailTimer);
+      }
     };
-  }, [fetchList, autoRefresh]);
+  }, [api, fetchList, selected, subdomain]);
 
   const selectRequest = (id: string) => {
     setLoadingDetail(true);
@@ -162,7 +203,7 @@ export function InspectorPage({
         <div className="inspector-toolbar-left">
           <button className="btn-ghost" onClick={onBack}><i className="ti ti-arrow-left" /></button>
           <span className="inspector-toolbar-title">Traffic Inspector</span>
-          {autoRefresh && <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>}
+          <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>
         </div>
         <div className="inspector-toolbar-right">
           {httpTunnels.length > 0 && (
@@ -178,10 +219,6 @@ export function InspectorPage({
               {httpTunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain}>{tunnel.subdomain}</option>)}
             </select>
           )}
-          <button className="btn-ghost" title={autoRefresh ? "Pause auto-refresh" : "Resume auto-refresh"} onClick={() => setAutoRefresh((value) => !value)}>
-            <i className={`ti ti-${autoRefresh ? "player-pause" : "player-play"}`} />
-            {autoRefresh ? "Pause" : "Resume"}
-          </button>
           <button className="btn-ghost" onClick={fetchList}><i className="ti ti-refresh" /> Refresh</button>
           <button className="btn-ghost" disabled={clearing || requests.length === 0} onClick={clearRequests}>
             <i className="ti ti-trash" /> Clear
@@ -198,7 +235,7 @@ export function InspectorPage({
             TCP tunnels (CLI sessions) forward raw bytes and have no request log.
             <br /><br />
             Run <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code> from
-            the portal (New tunnel → Connect) to start an HTTP session, then come back here to inspect traffic.
+            the portal (New tunnel ? Connect) to start an HTTP session, then come back here to inspect traffic.
           </div>
           <button className="btn-ghost empty-cta-btn" onClick={onBack}>
             <i className="ti ti-arrow-left" /> Back to tunnels
@@ -291,3 +328,4 @@ export function InspectorPage({
     </div>
   );
 }
+

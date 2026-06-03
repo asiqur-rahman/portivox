@@ -74,12 +74,14 @@ export type GatewayLiveEventKind =
   | "gateway_status_changed"
   | "audit_changed"
   | "api_keys_changed"
-  | "tcp_mappings_changed";
+  | "tcp_mappings_changed"
+  | "inspector_changed";
 
 export type GatewayLiveEvent = {
   kind: GatewayLiveEventKind;
   at: string;
   userId?: string | null;
+  subdomain?: string | null;
 };
 
 export type ChunkDiagnostics = {

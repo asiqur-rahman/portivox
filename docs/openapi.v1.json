@@ -98,12 +98,24 @@
                     "status": {
                       "type": "string"
                     },
+                    "nodeId": {
+                      "type": "string"
+                    },
+                    "registryBackend": {
+                      "type": "string",
+                      "enum": [
+                        "memory",
+                        "redis"
+                      ]
+                    },
                     "tunnels": {
                       "type": "number"
                     }
                   },
                   "required": [
                     "status",
+                    "nodeId",
+                    "registryBackend",
                     "tunnels"
                   ]
                 }
@@ -118,7 +130,54 @@
         "summary": "Readiness endpoint",
         "responses": {
           "200": {
-            "description": "Ready"
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "nodeId": {
+                      "type": "string"
+                    },
+                    "registryBackend": {
+                      "type": "string",
+                      "enum": [
+                        "memory",
+                        "redis"
+                      ]
+                    },
+                    "ready": {
+                      "type": "boolean"
+                    },
+                    "draining": {
+                      "type": "boolean"
+                    },
+                    "maintenanceMode": {
+                      "type": "boolean"
+                    },
+                    "drainComplete": {
+                      "type": "boolean"
+                    },
+                    "canAcceptConnections": {
+                      "type": "boolean"
+                    },
+                    "activeTunnels": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "nodeId",
+                    "registryBackend",
+                    "ready",
+                    "draining",
+                    "maintenanceMode",
+                    "drainComplete",
+                    "canAcceptConnections",
+                    "activeTunnels"
+                  ]
+                }
+              }
+            }
           },
           "503": {
             "description": "Not ready"
@@ -466,7 +525,7 @@
         },
         "responses": {
           "200": {
-            "description": "Updated"
+            "description": "Updated state snapshot"
           },
           "403": {
             "description": "Forbidden"

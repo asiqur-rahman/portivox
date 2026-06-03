@@ -85,12 +85,14 @@ type LiveEventKind =
   | "gateway_status_changed"
   | "audit_changed"
   | "api_keys_changed"
-  | "tcp_mappings_changed";
+  | "tcp_mappings_changed"
+  | "inspector_changed";
 
 type LiveEvent = {
   kind: LiveEventKind;
   at: string;
   userId?: string | null;
+  subdomain?: string | null;
 };
 
 type LiveSubscriber = {
@@ -1058,14 +1060,24 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (event.kind === "audit_changed" || event.kind === "tcp_mappings_changed") {
       return isAdminRole(principal.role) && hasScope(principal.scopes, "key:manage");
     }
+    if (event.kind === "inspector_changed") {
+      if (!hasScope(principal.scopes, "tunnel:read")) {
+        return false;
+      }
+      if (!event.userId) {
+        return true;
+      }
+      return principal.userId === event.userId || isAdminRole(principal.role);
+    }
     return false;
   }
 
-  function publishLiveEvent(kind: LiveEventKind, userId?: string | null): void {
+  function publishLiveEvent(kind: LiveEventKind, userId?: string | null, subdomain?: string | null): void {
     const event: LiveEvent = {
       kind,
       at: new Date().toISOString(),
       userId: userId ?? null,
+      subdomain: subdomain ?? null,
     };
     for (const subscriber of liveSubscribers.values()) {
       if (!canReceiveLiveEvent(subscriber.principal, event)) {
@@ -3137,6 +3149,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
     }
     capturedRequests.delete(subdomain);
+    publishLiveEvent("inspector_changed", tunnelOwner ?? principal.userId, subdomain);
     return reply.status(204).send();
   });
 
@@ -3293,6 +3306,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if (ring.length > MAX_INSPECT_PER_TUNNEL) ring.length = MAX_INSPECT_PER_TUNNEL;
       capturedRequests.set(subdomain, ring);
     }
+    publishLiveEvent("inspector_changed", ownershipBySubdomain.get(subdomain) ?? null, subdomain);
 
     // Strip proxy/forwarded headers supplied by the external caller before
     // forwarding — the gateway sets these itself from verified request metadata,
@@ -3396,6 +3410,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         ? respBody.slice(0, MAX_INSPECT_BODY_BYTES).toString("base64")
         : tunnelResponse.bodyBase64;
       captured.responseBodyTruncated = respBody.byteLength > MAX_INSPECT_BODY_BYTES;
+      publishLiveEvent("inspector_changed", ownershipBySubdomain.get(subdomain) ?? null, subdomain);
       reply.send(respBody);
     } catch (error) {
       const timeout = streamTimeouts.get(streamId);
@@ -3406,6 +3421,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       const code = error instanceof Error ? error.message : "UNKNOWN_STREAM_ERROR";
       captured.durationMs = Date.now() - startedAt;
       captured.error = code;
+      publishLiveEvent("inspector_changed", ownershipBySubdomain.get(subdomain) ?? null, subdomain);
       if (code === "TUNNEL_STREAM_LIMIT_EXCEEDED") {
         metrics.increment("gateway_request_errors_total");
         metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint: "tunnel_ingress", error_code: "TUNNEL_STREAM_LIMIT_EXCEEDED" });
