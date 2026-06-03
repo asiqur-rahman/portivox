@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type AuditItem, type GatewayStatus } from "../api";
 import { actionBadge, timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 export function AdminOverviewPage({
   api,
@@ -21,7 +22,7 @@ export function AdminOverviewPage({
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
     Promise.all([api.getReadyz(), api.getChunkDiagnostics(), api.getAudit(10)])
       .then(([gatewayStatus, diagnostics, audit]) => {
@@ -30,7 +31,9 @@ export function AdminOverviewPage({
         setRecentAudit(audit);
       })
       .catch((error: unknown) => {
-        showToast(error instanceof Error ? error.message : "Failed to load admin data", "red");
+        if (!options?.silent) {
+          showToast(error instanceof Error ? error.message : "Failed to load admin data", "red");
+        }
       })
       .finally(() => setLoading(false));
   }, [api, showToast, chunkDiag]);
@@ -39,10 +42,10 @@ export function AdminOverviewPage({
     refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    const timer = setInterval(refresh, 30_000);
-    return () => clearInterval(timer);
-  }, [refresh]);
+  useLiveRefresh({
+    eventKinds: ["gateway_status_changed", "tunnels_changed", "audit_changed"],
+    refresh: () => refresh({ silent: true }),
+  });
 
   function toggleMode(field: "maintenanceMode" | "draining", value: boolean) {
     setToggling(true);
@@ -73,10 +76,10 @@ export function AdminOverviewPage({
             Administration
             <span className="admin-hero-badge">Admin Panel</span>
           </div>
-          <div className="admin-hero-sub">System overview, live data refreshed every 30 seconds</div>
+          <div className="admin-hero-sub">System overview with live operational updates</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost btn-ghost-on-dark" onClick={refresh} disabled={loading}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
             Refresh
           </button>

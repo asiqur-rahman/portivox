@@ -1,5 +1,5 @@
-﻿import crypto from "node:crypto";
-import type WebSocket from "ws";
+import crypto from "node:crypto";
+import WebSocket from "ws";
 import Redis from "ioredis";
 
 type SessionLease = {
@@ -71,22 +71,17 @@ class InMemoryRegistryBackend implements RegistryBackend {
 
 class RedisRegistryBackend implements RegistryBackend {
   private readonly redis: {
-    connect: () => Promise<void>;
     set: (...args: unknown[]) => Promise<string | null>;
     eval: (...args: unknown[]) => Promise<unknown>;
   };
-  private readonly keyPrefix: string;
 
-  constructor(redisUrl: string, keyPrefix: string) {
-    // Cast to the narrow interface — we only use set/eval/connect from the full ioredis client.
+  constructor(redisUrl: string, private readonly keyPrefix: string) {
     this.redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 }) as unknown as typeof this.redis;
-    this.keyPrefix = keyPrefix;
   }
 
   async claim(subdomain: string, record: SessionRecord, ttlMs: number): Promise<SessionLease | null> {
     const leaseToken = crypto.randomUUID();
     const key = this.keyFor(subdomain);
-
     const payload = JSON.stringify({ leaseToken, ...record });
     const setResult = await this.redis.set(key, payload, "PX", ttlMs, "NX");
     if (setResult !== "OK") {
@@ -134,18 +129,15 @@ export type TunnelRegistryOptions = {
   redisKeyPrefix?: string;
   leaseTtlMs: number;
   nodeId: string;
+  onLeaseLost?: (event: { subdomain: string; leaseToken: string }) => void;
+  onStaleSessionEvicted?: (event: { subdomain: string; idleMs: number }) => void;
 };
 
 export class TunnelRegistry {
   private readonly bySubdomain = new Map<string, LocalTunnelEntry>();
   private readonly backend: RegistryBackend;
-  private readonly leaseTtlMs: number;
-  private readonly nodeId: string;
 
-  constructor(options: TunnelRegistryOptions) {
-    this.leaseTtlMs = options.leaseTtlMs;
-    this.nodeId = options.nodeId;
-
+  constructor(private readonly options: TunnelRegistryOptions) {
     if (options.backend === "redis") {
       if (!options.redisUrl) {
         throw new Error("REGISTRY_BACKEND=redis requires REDIS_URL");
@@ -180,12 +172,15 @@ export class TunnelRegistry {
 
   findBySubdomain(subdomain: string): LocalTunnelEntry | undefined {
     const entry = this.bySubdomain.get(subdomain);
-    if (!entry) return undefined;
-    // Evict locally if the lease has not been heartbeated for 2× TTL
-    // (guards against stale-session routing when Redis evicts the key but
-    // the local map hasn't been cleaned up yet)
-    if (Date.now() - entry.lastHeartbeatAt > this.leaseTtlMs * 2) {
-      this.bySubdomain.delete(subdomain);
+    if (!entry) {
+      return undefined;
+    }
+    if (Date.now() - entry.lastHeartbeatAt > this.options.leaseTtlMs * 2) {
+      this.options.onStaleSessionEvicted?.({
+        subdomain,
+        idleMs: Date.now() - entry.lastHeartbeatAt,
+      });
+      this.forceCloseLocalEntry(subdomain, entry, "stale_session");
       return undefined;
     }
     return entry;
@@ -198,21 +193,41 @@ export class TunnelRegistry {
     }
     session.lastHeartbeatAt = Date.now();
 
-    void this.backend.heartbeat(subdomain, session.leaseToken, this.leaseTtlMs).catch((err) => {
-      // best-effort heartbeat refresh; request path remains available via local map,
-      // but log failures so backend divergence is observable
-      // best-effort; log to stderr so structured-log pipelines can pick it up
-      process.stderr.write(`[registry] backend heartbeat failed: subdomain=${subdomain} err=${String(err)}\n`);
-    });
+    void this.backend.heartbeat(subdomain, session.leaseToken, this.options.leaseTtlMs)
+      .then((alive) => {
+        if (!alive) {
+          process.stderr.write(`[registry] lease lost: subdomain=${subdomain}\n`);
+          this.options.onLeaseLost?.({ subdomain, leaseToken: session.leaseToken });
+          this.forceCloseIfLeaseMatches(subdomain, session.leaseToken, "lease_lost");
+        }
+      })
+      .catch((err) => {
+        process.stderr.write(`[registry] backend heartbeat failed: subdomain=${subdomain} err=${String(err)}\n`);
+      });
   }
 
   removeBySocket(socket: WebSocket): void {
     for (const [subdomain, entry] of this.bySubdomain.entries()) {
       if (entry.socket === socket) {
         this.bySubdomain.delete(subdomain);
-        void this.backend.release(subdomain, entry.leaseToken);
+        void this.backend.release(subdomain, entry.leaseToken).catch((err) => {
+          process.stderr.write(`[registry] backend release failed: subdomain=${subdomain} err=${String(err)}\n`);
+        });
       }
     }
+  }
+
+  sweepStaleSockets(maxIdleMs = this.options.leaseTtlMs * 2): number {
+    let removed = 0;
+    const now = Date.now();
+    for (const [subdomain, entry] of this.bySubdomain.entries()) {
+      if (now - entry.lastHeartbeatAt > maxIdleMs) {
+        removed += 1;
+        this.options.onStaleSessionEvicted?.({ subdomain, idleMs: now - entry.lastHeartbeatAt });
+        this.forceCloseLocalEntry(subdomain, entry, "stale_session");
+      }
+    }
+    return removed;
   }
 
   listSessions(): Array<{ subdomain: string; connectedAt: number; lastHeartbeatAt: number }> {
@@ -238,9 +253,9 @@ export class TunnelRegistry {
         subdomain,
         connectedAt: now,
         lastHeartbeatAt: now,
-        ownerNodeId: this.nodeId,
+        ownerNodeId: this.options.nodeId,
       },
-      this.leaseTtlMs,
+      this.options.leaseTtlMs,
     );
 
     if (!lease) {
@@ -256,9 +271,31 @@ export class TunnelRegistry {
     });
     return true;
   }
+
+  private forceCloseIfLeaseMatches(subdomain: string, leaseToken: string, reason: string): void {
+    const current = this.bySubdomain.get(subdomain);
+    if (!current || current.leaseToken !== leaseToken) {
+      return;
+    }
+    this.forceCloseLocalEntry(subdomain, current, reason);
+  }
+
+  private forceCloseLocalEntry(subdomain: string, entry: LocalTunnelEntry, reason: string): void {
+    this.bySubdomain.delete(subdomain);
+    void this.backend.release(subdomain, entry.leaseToken).catch((err) => {
+      process.stderr.write(`[registry] backend release failed: subdomain=${subdomain} err=${String(err)}\n`);
+    });
+    try {
+      if (entry.socket.readyState === WebSocket.OPEN || entry.socket.readyState === WebSocket.CONNECTING) {
+        entry.socket.close(1012, reason);
+      }
+      entry.socket.terminate();
+    } catch {
+      // best-effort cleanup only
+    }
+  }
 }
 
-// Subdomains that could shadow infrastructure routes, abuse trust, or mislead users.
 const RESERVED_SUBDOMAINS = new Set([
   "www", "api", "app", "mail", "email", "smtp", "pop", "imap", "ftp", "sftp",
   "ssh", "rdp", "vpn", "dns", "ns", "ns1", "ns2", "mx", "mx1", "mx2",
@@ -278,24 +315,17 @@ function sanitizeSubdomain(input: string | undefined): string {
   if (!raw) {
     return "";
   }
-
   if (!/^[a-z0-9-]{3,32}$/.test(raw)) {
     return "";
   }
-
   if (raw.startsWith("-") || raw.endsWith("-")) {
     return "";
   }
-
-  // Reject consecutive hyphens (not valid in DNS labels per RFC 5891)
   if (raw.includes("--")) {
     return "";
   }
-
   if (RESERVED_SUBDOMAINS.has(raw)) {
     return "";
   }
-
   return raw;
 }
-

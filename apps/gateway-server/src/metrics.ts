@@ -3,16 +3,25 @@ type CounterName =
   | "gateway_request_errors_total"
   | "gateway_ws_connections_total"
   | "gateway_ws_auth_failures_total"
-  | "gateway_active_tunnels"
+  | "gateway_ws_rejected_draining_total"
   | "gateway_chunk_frames_total"
   | "gateway_chunk_reassembled_streams_total"
-  | "gateway_chunk_incomplete_timeouts_total";
+  | "gateway_chunk_incomplete_timeouts_total"
+  | "gateway_registry_lease_lost_total"
+  | "gateway_registry_stale_evictions_total"
+  | "gateway_drain_state_transitions_total";
+
+type GaugeName =
+  | "gateway_active_tunnels"
+  | "gateway_draining_state"
+  | "gateway_maintenance_mode_state";
 
 const DEFAULT_BUCKETS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
 
 export class GatewayMetrics {
   private readonly counters = new Map<string, number>();
   private readonly labeledCounters = new Map<string, number>();
+  private readonly gauges = new Map<string, number>();
   private readonly latencyBuckets = new Map<number, number>();
   private latencySum = 0;
   private latencyCount = 0;
@@ -32,8 +41,8 @@ export class GatewayMetrics {
     this.labeledCounters.set(key, (this.labeledCounters.get(key) ?? 0) + value);
   }
 
-  setGauge(name: "gateway_active_tunnels", value: number): void {
-    this.counters.set(name, value);
+  setGauge(name: GaugeName, value: number): void {
+    this.gauges.set(name, value);
   }
 
   observeRequestLatency(durationMs: number): void {
@@ -49,13 +58,21 @@ export class GatewayMetrics {
   renderPrometheus(): string {
     const lines: string[] = [];
 
-    lines.push("# HELP gateway_requests_total Total inbound gateway requests");
-    lines.push("# TYPE gateway_requests_total counter");
-    lines.push(`gateway_requests_total ${this.counters.get("gateway_requests_total") ?? 0}`);
+    appendSimpleMetric(lines, "gateway_requests_total", "counter", "Total inbound gateway requests", this.counters);
+    appendSimpleMetric(lines, "gateway_request_errors_total", "counter", "Total gateway request errors", this.counters);
+    appendSimpleMetric(lines, "gateway_ws_connections_total", "counter", "Total websocket connections accepted", this.counters);
+    appendSimpleMetric(lines, "gateway_ws_auth_failures_total", "counter", "Total websocket auth failures", this.counters);
+    appendSimpleMetric(lines, "gateway_ws_rejected_draining_total", "counter", "Total websocket connections rejected while draining or in maintenance", this.counters);
+    appendSimpleMetric(lines, "gateway_chunk_frames_total", "counter", "Total chunk frames received from tunnel clients", this.counters);
+    appendSimpleMetric(lines, "gateway_chunk_reassembled_streams_total", "counter", "Total chunked streams successfully reassembled", this.counters);
+    appendSimpleMetric(lines, "gateway_chunk_incomplete_timeouts_total", "counter", "Total chunked streams timed out before completion", this.counters);
+    appendSimpleMetric(lines, "gateway_registry_lease_lost_total", "counter", "Total tunnel sessions closed because the distributed lease was lost", this.counters);
+    appendSimpleMetric(lines, "gateway_registry_stale_evictions_total", "counter", "Total stale tunnel sessions proactively evicted", this.counters);
+    appendSimpleMetric(lines, "gateway_drain_state_transitions_total", "counter", "Total admin drain or maintenance state transitions", this.counters);
 
-    lines.push("# HELP gateway_request_errors_total Total gateway request errors");
-    lines.push("# TYPE gateway_request_errors_total counter");
-    lines.push(`gateway_request_errors_total ${this.counters.get("gateway_request_errors_total") ?? 0}`);
+    appendSimpleMetric(lines, "gateway_active_tunnels", "gauge", "Active local tunnels on this gateway node", this.gauges);
+    appendSimpleMetric(lines, "gateway_draining_state", "gauge", "1 when the node is draining, otherwise 0", this.gauges);
+    appendSimpleMetric(lines, "gateway_maintenance_mode_state", "gauge", "1 when maintenance mode is enabled, otherwise 0", this.gauges);
 
     lines.push("# HELP gateway_requests_labeled_total Gateway requests by endpoint/method/status_class");
     lines.push("# TYPE gateway_requests_labeled_total counter");
@@ -64,30 +81,6 @@ export class GatewayMetrics {
     lines.push("# HELP gateway_errors_labeled_total Gateway errors by endpoint/error_code");
     lines.push("# TYPE gateway_errors_labeled_total counter");
     appendMetricLines(lines, this.labeledCounters, "gateway_errors_labeled_total");
-
-    lines.push("# HELP gateway_ws_connections_total Total websocket connections accepted");
-    lines.push("# TYPE gateway_ws_connections_total counter");
-    lines.push(`gateway_ws_connections_total ${this.counters.get("gateway_ws_connections_total") ?? 0}`);
-
-    lines.push("# HELP gateway_ws_auth_failures_total Total websocket auth failures");
-    lines.push("# TYPE gateway_ws_auth_failures_total counter");
-    lines.push(`gateway_ws_auth_failures_total ${this.counters.get("gateway_ws_auth_failures_total") ?? 0}`);
-
-    lines.push("# HELP gateway_active_tunnels Active local tunnels on this gateway node");
-    lines.push("# TYPE gateway_active_tunnels gauge");
-    lines.push(`gateway_active_tunnels ${this.counters.get("gateway_active_tunnels") ?? 0}`);
-
-    lines.push("# HELP gateway_chunk_frames_total Total chunk frames received from tunnel clients");
-    lines.push("# TYPE gateway_chunk_frames_total counter");
-    lines.push(`gateway_chunk_frames_total ${this.counters.get("gateway_chunk_frames_total") ?? 0}`);
-
-    lines.push("# HELP gateway_chunk_reassembled_streams_total Total chunked streams successfully reassembled");
-    lines.push("# TYPE gateway_chunk_reassembled_streams_total counter");
-    lines.push(`gateway_chunk_reassembled_streams_total ${this.counters.get("gateway_chunk_reassembled_streams_total") ?? 0}`);
-
-    lines.push("# HELP gateway_chunk_incomplete_timeouts_total Total chunked streams timed out before completion");
-    lines.push("# TYPE gateway_chunk_incomplete_timeouts_total counter");
-    lines.push(`gateway_chunk_incomplete_timeouts_total ${this.counters.get("gateway_chunk_incomplete_timeouts_total") ?? 0}`);
 
     lines.push("# HELP gateway_tunnel_request_duration_ms Tunnel request duration in milliseconds");
     lines.push("# TYPE gateway_tunnel_request_duration_ms histogram");
@@ -100,6 +93,18 @@ export class GatewayMetrics {
 
     return `${lines.join("\n")}\n`;
   }
+}
+
+function appendSimpleMetric(
+  lines: string[],
+  name: string,
+  type: "counter" | "gauge",
+  help: string,
+  source: Map<string, number>,
+): void {
+  lines.push(`# HELP ${name} ${help}`);
+  lines.push(`# TYPE ${name} ${type}`);
+  lines.push(`${name} ${source.get(name) ?? 0}`);
 }
 
 function serializeLabels(labels: Record<string, string>): string {

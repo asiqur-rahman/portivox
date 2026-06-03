@@ -1,6 +1,33 @@
-import { useEffect } from "react";
 import type { GatewayStatus, TunnelRecord } from "../api";
 import { getTunnelUrl } from "../app/helpers";
+
+function tunnelStatusLabel(tunnel: TunnelRecord): string {
+  if (tunnel.status === "offline") return "Offline";
+  if (tunnel.active || tunnel.status === "live") return "Live";
+  return "Reserved";
+}
+
+function tunnelStatusClass(tunnel: TunnelRecord): string {
+  if (tunnel.status === "offline") return "offline";
+  if (tunnel.active || tunnel.status === "live") return "live";
+  return "reserved";
+}
+
+function tunnelSecondaryText(tunnel: TunnelRecord): string {
+  if (tunnel.status === "offline" && tunnel.lastSeenAt) {
+    return `Last seen ${new Date(tunnel.lastSeenAt).toLocaleString()}`;
+  }
+  if (tunnel.status === "reserved") {
+    return "Waiting for client machine to connect";
+  }
+  if (tunnel.active && tunnel.lastSeenAt) {
+    return `Last heartbeat ${new Date(tunnel.lastSeenAt).toLocaleTimeString()}`;
+  }
+  if (tunnel.isCliSession) {
+    return "Connected from CLI";
+  }
+  return new Date(tunnel.createdAt).toLocaleDateString();
+}
 
 export function TunnelsPage({
   tunnels,
@@ -26,14 +53,7 @@ export function TunnelsPage({
   onInspect: (subdomain: string) => void;
 }) {
   const activeCount = tunnels.filter((tunnel) => tunnel.active).length;
-
-  // Auto-refresh every 5 s while on this page so CLI sessions appear
-  // immediately after `portivox open` without requiring a manual click.
-  useEffect(() => {
-    const timer = setInterval(onRefresh, 5_000);
-    return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const offlineCount = tunnels.filter((tunnel) => tunnel.status === "offline").length;
 
   const onboardingSteps = [
     { label: "Install the CLI: npm install -g portivox-client", done: tunnels.length > 0 || activeCount > 0 },
@@ -52,8 +72,12 @@ export function TunnelsPage({
           <div className="metric-val">{activeCount}</div>
           <div className="metric-sub">
             {activeCount > 0
-              ? <span className="up">↑ {activeCount} connected</span>
-              : tunnels.length > 0 ? `${tunnels.length} reserved, none connected` : "None active"}
+              ? <span className="up">{activeCount} connected</span>
+              : offlineCount > 0
+                ? `${offlineCount} unreachable, none connected`
+                : tunnels.length > 0
+                  ? `${tunnels.length} reserved, none connected`
+                  : "None active"}
           </div>
         </div>
         <div className="metric-card">
@@ -62,15 +86,15 @@ export function TunnelsPage({
             Gateway status
           </div>
           <div className="metric-val" style={{ fontSize: 15, paddingTop: 5, fontWeight: 600 }}>
-            {gatewayStatus == null ? "…" : gatewayStatus.ready ? "Ready" : "Unavailable"}
+            {gatewayStatus == null ? "..." : gatewayStatus.ready ? "Ready" : "Unavailable"}
           </div>
           <div className={`metric-sub ${gatewayStatus?.ready ? "up" : ""}`}>
             {gatewayStatus?.maintenanceMode
-              ? "⚠ Maintenance mode"
+              ? "Maintenance mode"
               : gatewayStatus?.draining
-                ? "⚠ Draining"
+                ? "Draining"
                 : gatewayStatus?.ready
-                  ? "↑ All systems operational"
+                  ? "All systems operational"
                   : "Status unknown"}
           </div>
         </div>
@@ -79,7 +103,7 @@ export function TunnelsPage({
             <div className="metric-icon"><i className="ti ti-transfer" /></div>
             Data transferred
           </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>—</div>
+          <div className="metric-val" style={{ fontSize: 22 }}>-</div>
           <div className="metric-sub">Metrics coming soon</div>
         </div>
         <div className="metric-card">
@@ -87,7 +111,7 @@ export function TunnelsPage({
             <div className="metric-icon"><i className="ti ti-activity" /></div>
             Avg latency
           </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>—</div>
+          <div className="metric-val" style={{ fontSize: 22 }}>-</div>
           <div className="metric-sub">Metrics coming soon</div>
         </div>
       </div>
@@ -100,9 +124,11 @@ export function TunnelsPage({
             <div className="ai-insight-text">
               {tunnels.length === 0
                 ? <>No tunnels yet. Click <strong>New tunnel</strong> to reserve a subdomain, then run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt;</code> to connect.</>
-                : tunnels.filter((tunnel) => tunnel.active).length === 0
-                  ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
-                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. Traffic is flowing — use the <strong>Inspect</strong> button to replay and debug HTTP requests in real time.</>}
+                : offlineCount > 0
+                  ? <>You have <strong>{offlineCount}</strong> tunnel{offlineCount !== 1 ? "s" : ""} whose <strong>client machine is not reachable</strong>. Bring the remote machine back online or restart the Portivox client to reactivate them.</>
+                  : activeCount === 0
+                    ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
+                    : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. They are connected and ready. Use the <strong>Inspect</strong> button to replay and debug HTTP requests in real time.</>}
             </div>
           </div>
           <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
@@ -129,12 +155,29 @@ export function TunnelsPage({
         <div className="section-head">
           <div className="section-title">
             <i className="ti ti-topology-star-3" /> Live sessions
-            {/* live pulse while auto-refresh is running */}
-            <span style={{ marginLeft: 8, display: "inline-flex", alignItems: "center", gap: 5,
-              fontSize: 11, fontWeight: 500, color: "var(--green)", opacity: 0.85 }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--green)",
-                display: "inline-block", animation: "pulse 2s infinite" }} />
-              auto-refresh
+            <span
+              style={{
+                marginLeft: 8,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                fontWeight: 500,
+                color: "var(--green)",
+                opacity: 0.85,
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "var(--green)",
+                  display: "inline-block",
+                  animation: "pulse 2s infinite",
+                }}
+              />
+              live updates
             </span>
           </div>
           <div className="section-actions">
@@ -159,8 +202,7 @@ export function TunnelsPage({
             <i className="ti ti-topology-star-3" />
             <div className="empty-title">No active tunnels</div>
             <div className="empty-desc">
-              Start a tunnel from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>,
-              or click below to reserve a subdomain. This list refreshes automatically.
+              Start a tunnel from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>, or click below to reserve a subdomain. This list updates automatically in real time.
             </div>
             <button className="btn-primary empty-cta-btn" onClick={onNewTunnel}>
               <i className="ti ti-plus" /> New tunnel
@@ -168,10 +210,10 @@ export function TunnelsPage({
           </div>
         ) : (
           <>
-            {/* ── Mobile card view ──────────────────────────────────────────── */}
             <div className="mobile-card-list">
               {tunnels.map((tunnel) => {
                 const url = getTunnelUrl(tunnel.subdomain);
+                const statusClass = tunnelStatusClass(tunnel);
                 return (
                   <article key={tunnel.id} className="mobile-list-card">
                     <div className="mobile-list-card-head">
@@ -179,18 +221,16 @@ export function TunnelsPage({
                         <span className="mobile-list-icon"><i className="ti ti-topology-star-3" /></span>
                         <div>
                           <strong>{tunnel.subdomain}</strong>
-                          {tunnel.isCliSession && (
-                            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700,
-                              letterSpacing: "0.05em", background: "var(--accent-bg)",
-                              color: "var(--accent)", borderRadius: 4, padding: "1px 5px",
-                              verticalAlign: "middle" }}>CLI</span>
-                          )}
-                          <span>{tunnel.isCliSession ? "Connected " : ""}{new Date(tunnel.createdAt).toLocaleDateString()}</span>
+                          {tunnel.isCliSession && <span className="cli-badge">CLI</span>}
+                          <span>{tunnelSecondaryText(tunnel)}</span>
                         </div>
                       </div>
-                      <span className={`mobile-status ${tunnel.active ? "live" : ""}`}>
-                        {tunnel.active ? "Live" : "Reserved"}
+                      <span className={`mobile-status ${statusClass}`}>
+                        {tunnelStatusLabel(tunnel)}
                       </span>
+                    </div>
+                    <div className={`tunnel-state-note ${statusClass}`}>
+                      {tunnel.statusMessage ?? tunnelSecondaryText(tunnel)}
                     </div>
                     <button className="mobile-url-row" onClick={() => onCopy(url)}>
                       <span>{url}</span>
@@ -202,12 +242,16 @@ export function TunnelsPage({
                           <i className="ti ti-eye" /> Inspect
                         </button>
                       )}
-                      <button className="btn-ghost" onClick={() => window.open(url, "_blank", "noreferrer")}>
-                        <i className="ti ti-external-link" /> Open
+                      <button
+                        className="btn-ghost"
+                        onClick={() => window.open(url, "_blank", "noreferrer")}
+                        disabled={!tunnel.active}
+                        title={tunnel.active ? "Open tunnel" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
+                      >
+                        <i className="ti ti-external-link" /> {tunnel.active ? "Open" : "Unavailable"}
                       </button>
                       {!tunnel.isCliSession && (
-                        <button className="stop-btn" disabled={loading}
-                          onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                        <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
                           Stop
                         </button>
                       )}
@@ -217,7 +261,6 @@ export function TunnelsPage({
               })}
             </div>
 
-            {/* ── Desktop table view ────────────────────────────────────────── */}
             <table className="tbl">
               <thead>
                 <tr>
@@ -231,60 +274,74 @@ export function TunnelsPage({
               <tbody>
                 {tunnels.map((tunnel) => {
                   const url = getTunnelUrl(tunnel.subdomain);
+                  const statusClass = tunnelStatusClass(tunnel);
                   return (
                     <tr key={tunnel.id}>
                       <td>
                         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                          <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent-bg)",
-                            display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: 7,
+                              background: "var(--accent-bg)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
                             <i className="ti ti-topology-star-3" style={{ fontSize: 14, color: "var(--accent)" }} />
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <strong>{tunnel.subdomain}</strong>
-                            {tunnel.isCliSession && (
-                              <span
-                                title="Created via portivox CLI — use Ctrl+C in your terminal to disconnect"
-                                style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
-                                  background: "var(--accent-bg)", color: "var(--accent)",
-                                  borderRadius: 4, padding: "1px 5px", cursor: "default" }}>CLI</span>
-                            )}
+                            {tunnel.isCliSession && <span className="cli-badge">CLI</span>}
                           </div>
                         </div>
                       </td>
                       <td><span className="url-pill">{url}</span></td>
                       <td style={{ color: "var(--text-3)", fontSize: 12 }}>
-                        {tunnel.isCliSession
-                          ? <span title="Time the CLI client connected">{new Date(tunnel.createdAt).toLocaleString()}</span>
-                          : new Date(tunnel.createdAt).toLocaleString()}
+                        <div className="tunnel-meta-cell">
+                          <span>{new Date(tunnel.createdAt).toLocaleString()}</span>
+                          <small>{tunnelSecondaryText(tunnel)}</small>
+                        </div>
                       </td>
                       <td>
-                        {tunnel.active
-                          ? <><span className="status-dot dot-green" />Live</>
-                          : <><span className="status-dot dot-gray" /><span style={{ color: "var(--text-3)" }}>Reserved</span></>}
+                        <div className={`tunnel-status-inline ${statusClass}`}>
+                          {tunnel.active || tunnel.status === "live"
+                            ? <><span className="status-dot dot-green" />Live</>
+                            : tunnel.status === "offline"
+                              ? <><span className="status-dot dot-red" />Offline</>
+                              : <><span className="status-dot dot-gray" />Reserved</>}
+                          <small>{tunnel.statusMessage ?? tunnelSecondaryText(tunnel)}</small>
+                        </div>
                       </td>
                       <td>
                         <div className="row-actions" style={{ justifyContent: "flex-end" }}>
                           {tunnel.active && !tunnel.isCliSession && (
-                            <div className="icon-btn" title="Inspect HTTP traffic" onClick={() => onInspect(tunnel.subdomain)}>
+                            <button className="icon-btn" title="Inspect HTTP traffic" onClick={() => onInspect(tunnel.subdomain)}>
                               <i className="ti ti-eye" />
-                            </div>
+                            </button>
                           )}
-                          <div className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
+                          <button className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
                             <i className="ti ti-copy" />
-                          </div>
-                          <div className="icon-btn" title="Open in browser"
-                            onClick={() => window.open(url, "_blank", "noreferrer")}>
+                          </button>
+                          <button
+                            className="icon-btn"
+                            title={tunnel.active ? "Open in browser" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
+                            onClick={() => window.open(url, "_blank", "noreferrer")}
+                            disabled={!tunnel.active}
+                          >
                             <i className="ti ti-external-link" />
-                          </div>
+                          </button>
                           {!tunnel.isCliSession && (
-                            <button className="stop-btn" disabled={loading}
-                              onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                            <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
                               Stop
                             </button>
                           )}
-                          {tunnel.isCliSession && (
-                            <span style={{ fontSize: 11, color: "var(--text-3)", padding: "0 4px",
-                              whiteSpace: "nowrap" }}>Ctrl+C to stop</span>
+                          {tunnel.isCliSession && tunnel.active && (
+                            <span style={{ fontSize: 11, color: "var(--text-3)", padding: "0 4px", whiteSpace: "nowrap" }}>
+                              Ctrl+C to stop
+                            </span>
                           )}
                         </div>
                       </td>

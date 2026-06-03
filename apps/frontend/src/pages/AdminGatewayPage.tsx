@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type GatewayStatus, type TunnelRecord } from "../api";
 import { timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 export function AdminGatewayPage({
   api,
@@ -24,20 +25,29 @@ export function AdminGatewayPage({
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
     Promise.all([api.getReadyz(), api.getChunkDiagnostics()])
       .then(([gatewayStatus, diagnostics]) => {
         setStatus(gatewayStatus);
         setChunkDiag(diagnostics as typeof chunkDiag);
       })
-      .catch((error: unknown) => showToast(error instanceof Error ? error.message : "Load failed", "red"))
+      .catch((error: unknown) => {
+        if (!options?.silent) {
+          showToast(error instanceof Error ? error.message : "Load failed", "red");
+        }
+      })
       .finally(() => setLoading(false));
   }, [api, showToast, chunkDiag]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useLiveRefresh({
+    eventKinds: ["gateway_status_changed", "tunnels_changed"],
+    refresh: () => refresh({ silent: true }),
+  });
 
   function toggleMode(field: "maintenanceMode" | "draining", value: boolean, confirmMsg: string) {
     if (value) {
@@ -74,7 +84,7 @@ export function AdminGatewayPage({
           <div className="admin-hero-sub">Live status, tunnel management, and runtime controls</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost btn-ghost-on-dark" onClick={refresh} disabled={loading}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} /> Refresh
           </button>
         </div>
@@ -158,7 +168,7 @@ export function AdminGatewayPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-topology-star-3" /> All Active Tunnels ({allTunnels.length})</div>
+          <div className="section-title"><i className="ti ti-topology-star-3" /> Tunnel Sessions ({allTunnels.length})</div>
         </div>
         {allTunnels.length === 0 ? (
           <div className="empty">
@@ -179,7 +189,12 @@ export function AdminGatewayPage({
                         <span>{timeAgo(tunnel.createdAt)}</span>
                       </div>
                     </div>
-                    <span className="mobile-status live">Active</span>
+                    <span className={`mobile-status ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
+                      {tunnel.status === "offline" ? "Offline" : tunnel.active ? "Live" : "Reserved"}
+                    </span>
+                  </div>
+                  <div className={`tunnel-state-note ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
+                    {tunnel.statusMessage ?? (tunnel.active ? "Client connected and forwarding traffic" : "Waiting for client machine to connect")}
                   </div>
                   <button className="mobile-url-row" onClick={() => window.open(`//${tunnel.subdomain}.${window.location.hostname}`, "_blank", "noreferrer")}>
                     <span>{tunnel.subdomain}.{window.location.hostname}</span>
@@ -193,7 +208,7 @@ export function AdminGatewayPage({
               ))}
             </div>
             <table className="tbl">
-              <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th></tr></thead>
+              <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th><th>Status</th></tr></thead>
               <tbody>
                 {allTunnels.map((tunnel) => (
                   <tr key={tunnel.id}>
@@ -204,6 +219,12 @@ export function AdminGatewayPage({
                     </td>
                     <td><code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>{tunnel.id.slice(0, 16)}...</code></td>
                     <td style={{ color: "var(--text-3)", fontSize: 12 }}>{timeAgo(tunnel.createdAt)}</td>
+                    <td>
+                      <div className={`tunnel-status-inline ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
+                        <span>{tunnel.status === "offline" ? "Offline" : tunnel.active ? "Live" : "Reserved"}</span>
+                        <small>{tunnel.statusMessage ?? (tunnel.active ? "Client connected and forwarding traffic" : "Waiting for client machine to connect")}</small>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

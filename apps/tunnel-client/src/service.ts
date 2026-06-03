@@ -32,7 +32,9 @@ import { homedir } from "node:os";
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
-const PORTIVOX_DIR  = join(homedir(), ".portivox");
+const PORTIVOX_DIR  = process.env.PORTIVOX_HOME
+  ? resolvePath(process.env.PORTIVOX_HOME)
+  : join(homedir(), ".portivox");
 const SERVICES_DIR  = join(PORTIVOX_DIR, "services");
 const SERVICES_PATH = join(PORTIVOX_DIR, "services.json");
 const LOGS_DIR      = join(PORTIVOX_DIR, "logs");
@@ -45,10 +47,14 @@ export type ServiceEntry = {
   tunnelType: "http" | "tcp";
   /** undefined = read from ~/.portivox/client.json at runtime */
   gatewayUrl?: string;
+  /** Optional API key captured at install time for unattended boot startup */
+  apiKey?: string;
   subdomain?: string;
   host: string;
   /** TCP only; false = pass --no-ip-protection; undefined = default (true) */
   ipProtection?: boolean;
+  /** Portivox home to reuse even if the service runs under another account */
+  portivoxHome: string;
   /** Absolute path to the Node.js binary recorded at install time */
   nodeBin: string;
   /** Absolute path to the portivox entry-point JS file */
@@ -64,10 +70,25 @@ export type InstallOpts = {
   port: number;
   tunnelType: "http" | "tcp";
   gatewayUrl?: string;
+  apiKey?: string;
   subdomain?: string;
   host: string;
   ipProtection?: boolean;
 };
+
+export function isServiceInfrastructureReady(): boolean {
+  const p = process.platform;
+  if (p === "linux") {
+    return existsSync(join(homedir(), ".config", "systemd", "user"));
+  }
+  if (p === "darwin") {
+    return existsSync(join(homedir(), "Library", "LaunchAgents"));
+  }
+  if (p === "win32") {
+    return existsSync(SERVICES_DIR);
+  }
+  return false;
+}
 
 // ── Registry I/O ──────────────────────────────────────────────────────────────
 
@@ -162,6 +183,55 @@ function sdQuote(s: string): string {
   return dollarEscaped;
 }
 
+function buildSystemdEnvironment(entry: ServiceEntry): string[] {
+  const lines = [`Environment=${sdQuote(`PORTIVOX_HOME=${entry.portivoxHome}`)}`];
+  if (entry.apiKey) {
+    lines.push(`Environment=${sdQuote(`TUNNEL_API_KEY=${entry.apiKey}`)}`);
+  }
+  return lines;
+}
+
+function getLinuxUserName(): string | undefined {
+  return process.env.USER ?? process.env.LOGNAME ?? undefined;
+}
+
+function isLinuxLingerEnabled(user: string): boolean | undefined {
+  try {
+    const result = spawnSync("loginctl", ["show-user", user], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return undefined;
+    }
+    return result.stdout.includes("Linger=yes");
+  } catch {
+    return undefined;
+  }
+}
+
+function ensureLinuxLinger(): void {
+  const user = getLinuxUserName();
+  if (!user) {
+    return;
+  }
+
+  if (isLinuxLingerEnabled(user) === true) {
+    console.log(`  Linger       : enabled for ${user} (starts after reboot before login)`);
+    return;
+  }
+
+  const result = spawnSync("loginctl", ["enable-linger", user], { encoding: "utf8" });
+  if (result.status === 0) {
+    console.log(`  Linger       : enabled for ${user} (starts after reboot before login)`);
+    return;
+  }
+
+  const detail = result.stderr?.trim() || result.stdout?.trim();
+  console.warn(`  Linger       : not enabled for ${user}`);
+  console.warn(`  Run this once for reboot persistence before login: loginctl enable-linger ${user}`);
+  if (detail) {
+    console.warn(`  Auto-enable note: ${detail}`);
+  }
+}
+
 function buildSystemdUnit(entry: ServiceEntry): string {
   const openArgs = buildOpenArgs(entry);
   const exec = [entry.nodeBin, ...openArgs].map(sdQuote).join(" ");
@@ -174,6 +244,7 @@ function buildSystemdUnit(entry: ServiceEntry): string {
     "",
     "[Service]",
     "Type=simple",
+    ...buildSystemdEnvironment(entry),
     `ExecStart=${exec}`,
     "Restart=always",
     "RestartSec=5",
@@ -187,23 +258,13 @@ function buildSystemdUnit(entry: ServiceEntry): string {
 }
 
 function installSystemd(entry: ServiceEntry): void {
-  const unitDir = join(homedir(), ".config", "systemd", "user");
+  const unitDir = join(homedir(), '.config', 'systemd', 'user');
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(systemdUnitPath(entry.name), buildSystemdUnit(entry));
-  spawnOrFail("systemctl", ["--user", "daemon-reload"], "daemon-reload");
+  spawnOrFail('systemctl', ['--user', 'daemon-reload'], 'daemon-reload');
   spawnOrFail("systemctl", ["--user", "enable", `portivox-${entry.name}.service`], "enable");
-  spawnOrFail("systemctl", ["--user", "start",  `portivox-${entry.name}.service`], "start");
-
-  // Suggest linger if not already enabled (needed to run when not logged in)
-  try {
-    const user = process.env.USER ?? process.env.LOGNAME ?? "";
-    if (user) {
-      const r = spawnSync("loginctl", ["show-user", user], { encoding: "utf8" });
-      if (r.status === 0 && !r.stdout.includes("Linger=yes")) {
-        console.log(`\nTip: keep tunnel alive when not logged in → loginctl enable-linger ${user}\n`);
-      }
-    }
-  } catch { /* non-fatal */ }
+  spawnOrFail("systemctl", ["--user", "start", `portivox-${entry.name}.service`], "start");
+  ensureLinuxLinger();
 }
 
 function removeSystemd(name: string): void {
@@ -255,6 +316,19 @@ function buildLaunchdPlist(entry: ServiceEntry): string {
   const openArgs  = buildOpenArgs(entry);
   const allArgs   = [entry.nodeBin, ...openArgs];
   const argXml    = allArgs.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n");
+  const envXml = [
+    "  <key>EnvironmentVariables</key>",
+    "  <dict>",
+    "    <key>PORTIVOX_HOME</key>",
+    `    <string>${escapeXml(entry.portivoxHome)}</string>`,
+    ...(entry.apiKey
+      ? [
+          "    <key>TUNNEL_API_KEY</key>",
+          `    <string>${escapeXml(entry.apiKey)}</string>`,
+        ]
+      : []),
+    "  </dict>",
+  ].join("\n");
   const logFile   = join(LOGS_DIR, `${entry.name}.log`);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -266,6 +340,7 @@ function buildLaunchdPlist(entry: ServiceEntry): string {
   <array>
 ${argXml}
   </array>
+${envXml}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -346,6 +421,8 @@ function buildCmdWrapper(entry: ServiceEntry): string {
   const quotedLog  = escapeCmdArg(logFile);
   return [
     "@echo off",
+    `set "PORTIVOX_HOME=${entry.portivoxHome.replace(/%/g, "%%")}"`,
+    ...(entry.apiKey ? [`set "TUNNEL_API_KEY=${entry.apiKey.replace(/%/g, "%%")}"`] : []),
     ":restart",
     `${quotedNode} ${quotedArgs.join(" ")} >> ${quotedLog} 2>&1`,
     "timeout /t 5 /nobreak > nul",
@@ -380,7 +457,7 @@ function installWindows(entry: ServiceEntry): void {
   // directly to schtasks.exe without any shell processing, so paths with
   // spaces reach Task Scheduler verbatim.
   spawnSchtasksOrFail(
-    ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
+    ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F"],
     "schtasks create",
   );
 
@@ -499,6 +576,7 @@ export function installInfrastructure(): void {
     mkdirSync(unitDir, { recursive: true });
     console.log("✔ portivox service infrastructure ready (linux / systemd user)");
     console.log(`  Unit dir     : ${unitDir}`);
+    ensureLinuxLinger();
   } else if (p === "darwin") {
     const agentsDir = join(homedir(), "Library", "LaunchAgents");
     mkdirSync(agentsDir, { recursive: true });
@@ -556,9 +634,11 @@ export function installService(opts: InstallOpts): void {
     port:        opts.port,
     tunnelType:  opts.tunnelType,
     gatewayUrl:  opts.gatewayUrl,
+    apiKey:      opts.apiKey,
     subdomain:   opts.subdomain,
     host:        opts.host,
     ipProtection: opts.ipProtection,
+    portivoxHome: PORTIVOX_DIR,
     nodeBin,
     scriptPath,
     installedAt: new Date().toISOString(),
@@ -705,3 +785,4 @@ export function logsService(name: string, lines: number): void {
     process.exit(1);
   }
 }
+

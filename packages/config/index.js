@@ -99,12 +99,12 @@ function loadGatewayConfig() {
     maxConcurrentStreamsPerTunnel: parseInteger("MAX_CONCURRENT_STREAMS_PER_TUNNEL", 200),
     streamIdleTimeoutMs: parseInteger("STREAM_IDLE_TIMEOUT_MS", 15000),
     maintenanceMode: parseBoolean("MAINTENANCE_MODE", false),
-    startupGraceMs: parseInteger("STARTUP_GRACE_MS", 0),
+    startupGraceMs: parseNonNegativeInteger("STARTUP_GRACE_MS", 0),
     auditExportJsonlPath: parseString("AUDIT_EXPORT_JSONL_PATH", ""),
     auditExportWebhookUrl: parseString("AUDIT_EXPORT_WEBHOOK_URL", ""),
     auditExportWebhookTimeoutMs: parseInteger("AUDIT_EXPORT_WEBHOOK_TIMEOUT_MS", 3000),
     auditExportWebhookSecret: parseString("AUDIT_EXPORT_WEBHOOK_SECRET", ""),
-    auditExportWebhookMaxRetries: parseInteger("AUDIT_EXPORT_WEBHOOK_MAX_RETRIES", 3),
+    auditExportWebhookMaxRetries: parseNonNegativeInteger("AUDIT_EXPORT_WEBHOOK_MAX_RETRIES", 3),
     auditExportWebhookRetryBaseMs: parseInteger("AUDIT_EXPORT_WEBHOOK_RETRY_BASE_MS", 250),
     auditExportDeadLetterJsonlPath: parseString("AUDIT_EXPORT_DEAD_LETTER_JSONL_PATH", ""),
     apiVersion: parseString("API_VERSION", "1"),
@@ -161,5 +161,4 @@ module.exports = {
   loadGatewayConfig,
   loadClientConfig,
 };
-
 

@@ -1,0 +1,115 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: portivox-failover-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gateway-a:
+    build:
+      context: .
+      dockerfile: apps/gateway-server/Dockerfile
+      args:
+        DB_PROVIDER: mysql
+    container_name: portivox-failover-gateway-a
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "8080"
+      GATEWAY_WS_PORT: "7000"
+      GATEWAY_NODE_ID: "gateway-a"
+      ROOT_DOMAIN: "app.localtest.me"
+      GATEWAY_PUBLIC_BASE_URL: "http://app.localtest.me"
+      AUTH_REQUIRED: "false"
+      MAX_REQUEST_BODY_BYTES: "1048576"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "15000"
+      WS_IDLE_TIMEOUT_MS: "10000"
+      REGISTRY_BACKEND: "redis"
+      REDIS_URL: "redis://redis:6379"
+      REDIS_KEY_PREFIX: "portivox:failover-test"
+      REGISTRY_LEASE_TTL_MS: "6000"
+      SECURITY_HEADERS_ENABLED: "true"
+      IDEMPOTENCY_ENABLED: "true"
+      TCP_TUNNEL_ENABLED: "false"
+    ports:
+      - "18080:8080"
+      - "17000:7000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
+  gateway-b:
+    build:
+      context: .
+      dockerfile: apps/gateway-server/Dockerfile
+      args:
+        DB_PROVIDER: mysql
+    container_name: portivox-failover-gateway-b
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "8080"
+      GATEWAY_WS_PORT: "7000"
+      GATEWAY_NODE_ID: "gateway-b"
+      ROOT_DOMAIN: "app.localtest.me"
+      GATEWAY_PUBLIC_BASE_URL: "http://app.localtest.me"
+      AUTH_REQUIRED: "false"
+      MAX_REQUEST_BODY_BYTES: "1048576"
+      TUNNEL_RESPONSE_TIMEOUT_MS: "15000"
+      WS_IDLE_TIMEOUT_MS: "10000"
+      REGISTRY_BACKEND: "redis"
+      REDIS_URL: "redis://redis:6379"
+      REDIS_KEY_PREFIX: "portivox:failover-test"
+      REGISTRY_LEASE_TTL_MS: "6000"
+      SECURITY_HEADERS_ENABLED: "true"
+      IDEMPOTENCY_ENABLED: "true"
+      TCP_TUNNEL_ENABLED: "false"
+    ports:
+      - "18081:8080"
+      - "17001:7000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
+  sample-local-app:
+    image: hashicorp/http-echo:1.0.0
+    container_name: portivox-failover-sample-local-app
+    command: ["-text=hello-from-failover-app", "-listen=:3000"]
+    expose:
+      - "3000"
+
+  client:
+    build:
+      context: .
+      dockerfile: apps/tunnel-client/Dockerfile
+    container_name: portivox-failover-client-base
+    command: ["node", "apps/tunnel-client/dist/index.js", "help"]
+    environment:
+      TUNNEL_API_KEY: "failover-test-key"
+      LOCAL_REQUEST_TIMEOUT_MS: "10000"
+      MAX_LOCAL_RESPONSE_BODY_BYTES: "2097152"
+    depends_on:
+      gateway-a:
+        condition: service_healthy
+      gateway-b:
+        condition: service_healthy
+      sample-local-app:
+        condition: service_started
+
+networks:
+  default:
+    name: portivox-failover-network

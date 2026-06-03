@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type TcpPortMapping } from "../api";
 import { timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 function NewTcpMappingModal({
   onCreate,
@@ -78,17 +79,26 @@ export function AdminTcpPage({
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
     api.listTcpPortMappings()
       .then(setMappings)
-      .catch((error: unknown) => showToast(error instanceof Error ? error.message : "Load failed", "red"))
+      .catch((error: unknown) => {
+        if (!options?.silent) {
+          showToast(error instanceof Error ? error.message : "Load failed", "red");
+        }
+      })
       .finally(() => setLoading(false));
   }, [api, showToast]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useLiveRefresh({
+    eventKinds: ["tcp_mappings_changed"],
+    refresh: () => refresh({ silent: true }),
+  });
 
   function handleCreate(data: { name: string; localPort: number; publicPort: number; description?: string }, onDone: () => void) {
     api.createTcpPortMapping(data)
@@ -128,7 +138,7 @@ export function AdminTcpPage({
           <div className="admin-hero-sub">Reserve public ports for TCP tunnels, databases, SSH, and custom protocols</div>
         </div>
         <div className="admin-hero-right">
-          <button className="btn-ghost btn-ghost-on-dark" onClick={refresh} disabled={loading}>
+          <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
           </button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>

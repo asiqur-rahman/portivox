@@ -54,8 +54,13 @@
                 "application/json": {
                   schema: {
                     type: "object",
-                    properties: { status: { type: "string" }, tunnels: { type: "number" } },
-                    required: ["status", "tunnels"],
+                    properties: {
+                      status: { type: "string" },
+                      nodeId: { type: "string" },
+                      registryBackend: { type: "string", enum: ["memory", "redis"] },
+                      tunnels: { type: "number" },
+                    },
+                    required: ["status", "nodeId", "registryBackend", "tunnels"],
                   },
                 },
               },
@@ -67,7 +72,27 @@
         get: {
           summary: "Readiness endpoint",
           responses: {
-            "200": { description: "Ready" },
+            "200": {
+              description: "Ready",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      nodeId: { type: "string" },
+                      registryBackend: { type: "string", enum: ["memory", "redis"] },
+                      ready: { type: "boolean" },
+                      draining: { type: "boolean" },
+                      maintenanceMode: { type: "boolean" },
+                      drainComplete: { type: "boolean" },
+                      canAcceptConnections: { type: "boolean" },
+                      activeTunnels: { type: "number" },
+                    },
+                    required: ["nodeId", "registryBackend", "ready", "draining", "maintenanceMode", "drainComplete", "canAcceptConnections", "activeTunnels"],
+                  },
+                },
+              },
+            },
             "503": { description: "Not ready" },
           },
         },
@@ -224,7 +249,7 @@
               },
             },
           },
-          responses: { "200": { description: "Updated" }, "403": { description: "Forbidden" } },
+          responses: { "200": { description: "Updated state snapshot" }, "403": { description: "Forbidden" } },
         },
       },
       "/api/admin/chunk-diagnostics": {
@@ -334,4 +359,3 @@
     },
   };
 }
-

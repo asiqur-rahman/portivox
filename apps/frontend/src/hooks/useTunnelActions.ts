@@ -24,13 +24,15 @@ export function useTunnelActions({
   setConfirm,
   showToast,
 }: UseTunnelActionsOptions) {
-  const refreshTunnels = useCallback(() => {
+  const refreshTunnels = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
     api
       .listTunnels()
       .then(setTunnels)
       .catch((err: unknown) => {
-        showToast(err instanceof Error ? err.message : "Failed to load tunnels", "red");
+        if (!options?.silent) {
+          showToast(err instanceof Error ? err.message : "Failed to load tunnels", "red");
+        }
       })
       .finally(() => setLoading(false));
   }, [api, setLoading, setTunnels, showToast]);

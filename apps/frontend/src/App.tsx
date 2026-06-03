@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApi, type ApiKeyRecord, type TunnelRecord } from "./api";
 import { DEFAULT_GATEWAY } from "./app/constants";
 import { hasAdminRole } from "./app/helpers";
+import { subscribeGatewayLiveEvents } from "./app/live-events";
 import type { ConfirmState, Page } from "./app/types";
 import { AppFooter } from "./components/app-shell/AppFooter";
 import { AppSidebar } from "./components/app-shell/AppSidebar";
@@ -16,6 +17,7 @@ import { useToasts } from "./hooks/useToasts";
 import { useAuthFlow } from "./hooks/useAuthFlow";
 import { useTunnelActions } from "./hooks/useTunnelActions";
 import { useApiKeyActions } from "./hooks/useApiKeyActions";
+import { useRealtimeGatewayEvents } from "./hooks/useRealtimeGatewayEvents";
 import { ConfirmModal as SharedConfirmModal, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
 import { AiPage as SharedAiPage } from "./pages/AiPage";
 import { ApiKeysPage as SharedApiKeysPage } from "./pages/ApiKeysPage";
@@ -154,10 +156,53 @@ export function App() {
     showToast,
   });
 
+  useRealtimeGatewayEvents({ api, screen });
+
   useEffect(() => {
     if (currentPage !== "api" || screen !== "app") return;
     loadApiKeys();
   }, [currentPage, screen, loadApiKeys]);
+
+  useEffect(() => {
+    if (screen !== "app") {
+      return;
+    }
+
+    let tunnelTimer: ReturnType<typeof setTimeout> | null = null;
+    let apiKeyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const unsubscribe = subscribeGatewayLiveEvents((event) => {
+      if (event.kind === "tunnels_changed") {
+        if (tunnelTimer) {
+          clearTimeout(tunnelTimer);
+        }
+        tunnelTimer = setTimeout(() => {
+          tunnelTimer = null;
+          refreshTunnels({ silent: true });
+        }, 150);
+      }
+
+      if (event.kind === "api_keys_changed") {
+        if (apiKeyTimer) {
+          clearTimeout(apiKeyTimer);
+        }
+        apiKeyTimer = setTimeout(() => {
+          apiKeyTimer = null;
+          loadApiKeys({ silent: true });
+        }, 150);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      if (tunnelTimer) {
+        clearTimeout(tunnelTimer);
+      }
+      if (apiKeyTimer) {
+        clearTimeout(apiKeyTimer);
+      }
+    };
+  }, [loadApiKeys, refreshTunnels, screen]);
 
   // ── Boot splash ────────────────────────────────────────────────────────────
   if (!appReady) {

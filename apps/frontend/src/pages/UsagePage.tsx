@@ -1,19 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type AuditItem, type GatewayStatus } from "../api";
 import { DEFAULT_GATEWAY } from "../app/constants";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 export function UsagePage({ api, tunnelCount }: { api: GatewayApi; tunnelCount: number }) {
   const [gwStatus, setGwStatus] = useState<GatewayStatus | null>(null);
   const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [loadingStatus, setLoadingStatus] = useState(true);
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     setLoadingStatus(true);
     const publicApi = new GatewayApi(DEFAULT_GATEWAY, {});
     const statusPromise = publicApi.getReadyz().then(setGwStatus).catch(() => {});
     const auditPromise = api.getAudit(50).then(setAuditItems).catch(() => {});
     void Promise.all([statusPromise, auditPromise]).finally(() => setLoadingStatus(false));
   }, [api]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useLiveRefresh({
+    eventKinds: ["gateway_status_changed", "tunnels_changed", "audit_changed"],
+    refresh,
+  });
 
   const activeTunnels = gwStatus?.activeTunnels ?? tunnelCount;
 

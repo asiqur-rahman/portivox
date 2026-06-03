@@ -79,6 +79,27 @@ type Principal = {
   role: "owner" | "admin" | "viewer";
 };
 
+type LiveEventKind =
+  | "connected"
+  | "tunnels_changed"
+  | "gateway_status_changed"
+  | "audit_changed"
+  | "api_keys_changed"
+  | "tcp_mappings_changed";
+
+type LiveEvent = {
+  kind: LiveEventKind;
+  at: string;
+  userId?: string | null;
+};
+
+type LiveSubscriber = {
+  id: string;
+  principal: Principal;
+  write: (event: LiveEvent) => void;
+  close: () => void;
+};
+
 type TunnelRecord = { id: string; userId: string; subdomain: string; createdAt: string };
 
 type IdempotencyReplay = {
@@ -132,10 +153,12 @@ type CapturedRequest = {
 
 class TunnelStore {
   private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
   private readonly memory = new Map<string, TunnelRecord>();
 
-  constructor() {
-    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  constructor(prisma?: PrismaClient | null) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
   }
 
   async create(userId: string, subdomain: string): Promise<TunnelRecord> {
@@ -180,7 +203,7 @@ class TunnelStore {
   }
 
   async close(): Promise<void> {
-    if (this.prisma) {
+    if (this.prisma && this.ownsPrisma) {
       await this.prisma.$disconnect();
     }
   }
@@ -197,10 +220,12 @@ type ApiKeyRecord = {
 
 class AuthStore {
   private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
   private readonly memory = new Map<string, ApiKeyRecord[]>();
 
-  constructor() {
-    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  constructor(prisma?: PrismaClient | null) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
   }
 
   async createApiKey(userId: string, name: string, keyHash: string, scopes: string[]): Promise<ApiKeyRecord> {
@@ -271,7 +296,7 @@ class AuthStore {
   }
 
   async close(): Promise<void> {
-    if (this.prisma) {
+    if (this.prisma && this.ownsPrisma) {
       await this.prisma.$disconnect();
     }
   }
@@ -286,10 +311,12 @@ type UserAuthRecord = {
 
 class UserAuthStore {
   private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
   private readonly memory = new Map<string, UserAuthRecord>();
 
-  constructor() {
-    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  constructor(prisma?: PrismaClient | null) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
   }
 
   async register(email: string, passwordHash: string): Promise<UserAuthRecord> {
@@ -344,7 +371,7 @@ class UserAuthStore {
   }
 
   async close(): Promise<void> {
-    if (this.prisma) {
+    if (this.prisma && this.ownsPrisma) {
       await this.prisma.$disconnect();
     }
   }
@@ -352,12 +379,16 @@ class UserAuthStore {
 
 class AuditStore {
   private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
   private readonly sink: AuditSink;
   private readonly memory: Array<AuditEvent & { id: string }> = [];
+  private readonly onLogged?: (event: AuditEvent & { id?: string }) => void;
 
-  constructor(sink: AuditSink) {
-    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  constructor(sink: AuditSink, prisma?: PrismaClient | null, options?: { onLogged?: (event: AuditEvent & { id?: string }) => void }) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
     this.sink = sink;
+    this.onLogged = options?.onLogged;
   }
 
   async log(userId: string | null, action: string, resource: string, resourceId: string | null, metadata?: unknown): Promise<void> {
@@ -370,8 +401,10 @@ class AuditStore {
       metadata: metadata ?? null,
     };
     if (!this.prisma) {
-      this.memory.push({ id: randomUUID(), ...auditEvent });
+      const storedEvent = { id: randomUUID(), ...auditEvent };
+      this.memory.push(storedEvent);
       await this.sink.emit(auditEvent);
+      this.onLogged?.(storedEvent);
       return;
     }
     const normalizedUserId = userId && userId !== "anonymous" ? userId : null;
@@ -408,20 +441,25 @@ class AuditStore {
           });
         } catch {
           // Prisma still failing after retry — fall back to in-memory.
-          this.memory.push({ id: randomUUID(), ...auditEvent });
+          const storedEvent = { id: randomUUID(), ...auditEvent };
+          this.memory.push(storedEvent);
+          this.onLogged?.(storedEvent);
         }
       } else {
         // Engine not yet connected, DB offline, transient error, etc.
         // Never propagate — audit failures must not crash callers that use
         // `void auditStore.log(...)` (fire-and-forget), which would turn a
         // thrown error into an unhandled rejection and exit the process.
-        this.memory.push({ id: randomUUID(), ...auditEvent });
+        const storedEvent = { id: randomUUID(), ...auditEvent };
+        this.memory.push(storedEvent);
+        this.onLogged?.(storedEvent);
       }
       // Emit to configured sinks (JSONL file, webhook) regardless of DB state.
       await this.sink.emit(auditEvent);
       return;
     }
     await this.sink.emit(auditEvent);
+    this.onLogged?.(auditEvent);
   }
 
   async query(options: {
@@ -510,7 +548,7 @@ class AuditStore {
   }
 
   async close(): Promise<void> {
-    if (this.prisma) {
+    if (this.prisma && this.ownsPrisma) {
       await this.prisma.$disconnect();
     }
     await this.sink.close();
@@ -687,11 +725,13 @@ type TcpPortMappingRecord = {
 
 class TcpPortMappingStore {
   private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
   /** id → record (in-memory fallback when DATABASE_URL is absent) */
   private readonly memory = new Map<string, TcpPortMappingRecord>();
 
-  constructor() {
-    this.prisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  constructor(prisma?: PrismaClient | null) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -760,7 +800,7 @@ class TcpPortMappingStore {
   }
 
   async close(): Promise<void> {
-    if (this.prisma) await this.prisma.$disconnect();
+    if (this.prisma && this.ownsPrisma) await this.prisma.$disconnect();
   }
 
   private toRecord(row: {
@@ -803,17 +843,33 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     },
   });
   const metrics = new GatewayMetrics();
+  const sharedPrisma = process.env.DATABASE_URL ? new PrismaClient() : null;
+  const gatewayNodeId = config.nodeId ?? `gateway-${randomUUID()}`;
   const registry = new TunnelRegistry({
     backend: config.registryBackend ?? "memory",
     redisUrl: config.redisUrl,
     redisKeyPrefix: config.redisKeyPrefix,
     leaseTtlMs: config.registryLeaseTtlMs ?? 30_000,
-    nodeId: config.nodeId ?? `gateway-${randomUUID()}`,
+    nodeId: gatewayNodeId,
+    onLeaseLost: ({ subdomain }) => {
+      metrics.increment("gateway_registry_lease_lost_total");
+      app.log.warn({ subdomain, nodeId: gatewayNodeId }, "tunnel lease lost; closing local session");
+      metrics.setGauge("gateway_active_tunnels", registry.count());
+      publishLiveEvent("tunnels_changed", ownershipBySubdomain.get(subdomain) ?? null);
+      publishLiveEvent("gateway_status_changed");
+    },
+    onStaleSessionEvicted: ({ subdomain, idleMs }) => {
+      metrics.increment("gateway_registry_stale_evictions_total");
+      app.log.warn({ subdomain, idleMs, nodeId: gatewayNodeId }, "stale tunnel session evicted");
+      metrics.setGauge("gateway_active_tunnels", registry.count());
+      publishLiveEvent("tunnels_changed", ownershipBySubdomain.get(subdomain) ?? null);
+      publishLiveEvent("gateway_status_changed");
+    },
   });
-  const store = new TunnelStore();
-  const authStore = new AuthStore();
-  const userAuthStore = new UserAuthStore();
-  const tcpPortMappingStore = new TcpPortMappingStore();
+  const store = new TunnelStore(sharedPrisma);
+  const authStore = new AuthStore(sharedPrisma);
+  const userAuthStore = new UserAuthStore(sharedPrisma);
+  const tcpPortMappingStore = new TcpPortMappingStore(sharedPrisma);
   const auditStore = new AuditStore(new AuditSink({
     jsonlPath: config.auditExportJsonlPath,
     webhookUrl: config.auditExportWebhookUrl,
@@ -822,7 +878,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     webhookMaxRetries: config.auditExportWebhookMaxRetries ?? 3,
     webhookRetryBaseMs: config.auditExportWebhookRetryBaseMs ?? 250,
     deadLetterJsonlPath: config.auditExportDeadLetterJsonlPath,
-  }));
+  }), sharedPrisma, {
+    onLogged: () => publishLiveEvent("audit_changed"),
+  });
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
 
@@ -869,6 +927,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
   const usedTcpPorts = new Set<number>();
+  const reservedTcpPorts = new Set<number>();
 
   // ── Traffic Inspector ─────────────────────────────────────────────────────
   // Keyed by subdomain → ring buffer of the most recent captured requests.
@@ -895,9 +954,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const tcpConnLimiter = new RateLimiter(config.tcpConnectionRateLimit ?? 10, 60_000);
 
   const ownershipBySubdomain = new Map<string, string>();
+  const liveSubscribers = new Map<string, LiveSubscriber>();
   let isReady = false;
   let isDraining = false;
   let maintenanceMode = config.maintenanceMode ?? false;
+  metrics.setGauge("gateway_active_tunnels", registry.count());
+  metrics.setGauge("gateway_draining_state", 0);
+  metrics.setGauge("gateway_maintenance_mode_state", maintenanceMode ? 1 : 0);
   const apiVersion = (config.apiVersion ?? "1").trim() || "1";
   const apiDeprecationEnabled = config.apiDeprecationEnabled ?? false;
   const apiSunsetDate = (config.apiSunsetDate ?? "").trim();
@@ -934,6 +997,109 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
   }, 60 * 60 * 1000);  // run every hour
   redirectSweep.unref();
+
+  const registrySweep = setInterval(() => {
+    const evicted = registry.sweepStaleSockets();
+    if (evicted > 0) {
+      app.log.warn({ evicted }, "evicted stale tunnel session(s)");
+      metrics.setGauge("gateway_active_tunnels", registry.count());
+    }
+  }, Math.max(5_000, (config.registryLeaseTtlMs ?? 30_000)));
+  registrySweep.unref();
+
+  function gatewayState(): {
+    nodeId: string;
+    registryBackend: "memory" | "redis";
+    ready: boolean;
+    draining: boolean;
+    maintenanceMode: boolean;
+    drainComplete: boolean;
+    canAcceptConnections: boolean;
+    activeTunnels: number;
+  } {
+    const activeTunnels = registry.count();
+    return {
+      nodeId: gatewayNodeId,
+      registryBackend: config.registryBackend ?? "memory",
+      ready: isReady && !isDraining && !maintenanceMode,
+      draining: isDraining,
+      maintenanceMode,
+      drainComplete: isDraining && activeTunnels === 0,
+      canAcceptConnections: !isDraining && !maintenanceMode,
+      activeTunnels,
+    };
+  }
+
+  function canReceiveLiveEvent(principal: Principal, event: LiveEvent): boolean {
+    if (event.kind === "connected") {
+      return true;
+    }
+    if (event.kind === "gateway_status_changed") {
+      return true;
+    }
+    if (event.kind === "tunnels_changed") {
+      if (!hasScope(principal.scopes, "tunnel:read")) {
+        return false;
+      }
+      if (!event.userId) {
+        return true;
+      }
+      return principal.userId === event.userId || isAdminRole(principal.role);
+    }
+    if (event.kind === "api_keys_changed") {
+      if (!isAdminRole(principal.role) || !hasScope(principal.scopes, "key:manage")) {
+        return false;
+      }
+      if (!event.userId) {
+        return true;
+      }
+      return principal.userId === event.userId || principal.authType === "anonymous";
+    }
+    if (event.kind === "audit_changed" || event.kind === "tcp_mappings_changed") {
+      return isAdminRole(principal.role) && hasScope(principal.scopes, "key:manage");
+    }
+    return false;
+  }
+
+  function publishLiveEvent(kind: LiveEventKind, userId?: string | null): void {
+    const event: LiveEvent = {
+      kind,
+      at: new Date().toISOString(),
+      userId: userId ?? null,
+    };
+    for (const subscriber of liveSubscribers.values()) {
+      if (!canReceiveLiveEvent(subscriber.principal, event)) {
+        continue;
+      }
+      try {
+        subscriber.write(event);
+      } catch {
+        subscriber.close();
+      }
+    }
+  }
+
+  function applyOperationalState(next: { draining?: boolean; maintenanceMode?: boolean }, source: string): void {
+    let changed = false;
+    if (typeof next.maintenanceMode === "boolean" && next.maintenanceMode !== maintenanceMode) {
+      maintenanceMode = next.maintenanceMode;
+      metrics.setGauge("gateway_maintenance_mode_state", maintenanceMode ? 1 : 0);
+      metrics.increment("gateway_drain_state_transitions_total");
+      changed = true;
+    }
+    if (typeof next.draining === "boolean" && next.draining !== isDraining) {
+      isDraining = next.draining;
+      metrics.setGauge("gateway_draining_state", isDraining ? 1 : 0);
+      metrics.increment("gateway_drain_state_transitions_total");
+      changed = true;
+    }
+    isReady = !maintenanceMode && !isDraining;
+    if (changed) {
+      const state = gatewayState();
+      app.log.info({ source, ...state }, "gateway operational state changed");
+      publishLiveEvent("gateway_status_changed");
+    }
+  }
 
   app.addHook("onRequest", async (req, reply) => {
     if (req.method === "OPTIONS" && req.url.startsWith("/api/")) {
@@ -1166,7 +1332,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const start = config.tcpPublicPortStart ?? 19000;
     const end = config.tcpPublicPortEnd ?? 19999;
     for (let port = start; port <= end; port += 1) {
-      if (!usedTcpPorts.has(port)) {
+      if (!usedTcpPorts.has(port) && !reservedTcpPorts.has(port)) {
         return port;
       }
     }
@@ -1200,6 +1366,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (port === null) {
       throw new Error("TCP_PORT_EXHAUSTED");
     }
+    if (usedTcpPorts.has(port) || reservedTcpPorts.has(port)) {
+      throw new Error("TCP_PORT_BUSY");
+    }
+    reservedTcpPorts.add(port);
 
     const connectionIds = new Set<string>();
     tcpConnectionsBySocket.set(socket, connectionIds);
@@ -1274,10 +1444,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     });
 
     await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error): void => reject(error);
+      const onError = (error: Error): void => {
+        reservedTcpPorts.delete(port);
+        reject(error);
+      };
       server.once("error", onError);
       server.listen(port, config.tcpTunnelBindHost ?? "0.0.0.0", () => {
         server.off("error", onError);
+        reservedTcpPorts.delete(port);
         resolve();
       });
     });
@@ -1394,6 +1568,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
   wsServer.on("connection", (socket, request) => {
     if (isDraining || maintenanceMode) {
+      metrics.increment("gateway_ws_rejected_draining_total");
+      app.log.info({
+        nodeId: gatewayNodeId,
+        draining: isDraining,
+        maintenanceMode,
+        remoteAddress: request.socket.remoteAddress,
+      }, "rejected websocket connection while draining or in maintenance");
       socket.close(1013, "service_unavailable");
       return;
     }
@@ -1468,7 +1649,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           const useFixedPort =
             fixedMapping !== null &&
             fixedMapping.enabled &&
-            !usedTcpPorts.has(fixedMapping.publicPort);
+            !usedTcpPorts.has(fixedMapping.publicPort) &&
+            !reservedTcpPorts.has(fixedMapping.publicPort);
 
           if (isTcp && useFixedPort && fixedMapping) {
             // ── FIXED-PORT PATH ──────────────────────────────────────────────
@@ -1543,6 +1725,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               rEntry.lastSeenAt = Date.now();
               redirectByToken.set(redirectToken, rEntry);
               redirectTokenByTunnelKey.set(syntheticKey, redirectToken);
+              publishLiveEvent("tunnels_changed", principal.userId);
+              publishLiveEvent("gateway_status_changed");
 
               socket.send(encodeWireMessage({
                 type: "registered",
@@ -1570,6 +1754,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             ownershipBySubdomain.set(subdomain, principal.userId);
             metrics.setGauge("gateway_active_tunnels", registry.count());
             registered = true;
+            publishLiveEvent("tunnels_changed", principal.userId);
+            publishLiveEvent("gateway_status_changed");
             void auditStore.log(principal.userId, "ws_tunnel_registered", "tunnel_session", subdomain, { authType: principal.authType });
 
             // ── Stable redirect URL (all tunnel types) ──────────────────────
@@ -1890,6 +2076,12 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
         registry.removeBySocket(socket);
         metrics.setGauge("gateway_active_tunnels", registry.count());
+        if (subdomain) {
+          publishLiveEvent("tunnels_changed", ownershipBySubdomain.get(subdomain) ?? null);
+        } else {
+          publishLiveEvent("tunnels_changed");
+        }
+        publishLiveEvent("gateway_status_changed");
       });
     }).catch((err) => {
       app.log.error({ err }, "ws auth resolution error");
@@ -1897,15 +2089,72 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     });
   });
 
-  app.get("/healthz", async () => ({ status: "ok", tunnels: registry.count() }));
+  app.get("/healthz", async () => ({
+    status: "ok",
+    nodeId: gatewayNodeId,
+    registryBackend: config.registryBackend ?? "memory",
+    tunnels: registry.count(),
+  }));
   app.get("/readyz", async (_req, reply) => {
-    const ready = isReady && !isDraining && !maintenanceMode;
-    return reply.status(ready ? 200 : 503).send({
-      ready,
-      draining: isDraining,
-      maintenanceMode,
-      activeTunnels: registry.count(),
-    });
+    const state = gatewayState();
+    return reply.status(state.ready ? 200 : 503).send(state);
+  });
+  app.get("/api/events", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+
+    reply.hijack();
+    const raw = reply.raw;
+    raw.statusCode = 200;
+    raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+    raw.setHeader("cache-control", "no-cache, no-transform");
+    raw.setHeader("connection", "keep-alive");
+    raw.setHeader("x-accel-buffering", "no");
+    raw.flushHeaders?.();
+
+    const id = randomUUID();
+    let closed = false;
+    const heartbeat = setInterval(() => {
+      if (closed) {
+        return;
+      }
+      try {
+        raw.write(`: ping ${Date.now()}\n\n`);
+      } catch {
+        cleanup();
+      }
+    }, 15_000);
+    heartbeat.unref();
+
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearInterval(heartbeat);
+      liveSubscribers.delete(id);
+      try {
+        raw.end();
+      } catch {
+        // ignore
+      }
+    };
+
+    const write = (event: LiveEvent) => {
+      if (closed) {
+        return;
+      }
+      raw.write(`event: ${event.kind}\n`);
+      raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    liveSubscribers.set(id, { id, principal, write, close: cleanup });
+    write({ kind: "connected", at: new Date().toISOString(), userId: principal.userId });
+
+    req.raw.on("close", cleanup);
+    req.raw.on("aborted", cleanup);
   });
   app.get("/metrics", async (req, reply) => {
     // If METRICS_TOKEN is configured, require a matching Bearer token so that
@@ -2078,10 +2327,68 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
     }
     const tunnels = await store.list(principal.userId);
+    const toIso = (value?: number | null): string | null => (typeof value === "number" ? new Date(value).toISOString() : null);
+    const describeTunnelState = (subdomain: string): {
+      active: boolean;
+      status: "live" | "reserved" | "offline";
+      statusMessage: string;
+      lastSeenAt: string | null;
+      disconnectedAt: string | null;
+      redirectUrl: string | null;
+    } => {
+      const liveSession = registry.findBySubdomain(subdomain);
+      const redirectToken = redirectTokenByTunnelKey.get(subdomain);
+      const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
+      const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
+      const lastSeenAt = toIso(liveSession?.lastHeartbeatAt ?? redirectEntry?.lastSeenAt);
+      const disconnectedAt = toIso(redirectEntry?.disconnectedAt);
+
+      if (liveSession) {
+        return {
+          active: true,
+          status: "live",
+          statusMessage: "Client connected and forwarding traffic",
+          lastSeenAt,
+          disconnectedAt: null,
+          redirectUrl,
+        };
+      }
+
+      if (redirectEntry && redirectEntry.connected === false) {
+        return {
+          active: false,
+          status: "offline",
+          statusMessage: "Client machine is not reachable",
+          lastSeenAt,
+          disconnectedAt,
+          redirectUrl,
+        };
+      }
+
+      return {
+        active: false,
+        status: "reserved",
+        statusMessage: "Reserved subdomain waiting for a client connection",
+        lastSeenAt,
+        disconnectedAt: null,
+        redirectUrl,
+      };
+    };
     // Enrich each record with a live `active` flag so the UI can distinguish
     // DB-reserved subdomains from ones with an actual connected client.
     const dbSubdomains = new Set(tunnels.map((t) => t.subdomain));
-    const enriched = tunnels.map((t) => ({ ...t, active: !!registry.findBySubdomain(t.subdomain) }));
+    const enriched = tunnels.map((t) => {
+      const state = describeTunnelState(t.subdomain);
+      return {
+        ...t,
+        active: state.active,
+        status: state.status,
+        statusMessage: state.statusMessage,
+        lastSeenAt: state.lastSeenAt,
+        disconnectedAt: state.disconnectedAt,
+        redirectUrl: state.redirectUrl,
+      };
+    });
 
     // Append live CLI sessions: tunnels registered via `portivox open` that have
     // no DB record (the client never called POST /api/tunnels to reserve a subdomain).
@@ -2098,12 +2405,44 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           subdomain: s.subdomain,
           createdAt: new Date(s.connectedAt).toISOString(),
           active: true,
+          status: "live",
+          statusMessage: "Client connected and forwarding traffic",
           isCliSession: true,
+          lastSeenAt: new Date(s.lastHeartbeatAt).toISOString(),
+          disconnectedAt: null,
           redirectUrl,
         };
       });
 
-    const allTunnels = [...enriched, ...liveSessions];
+    const seenOfflineCliSubdomains = new Set<string>();
+    const offlineCliSessions = [...redirectByToken.entries()]
+      .filter(([, entry]) =>
+        entry.userId === principal.userId &&
+        entry.tunnelType === "http" &&
+        !!entry.subdomain &&
+        !entry.connected &&
+        !dbSubdomains.has(entry.subdomain))
+      .flatMap(([token, entry]) => {
+        if (!entry.subdomain || seenOfflineCliSubdomains.has(entry.subdomain)) {
+          return [];
+        }
+        seenOfflineCliSubdomains.add(entry.subdomain);
+        return [{
+          id: `cli_offline_${entry.subdomain}`,
+          userId: principal.userId,
+          subdomain: entry.subdomain,
+          createdAt: new Date(entry.createdAt).toISOString(),
+          active: false,
+          status: "offline" as const,
+          statusMessage: "Client machine is not reachable",
+          isCliSession: true,
+          lastSeenAt: toIso(entry.lastSeenAt),
+          disconnectedAt: toIso(entry.disconnectedAt),
+          redirectUrl: buildPublicUrl(`/r/${token}`),
+        }];
+      });
+
+    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions];
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
     return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
   });
@@ -2159,6 +2498,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     const created = await store.create(principal.userId, subdomain);
     await auditStore.log(principal.userId, "tunnel_created", "tunnel", created.id, { subdomain: created.subdomain });
+    publishLiveEvent("tunnels_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
     const responseBody = { tunnel: created };
     if (idempotencyStoreKey) {
@@ -2219,6 +2559,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     await store.delete(params.id);
     await auditStore.log(principal.userId, "tunnel_deleted", "tunnel", params.id);
+    publishLiveEvent("tunnels_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     if (idempotencyStoreKey) {
       writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 204, body: null, contentType: "application/json" });
@@ -2284,6 +2625,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const scopes = parseScopes(body.scopesRaw, ["tunnel:create", "tunnel:read", "tunnel:delete"]);
     const created = await authStore.createApiKey(principal.userId, name, hashApiKey(plaintext), scopes);
     await auditStore.log(principal.userId, "api_key_created", "api_key", created.id, { name: created.name });
+    publishLiveEvent("api_keys_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
     const responseBody = { apiKey: { id: created.id, name: created.name, createdAt: created.createdAt, scopes: created.scopes, token: plaintext } };
     if (idempotencyStoreKey) {
@@ -2376,6 +2718,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(404).send({ error: { code: "API_KEY_NOT_FOUND", message: "API key not found" } });
     }
     await auditStore.log(principal.userId, "api_key_revoked", "api_key", params.id);
+    publishLiveEvent("api_keys_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     if (idempotencyStoreKey) {
       writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 204, body: null, contentType: "application/json" });
@@ -2430,31 +2773,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         error: { code: "INVALID_ADMIN_STATE", message: "Body must include at least one of { maintenanceMode:boolean, draining:boolean } with no extra fields" },
       });
     }
-    if (typeof body.maintenanceMode === "boolean") {
-      maintenanceMode = body.maintenanceMode;
-      if (!maintenanceMode && !isDraining) {
-        isReady = true;
-      }
-      if (maintenanceMode) {
-        isReady = false;
-      }
-    }
-    if (typeof body.draining === "boolean") {
-      isDraining = body.draining;
-      if (isDraining) {
-        isReady = false;
-      } else if (!maintenanceMode) {
-        isReady = true;
-      }
-    }
+    applyOperationalState({
+      maintenanceMode: body.maintenanceMode,
+      draining: body.draining,
+    }, "admin_api");
 
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
-    const responseBody = {
-      ready: isReady,
-      draining: isDraining,
-      maintenanceMode,
-      activeTunnels: registry.count(),
-    };
+    const responseBody = gatewayState();
     if (idempotencyStoreKey) {
       writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 200, body: responseBody, contentType: "application/json" });
     }
@@ -2656,6 +2981,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     void auditStore.log(principal.userId, "tcp_port_mapping_created", "tcp_port_mapping", mapping.id, {
       localPort: lp, publicPort: pp,
     });
+    publishLiveEvent("tcp_mappings_changed");
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
     return reply.status(201).send({ mapping });
   });
@@ -2702,6 +3028,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(404).send({ error: { code: "NOT_FOUND", message: "TCP port mapping not found" } });
     }
     void auditStore.log(principal.userId, "tcp_port_mapping_updated", "tcp_port_mapping", id, patch);
+    publishLiveEvent("tcp_mappings_changed");
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "2xx" });
     return reply.status(200).send({ mapping: updated });
   });
@@ -2739,6 +3066,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(404).send({ error: { code: "NOT_FOUND", message: "TCP port mapping not found" } });
     }
     void auditStore.log(principal.userId, "tcp_port_mapping_deleted", "tcp_port_mapping", id);
+    publishLiveEvent("tcp_mappings_changed");
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     return reply.status(204).send();
   });
@@ -3124,13 +3452,29 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if ((config.startupGraceMs ?? 0) > 0) {
         await new Promise((resolve) => setTimeout(resolve, config.startupGraceMs));
       }
-      isReady = true;
+      applyOperationalState({}, "startup");
+      isReady = !maintenanceMode && !isDraining;
     },
     async stop(): Promise<void> {
-      isDraining = true;
+      applyOperationalState({ draining: true }, "shutdown");
       isReady = false;
       clearInterval(idempotencySweep);
       clearInterval(redirectSweep);
+      clearInterval(registrySweep);
+      for (const socket of wsServer.clients) {
+        socket.close(1012, "server_shutdown");
+      }
+      for (const conn of tcpConnectionsById.values()) {
+        conn.destroy();
+      }
+      tcpConnectionsById.clear();
+      const tcpCloseTasks = [...tcpBindingsBySubdomain.values()].map((binding) => new Promise<void>((resolve) => {
+        binding.server.close(() => resolve());
+      }));
+      tcpBindingsBySubdomain.clear();
+      usedTcpPorts.clear();
+      reservedTcpPorts.clear();
+      await Promise.allSettled(tcpCloseTasks);
       await app.close();
       await new Promise<void>((resolve) => wsServer.close(() => resolve()));
       await store.close();
@@ -3138,7 +3482,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       await userAuthStore.close();
       await auditStore.close();
       await tcpPortMappingStore.close();
+      if (sharedPrisma) {
+        await sharedPrisma.$disconnect();
+      }
     },
   };
 }
-

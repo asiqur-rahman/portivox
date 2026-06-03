@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApi, type AuditItem } from "../api";
 import { actionBadge, timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 export function AdminAuditPage({
   api,
@@ -20,7 +21,12 @@ export function AdminAuditPage({
   const [filterTo, setFilterTo] = useState("");
   const [filterLimit, setFilterLimit] = useState(50);
 
-  const load = useCallback((cursor?: string, pushCursor?: string) => {
+  const currentCursor = useMemo(
+    () => cursorStack[cursorStack.length - 1],
+    [cursorStack],
+  );
+
+  const load = useCallback((cursor?: string, pushCursor?: string, options?: { silent?: boolean }) => {
     setLoading(true);
     api.getAuditFiltered({
       limit: filterLimit,
@@ -33,19 +39,28 @@ export function AdminAuditPage({
       .then((result) => {
         setItems(result.items);
         setNextCursor(result.nextCursor);
-        if (pushCursor) setCursorStack((stack) => [...stack, pushCursor]);
+        if (pushCursor) {
+          setCursorStack((stack) => [...stack, pushCursor]);
+        }
       })
       .catch((error: unknown) => {
-        showToast(error instanceof Error ? error.message : "Failed to load audit log", "red");
+        if (!options?.silent) {
+          showToast(error instanceof Error ? error.message : "Failed to load audit log", "red");
+        }
       })
       .finally(() => setLoading(false));
-  }, [api, filterAction, filterResource, filterFrom, filterTo, filterLimit, showToast]);
+  }, [api, filterAction, filterFrom, filterLimit, filterResource, filterTo, showToast]);
 
   useEffect(() => {
     setCursorStack([]);
     setNextCursor(undefined);
     load(undefined);
   }, [load]);
+
+  useLiveRefresh({
+    eventKinds: ["audit_changed"],
+    refresh: () => load(currentCursor, undefined, { silent: true }),
+  });
 
   function exportCsv() {
     const header = "id,userId,action,resource,resourceId,createdAt,metadata";
@@ -116,13 +131,16 @@ export function AdminAuditPage({
           {[10, 25, 50, 100].map((count) => <option key={count} value={count}>{count}</option>)}
         </select>
 
-        <button className="btn-ghost audit-filter-clear" onClick={() => {
-          setFilterAction("");
-          setFilterResource("");
-          setFilterFrom("");
-          setFilterTo("");
-          setFilterLimit(50);
-        }}>
+        <button
+          className="btn-ghost audit-filter-clear"
+          onClick={() => {
+            setFilterAction("");
+            setFilterResource("");
+            setFilterFrom("");
+            setFilterTo("");
+            setFilterLimit(50);
+          }}
+        >
           <i className="ti ti-x" /> Clear
         </button>
       </div>
@@ -131,11 +149,15 @@ export function AdminAuditPage({
         <div className="section-head">
           <div className="section-title"><i className="ti ti-list" /> {items.length} events</div>
           <div className="section-actions">
-            <button className="btn-ghost" onClick={() => {
-              setCursorStack([]);
-              setNextCursor(undefined);
-              load(undefined);
-            }} disabled={loading}>
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                setCursorStack([]);
+                setNextCursor(undefined);
+                load(undefined);
+              }}
+              disabled={loading}
+            >
               <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
             </button>
           </div>
@@ -245,19 +267,29 @@ export function AdminAuditPage({
             </table>
 
             <div className="audit-pagination">
-              <button className="btn-ghost" disabled={cursorStack.length === 0 || loading} onClick={() => {
-                const stack = [...cursorStack];
-                stack.pop();
-                const previous = stack[stack.length - 1];
-                setCursorStack(stack);
-                load(previous);
-              }}>
+              <button
+                className="btn-ghost"
+                disabled={cursorStack.length === 0 || loading}
+                onClick={() => {
+                  const stack = [...cursorStack];
+                  stack.pop();
+                  const previous = stack[stack.length - 1];
+                  setCursorStack(stack);
+                  load(previous);
+                }}
+              >
                 <i className="ti ti-chevron-left" /> Prev
               </button>
               <span className="audit-pagination-label">Page {cursorStack.length + 1}</span>
-              <button className="btn-ghost" disabled={!nextCursor || loading} onClick={() => {
-                if (nextCursor) load(nextCursor, nextCursor);
-              }}>
+              <button
+                className="btn-ghost"
+                disabled={!nextCursor || loading}
+                onClick={() => {
+                  if (nextCursor) {
+                    load(nextCursor, nextCursor);
+                  }
+                }}
+              >
                 Next <i className="ti ti-chevron-right" />
               </button>
             </div>

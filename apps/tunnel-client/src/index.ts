@@ -4,6 +4,7 @@ import { loadClientConfig } from "portivox-config";
 import { TunnelClient, type RegisteredInfo } from "./client";
 import {
   installInfrastructure,
+  isServiceInfrastructureReady,
   uninstallAllServices,
   installService,
   uninstallService,
@@ -15,13 +16,25 @@ import {
   logsService,
 } from "./service";
 import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-const args = process.argv.slice(2);
+function normalizeCliArgs(argv: string[]): string[] {
+  const normalized = argv.map((arg) => (arg === "--consistent" ? "--persistent" : arg));
+  const first = normalized[0];
+  const knownCommands = new Set(["open", "config", "register", "list", "help", "--help", "-h"]);
+  if (first && /^\d+$/.test(first) && !knownCommands.has(first)) {
+    return ["open", ...normalized];
+  }
+  return normalized;
+}
+
+const args = normalizeCliArgs(process.argv.slice(2));
 const defaultConfig = loadClientConfig();
-const PORTIVOX_DIR = join(homedir(), ".portivox");
+const PORTIVOX_DIR = process.env.PORTIVOX_HOME
+  ? resolvePath(process.env.PORTIVOX_HOME)
+  : join(homedir(), ".portivox");
 const CONFIG_PATH = join(PORTIVOX_DIR, "client.json");
 const SESSIONS_PATH = join(PORTIVOX_DIR, "sessions.json");
 
@@ -123,6 +136,30 @@ async function confirm(question: string, defaultYes = true): Promise<boolean> {
   return answer.toLowerCase().startsWith("y");
 }
 
+async function ensurePersistentModeReady(): Promise<void> {
+  if (isServiceInfrastructureReady()) {
+    return;
+  }
+
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  // eslint-disable-next-line no-console
+  console.log("\nPersistent mode needs one-time background service setup on this machine.");
+
+  if (interactive) {
+    const approved = await confirm("Install the background service integration now?", true);
+    if (!approved) {
+      // eslint-disable-next-line no-console
+      console.log("Cancelled — persistent mode was not installed.");
+      process.exit(0);
+    }
+  } else {
+    // eslint-disable-next-line no-console
+    console.log("Preparing background service integration automatically...");
+  }
+
+  installInfrastructure();
+}
+
 function maskApiKey(key: string): string {
   if (key.length <= 8) return "••••••••";
   return `${key.slice(0, 4)}${"•".repeat(Math.max(4, key.length - 8))}${key.slice(-4)}`;
@@ -161,9 +198,12 @@ function printUsage(): void {
       "",
       "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
       "       [--tcp] [--no-ip-protection] [--exit-after <seconds>] [--heartbeat <ms>]",
-      "       [--persistent] [--name <service-name>]",
+      "       [--persistent|--consistent] [--name <service-name>]",
+      "",
+      "  <port> [same flags as open]",
       "",
       "       --persistent   Register + start as an OS background service (survives reboots).",
+      "       --consistent   Friendly alias for --persistent.",
       "                      Returns immediately.  Use 'config service *' to manage it.",
       "                      Without --persistent: runs in the foreground (default behaviour).",
       "",
@@ -177,7 +217,9 @@ function printUsage(): void {
       "  portivox config apiKey tk_abc123",
       "  portivox config service install",
       "  portivox open 3000",
+      "  portivox 3000",
       "  portivox open 3000 --persistent",
+      "  portivox 3000 --consistent",
       "  portivox open 3000 --persistent --name myapp",
       "  portivox open 22 --tcp --persistent",
       "  portivox config service list",
@@ -602,11 +644,13 @@ async function run(): Promise<void> {
     const serviceName  = pickArg(args, "--name") ?? `portivox-${port}`;
 
     if (persistent) {
+      await ensurePersistentModeReady();
       installService({
         name:         serviceName,
         port,
         tunnelType:   tcpMode ? "tcp" : "http",
         gatewayUrl:   gatewayUrl,
+        apiKey,
         subdomain:    requestedSubdomain,
         host,
         ipProtection: tcpMode ? !noIpProtection : undefined,

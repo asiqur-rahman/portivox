@@ -932,6 +932,11 @@ a:hover{text-decoration:underline}
 }
 .icon-btn:hover { background:var(--bg-hover);color:var(--text-1);border-color:var(--border-md); }
 .icon-btn.danger:hover { background:var(--red-bg);color:var(--red);border-color:rgba(225,112,85,0.25); }
+.icon-btn:disabled {
+  opacity:0.45;
+  cursor:not-allowed;
+  pointer-events:none;
+}
 
 .stop-btn {
   display:inline-flex;
@@ -958,6 +963,56 @@ a:hover{text-decoration:underline}
 .stop-btn:hover { opacity:0.8; transform:translateY(-1px); }
 .stop-btn:active { transform:none; }
 .stop-btn:disabled { opacity:0.5;cursor:not-allowed; }
+
+.cli-badge {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:18px;
+  padding:0 6px;
+  border-radius:999px;
+  background:var(--accent-bg);
+  color:var(--accent);
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:0.04em;
+}
+
+.tunnel-meta-cell {
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+
+.tunnel-meta-cell small {
+  color:var(--text-3);
+  font-size:11px;
+  line-height:1.35;
+}
+
+.tunnel-status-inline {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:4px;
+  font-size:13px;
+  font-weight:600;
+}
+
+.tunnel-status-inline.offline {
+  color:var(--red);
+}
+
+.tunnel-status-inline.reserved {
+  color:var(--text-2);
+}
+
+.tunnel-status-inline small {
+  color:var(--text-3);
+  font-size:11px;
+  font-weight:500;
+  line-height:1.35;
+}
 
 /* ── DEVICE LIST ── */
 .device-item {
@@ -2201,6 +2256,26 @@ a:hover{text-decoration:underline}
   }
   .mobile-status.live {
     background:var(--green-bg);
+    color:var(--green);
+  }
+  .mobile-status.offline {
+    background:var(--red-bg);
+    color:var(--red);
+  }
+  .mobile-status.reserved {
+    background:var(--bg-secondary);
+    color:var(--text-3);
+  }
+  .tunnel-state-note {
+    margin:0 0 10px;
+    font-size:11.5px;
+    line-height:1.45;
+    color:var(--text-3);
+  }
+  .tunnel-state-note.offline {
+    color:var(--red);
+  }
+  .tunnel-state-note.live {
     color:var(--green);
   }
   .mobile-url-row {

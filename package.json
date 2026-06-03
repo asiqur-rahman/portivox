@@ -20,6 +20,7 @@
     "test:smoke": "node ./scripts/smoke-e2e.cjs",
     "test:smoke:tcp": "node ./scripts/smoke-tcp-e2e.cjs",
     "test:smoke:docker": "node ./scripts/smoke-docker-e2e.cjs",
+    "test:multinode:docker": "node ./scripts/test-multinode-failover-docker.cjs",
     "test:chunk": "node ./scripts/test-chunk-e2e.cjs",
     "test:auth": "node ./scripts/test-auth-integration.cjs",
     "test:audit-replay": "node ./scripts/test-audit-replay.cjs",
@@ -58,4 +59,3 @@
     "prisma": "^6.8.2"
   }
 }
-

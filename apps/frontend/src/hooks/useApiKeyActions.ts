@@ -28,13 +28,15 @@ export function useApiKeyActions({
   setConfirm,
   showToast,
 }: UseApiKeyActionsOptions) {
-  const loadApiKeys = useCallback(() => {
+  const loadApiKeys = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
     api
       .listApiKeys()
       .then(setApiKeys)
       .catch((err: unknown) => {
-        showToast(err instanceof Error ? err.message : "Failed to load API keys", "red");
+        if (!options?.silent) {
+          showToast(err instanceof Error ? err.message : "Failed to load API keys", "red");
+        }
       })
       .finally(() => setLoading(false));
   }, [api, setApiKeys, setLoading, showToast]);

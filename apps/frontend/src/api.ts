@@ -1,9 +1,19 @@
+export type TunnelStatus = "live" | "reserved" | "offline";
+
 export type TunnelRecord = {
   id: string;
   subdomain: string;
   createdAt: string;
   /** True when a live WebSocket client is currently connected for this subdomain. */
   active: boolean;
+  /** Richer dashboard status for user-facing tunnel state. */
+  status?: TunnelStatus;
+  /** Human-readable hint about the current tunnel reachability. */
+  statusMessage?: string;
+  /** Last time the gateway observed this tunnel live or reachable. */
+  lastSeenAt?: string | null;
+  /** Time the tunnel was explicitly marked disconnected/unreachable. */
+  disconnectedAt?: string | null;
   /**
    * True for tunnels created via `portivox open` that have no DB record.
    * These sessions cannot be stopped from the dashboard — the user must
@@ -56,6 +66,20 @@ export type GatewayStatus = {
   draining: boolean;
   maintenanceMode: boolean;
   activeTunnels: number;
+};
+
+export type GatewayLiveEventKind =
+  | "connected"
+  | "tunnels_changed"
+  | "gateway_status_changed"
+  | "audit_changed"
+  | "api_keys_changed"
+  | "tcp_mappings_changed";
+
+export type GatewayLiveEvent = {
+  kind: GatewayLiveEventKind;
+  at: string;
+  userId?: string | null;
 };
 
 export type ChunkDiagnostics = {
@@ -222,19 +246,88 @@ export class GatewayApi {
     await this.request(`/api/inspect/${encodeURIComponent(subdomain)}`, { method: "DELETE" });
   }
 
-  private async request<T = unknown>(path: string, init: RequestInit & { authOverride?: GatewayAuth }): Promise<T> {
-    const auth = init.authOverride ?? this.auth;
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      ...(init.headers as Record<string, string> | undefined),
+  subscribeEvents(
+    onEvent: (event: GatewayLiveEvent) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+    const controller = new AbortController();
+
+    const connect = async (): Promise<void> => {
+      const headers = this.buildHeaders(this.auth, false);
+      try {
+        const response = await fetch(`${this.baseUrl}/api/events`, {
+          method: "GET",
+          headers,
+          signal: controller.signal,
+          cache: "no-store",
+        });
+
+        if (!response.ok || !response.body) {
+          throw new Error(`Live updates unavailable (${response.status})`);
+        }
+
+        reconnectAttempt = 0;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!stopped) {
+          const { value, done } = await reader.read();
+          if (done) {
+            throw new Error("Live update stream closed");
+          }
+          buffer += decoder.decode(value, { stream: true });
+
+          let separatorIndex = buffer.indexOf("\n\n");
+          while (separatorIndex >= 0) {
+            const chunk = buffer.slice(0, separatorIndex);
+            buffer = buffer.slice(separatorIndex + 2);
+            const dataLines = chunk
+              .split(/\r?\n/)
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trimStart());
+
+            if (dataLines.length > 0) {
+              try {
+                onEvent(JSON.parse(dataLines.join("\n")) as GatewayLiveEvent);
+              } catch {
+                // ignore malformed event frames
+              }
+            }
+            separatorIndex = buffer.indexOf("\n\n");
+          }
+        }
+      } catch (error) {
+        if (stopped || controller.signal.aborted) {
+          return;
+        }
+        onError?.(error instanceof Error ? error : new Error(String(error)));
+        reconnectAttempt += 1;
+        const delayMs = Math.min(10_000, 1000 * (2 ** Math.min(reconnectAttempt, 3)));
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          void connect();
+        }, delayMs);
+      }
     };
 
-    if (auth.apiKey) {
-      headers["x-api-key"] = auth.apiKey;
-    }
-    if (auth.accessToken) {
-      headers.authorization = `Bearer ${auth.accessToken}`;
-    }
+    void connect();
+
+    return () => {
+      stopped = true;
+      controller.abort();
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }
+
+  private async request<T = unknown>(path: string, init: RequestInit & { authOverride?: GatewayAuth }): Promise<T> {
+    const auth = init.authOverride ?? this.auth;
+    const headers = this.buildHeaders(auth, true, init.headers as Record<string, string> | undefined);
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
@@ -259,5 +352,25 @@ export class GatewayApi {
     }
 
     return (await response.json()) as T;
+  }
+
+  private buildHeaders(
+    auth: GatewayAuth,
+    includeJsonContentType: boolean,
+    extraHeaders?: Record<string, string>,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      ...(includeJsonContentType ? { "content-type": "application/json" } : {}),
+      ...(extraHeaders ?? {}),
+    };
+
+    if (auth.apiKey) {
+      headers["x-api-key"] = auth.apiKey;
+    }
+    if (auth.accessToken) {
+      headers.authorization = `Bearer ${auth.accessToken}`;
+    }
+
+    return headers;
   }
 }
