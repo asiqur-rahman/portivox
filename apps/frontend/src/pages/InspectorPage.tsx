@@ -41,7 +41,7 @@ function tryPrettyJson(raw: string): string {
 function buildCurlCommand(req: CapturedRequestDetail, baseUrl: string): string {
   const url = `${baseUrl}${req.path}`;
   const headerArgs = Object.entries(req.requestHeaders)
-    .filter(([, value]) => value !== undefined && !["host"].includes(String(value).toLowerCase()))
+    .filter(([key, value]) => value !== undefined && key.toLowerCase() !== "host")
     .map(([key, value]) => `-H '${key}: ${Array.isArray(value) ? value.join(", ") : value}'`)
     .join(" \\\n  ");
   const body = req.requestBodyBase64 ? decodeBase64Body(req.requestBodyBase64) : "";
@@ -84,6 +84,12 @@ export function InspectorPage({
   }, [fetchList]);
 
   useEffect(() => {
+    if (selected && !requests.some((request) => request.id === selected.id)) {
+      setSelected(null);
+    }
+  }, [requests, selected]);
+
+  useEffect(() => {
     if (!subdomain) {
       return;
     }
@@ -115,7 +121,7 @@ export function InspectorPage({
           detailTimer = null;
           api.getInspectorRequest(subdomain, selected.id)
             .then((data) => setSelected(data.request))
-            .catch(() => {});
+            .catch(() => setSelected(null));
         }, 150);
       }
     });
