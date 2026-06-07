@@ -30,14 +30,14 @@ export function AppSidebar({
     <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
       <div className="logo">
         <div className="logo-icon"><i className="ti ti-topology-star" /></div>
-        <span className="logo-wordmark">Portivox <span className="logo-badge">AI</span></span>
+        <span className="logo-wordmark">Portivox</span>
       </div>
 
       <div className="nav-body">
         <span className="nav-group-label">Workspace</span>
-        {(["tunnels", "devices", "ai"] as Page[]).map((page) => (
+        {(["tunnels", "devices"] as Page[]).map((page) => (
           <div key={page} className={`nav-item ${currentPage === page ? "active" : ""}`} onClick={() => onNavigate(page)}>
-            <i className={`ti ti-${page === "tunnels" ? "topology-star-3" : page === "devices" ? "device-laptop" : "sparkles"}`} />
+            <i className={`ti ti-${page === "tunnels" ? "topology-star-3" : "device-laptop"}`} />
             {PAGE_TITLES[page]}
             {page === "tunnels" && activeTunnelCount > 0 && <span className="nav-badge">{activeTunnelCount}</span>}
           </div>

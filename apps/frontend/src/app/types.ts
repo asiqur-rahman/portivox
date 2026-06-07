@@ -1,7 +1,6 @@
 export type Page =
   | "tunnels"
   | "devices"
-  | "ai"
   | "usage"
   | "api"
   | "org"

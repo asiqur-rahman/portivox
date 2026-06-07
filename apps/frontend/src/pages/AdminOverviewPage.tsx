@@ -92,7 +92,7 @@ export function AdminOverviewPage({
             <div className="kpi-icon purple"><i className="ti ti-topology-star-3" /></div>
             {status && (
               <div className="status-live" style={{ color: status.ready ? "var(--green)" : "var(--red)" }}>
-                <div className={`status-pulse ${status.ready ? "" : "red"}`} />
+                <div className={`status-pulse ${status.ready ? "" : "red"} static`} />
                 {status.ready ? "Online" : "Offline"}
               </div>
             )}

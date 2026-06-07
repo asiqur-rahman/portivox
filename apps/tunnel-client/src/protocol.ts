@@ -34,7 +34,7 @@ type WireMessage =
     }
   | { type: "heartbeat"; at: number }
   | { type: "heartbeat_ack" }
-  | { type: "error"; message: string; streamId?: string };
+  | { type: "error"; message: string; code?: string; streamId?: string };
 
 type StreamTransportMeta = {
   flags?: string[];

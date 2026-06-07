@@ -170,6 +170,15 @@ export class TunnelRegistry {
     throw new Error("Could not allocate unique tunnel subdomain");
   }
 
+  async assignExact(requestedSubdomain: string, socket: WebSocket): Promise<string | null> {
+    const preferred = sanitizeSubdomain(requestedSubdomain);
+    if (!preferred) {
+      return null;
+    }
+    const claimed = await this.tryClaim(preferred, socket, Date.now());
+    return claimed ? preferred : null;
+  }
+
   findBySubdomain(subdomain: string): LocalTunnelEntry | undefined {
     const entry = this.bySubdomain.get(subdomain);
     if (!entry) {

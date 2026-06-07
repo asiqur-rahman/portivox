@@ -186,6 +186,15 @@ class TunnelStore {
     return [...this.memory.values()].filter((item) => item.userId === userId);
   }
 
+  async listAll(): Promise<TunnelRecord[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.tunnel.findMany({ orderBy: { createdAt: "desc" } });
+      return rows.map((row: { id: string; userId: string; subdomain: string; createdAt: Date }) => ({ id: row.id, userId: row.userId, subdomain: row.subdomain, createdAt: row.createdAt.toISOString() }));
+    }
+
+    return [...this.memory.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
   async findById(id: string): Promise<TunnelRecord | null> {
     if (this.prisma) {
       const row = await this.prisma.tunnel.findUnique({ where: { id } });
@@ -1206,8 +1215,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // Default scopes granted to newly registered users and JWT fallback.
   const DEFAULT_USER_SCOPES = ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"] as const;
 
-  function createGatewayError(message: string): string {
-    return encodeWireMessage({ type: "error", message });
+  function createGatewayError(message: string, code?: string): string {
+    return encodeWireMessage({ type: "error", message, code });
   }
 
   function hashApiKey(value: string): string {
@@ -1587,6 +1596,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         maintenanceMode,
         remoteAddress: request.socket.remoteAddress,
       }, "rejected websocket connection while draining or in maintenance");
+      socket.send(createGatewayError(
+        maintenanceMode ? "Gateway is in maintenance mode" : "Gateway is temporarily draining and not accepting new tunnels",
+        maintenanceMode ? "GATEWAY_MAINTENANCE" : "GATEWAY_DRAINING",
+      ));
       socket.close(1013, "service_unavailable");
       return;
     }
@@ -1750,18 +1763,28 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 redirectToken,
                 redirectUrl,
               }));
-            } catch {
-              socket.send(createGatewayError("Failed to bind fixed TCP port"));
-              // Clean up partially-created tokens on failure
-              if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(syntheticKey); }
-              registered = false;
+              } catch {
+                socket.send(createGatewayError("Requested TCP public port is unavailable", "TCP_PORT_BUSY"));
+                // Clean up partially-created tokens on failure
+                if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(syntheticKey); }
+                registered = false;
             }
             return;
           }
 
           // ── NORMAL PATH (HTTP tunnel, or TCP with no/busy mapping) ─────────
           try {
-            const subdomain = await registry.assign(requestMessage.requestedSubdomain, socket);
+            let subdomain: string;
+            if (requestMessage.requestedSubdomain) {
+              const exactSubdomain = await registry.assignExact(requestMessage.requestedSubdomain, socket);
+              if (!exactSubdomain) {
+                socket.send(createGatewayError("Requested subdomain is already taken", "SUBDOMAIN_TAKEN"));
+                return;
+              }
+              subdomain = exactSubdomain;
+            } else {
+              subdomain = await registry.assign(undefined, socket);
+            }
             socketSubdomain.set(socket, subdomain);
             ownershipBySubdomain.set(subdomain, principal.userId);
             metrics.setGauge("gateway_active_tunnels", registry.count());
@@ -1831,8 +1854,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                   redirectToken,
                   redirectUrl,
                 }));
-              } catch {
-                socket.send(createGatewayError("Failed to allocate TCP tunnel port"));
+              } catch (error) {
+                const code = error instanceof Error ? error.message : "";
+                if (code === "TCP_TUNNEL_DISABLED") {
+                  socket.send(createGatewayError("TCP tunneling is disabled on this gateway", "TCP_TUNNEL_DISABLED"));
+                } else if (code === "TCP_PORT_EXHAUSTED") {
+                  socket.send(createGatewayError("No public TCP ports are currently available", "TCP_PORT_EXHAUSTED"));
+                } else if (code === "TCP_PORT_BUSY") {
+                  socket.send(createGatewayError("Requested TCP public port is unavailable", "TCP_PORT_BUSY"));
+                } else {
+                  socket.send(createGatewayError("Failed to allocate TCP tunnel port", "TCP_PORT_ALLOCATE_FAILED"));
+                }
                 if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(subdomain); }
                 registry.removeBySocket(socket);
                 metrics.setGauge("gateway_active_tunnels", registry.count());
@@ -1857,7 +1889,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               socket.send(encodeWireMessage({ type: "registered", subdomain, tunnelType: "http", redirectToken, redirectUrl }));
             }
           } catch {
-            socket.send(createGatewayError("Failed to allocate tunnel subdomain"));
+            socket.send(createGatewayError("Failed to allocate tunnel subdomain", "SUBDOMAIN_ALLOCATE_FAILED"));
           }
           return;
         }
@@ -2279,6 +2311,45 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
   });
 
+  app.get("/api/auth/validate", async (req, reply) => {
+    const endpoint = "/api/auth/validate";
+    const apiKeyHeader = req.headers["x-api-key"];
+    const bearerHeader = req.headers.authorization;
+    const hasPresentedCredential =
+      (typeof apiKeyHeader === "string" && apiKeyHeader.trim().length > 0) ||
+      (Array.isArray(apiKeyHeader) && apiKeyHeader.some((value) => typeof value === "string" && value.trim().length > 0)) ||
+      (typeof bearerHeader === "string" && bearerHeader.trim().length > 0);
+
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!hasPresentedCredential || !principal || principal.authType === "anonymous") {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+
+    const apiLimit = apiReadLimiter.take(`api:read:auth_validate:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply
+        .header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000))
+        .status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({
+      ok: true,
+      principal: {
+        userId: principal.userId,
+        authType: principal.authType,
+        role: principal.role,
+        scopes: principal.scopes,
+      },
+    });
+  });
+
   app.post("/api/auth/change-password", async (req, reply) => {
     const endpoint = "/api/auth/change-password";
     const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
@@ -2442,6 +2513,150 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         return [{
           id: `cli_offline_${entry.subdomain}`,
           userId: principal.userId,
+          subdomain: entry.subdomain,
+          createdAt: new Date(entry.createdAt).toISOString(),
+          active: false,
+          status: "offline" as const,
+          statusMessage: "Client machine is not reachable",
+          isCliSession: true,
+          lastSeenAt: toIso(entry.lastSeenAt),
+          disconnectedAt: toIso(entry.disconnectedAt),
+          redirectUrl: buildPublicUrl(`/r/${token}`),
+        }];
+      });
+
+    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions];
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
+  });
+
+  app.get("/api/admin/tunnels", async (req, reply) => {
+    const endpoint = "/api/admin/tunnels";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiReadLimiter.take(`api:read:admin_tunnels:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply
+        .header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000))
+        .status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+    }
+    if (!hasScope(principal.scopes, "tunnel:read")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
+    }
+
+    const tunnels = await store.listAll();
+    const toIso = (value?: number | null): string | null => (typeof value === "number" ? new Date(value).toISOString() : null);
+    const describeTunnelState = (subdomain: string): {
+      active: boolean;
+      status: "live" | "reserved" | "offline";
+      statusMessage: string;
+      lastSeenAt: string | null;
+      disconnectedAt: string | null;
+      redirectUrl: string | null;
+    } => {
+      const liveSession = registry.findBySubdomain(subdomain);
+      const redirectToken = redirectTokenByTunnelKey.get(subdomain);
+      const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
+      const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
+      const lastSeenAt = toIso(liveSession?.lastHeartbeatAt ?? redirectEntry?.lastSeenAt);
+      const disconnectedAt = toIso(redirectEntry?.disconnectedAt);
+
+      if (liveSession) {
+        return {
+          active: true,
+          status: "live",
+          statusMessage: "Client connected and forwarding traffic",
+          lastSeenAt,
+          disconnectedAt: null,
+          redirectUrl,
+        };
+      }
+
+      if (redirectEntry && redirectEntry.connected === false) {
+        return {
+          active: false,
+          status: "offline",
+          statusMessage: "Client machine is not reachable",
+          lastSeenAt,
+          disconnectedAt,
+          redirectUrl,
+        };
+      }
+
+      return {
+        active: false,
+        status: "reserved",
+        statusMessage: "Reserved subdomain waiting for a client connection",
+        lastSeenAt,
+        disconnectedAt: null,
+        redirectUrl,
+      };
+    };
+
+    const dbSubdomains = new Set(tunnels.map((t) => t.subdomain));
+    const enriched = tunnels.map((t) => {
+      const state = describeTunnelState(t.subdomain);
+      return {
+        ...t,
+        active: state.active,
+        status: state.status,
+        statusMessage: state.statusMessage,
+        lastSeenAt: state.lastSeenAt,
+        disconnectedAt: state.disconnectedAt,
+        redirectUrl: state.redirectUrl,
+      };
+    });
+
+    const liveSessions = registry.listSessions()
+      .filter((s) => !dbSubdomains.has(s.subdomain))
+      .map((s) => {
+        const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
+        const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
+        return {
+          id: `cli_${s.subdomain}`,
+          userId: ownershipBySubdomain.get(s.subdomain) ?? null,
+          subdomain: s.subdomain,
+          createdAt: new Date(s.connectedAt).toISOString(),
+          active: true,
+          status: "live" as const,
+          statusMessage: "Client connected and forwarding traffic",
+          isCliSession: true,
+          lastSeenAt: new Date(s.lastHeartbeatAt).toISOString(),
+          disconnectedAt: null,
+          redirectUrl,
+        };
+      });
+
+    const seenOfflineCliSubdomains = new Set<string>();
+    const offlineCliSessions = [...redirectByToken.entries()]
+      .filter(([, entry]) =>
+        entry.tunnelType === "http" &&
+        !!entry.subdomain &&
+        !entry.connected &&
+        !dbSubdomains.has(entry.subdomain))
+      .flatMap(([token, entry]) => {
+        if (!entry.subdomain || seenOfflineCliSubdomains.has(entry.subdomain)) {
+          return [];
+        }
+        seenOfflineCliSubdomains.add(entry.subdomain);
+        return [{
+          id: `cli_offline_${entry.subdomain}`,
+          userId: entry.userId ?? null,
           subdomain: entry.subdomain,
           createdAt: new Date(entry.createdAt).toISOString(),
           active: false,

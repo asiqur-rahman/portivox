@@ -94,7 +94,7 @@ async function main() {
       client = new TunnelClient({
         gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
         localBase: `http://127.0.0.1:${localAppPort}`,
-        requestedSubdomain: "demo",
+        requestedSubdomain: "smokehttp",
         localTimeoutMs: 15000,
         maxResponseBodyBytes: 2097152,
         onRegistered: (info) => {
@@ -128,4 +128,3 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
-

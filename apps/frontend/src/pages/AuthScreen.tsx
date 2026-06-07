@@ -55,12 +55,12 @@ export function AuthScreen({
         <div className="auth-left-inner">
           <div className="auth-brand">
             <div className="auth-brand-icon"><i className="ti ti-topology-star" /></div>
-            <span className="auth-brand-name">Portivox <span className="auth-brand-badge">AI</span></span>
+            <span className="auth-brand-name">Portivox</span>
           </div>
-          <h1 className="auth-headline">Secure tunnels.<br /><em>AI superpowers.</em></h1>
+          <h1 className="auth-headline">Secure tunnels.<br /><em>Built for real systems.</em></h1>
           <p className="auth-sub">
-            Expose local ports to the internet in seconds with intelligent monitoring,
-            auto-optimization, and AI-assisted setup built right in.
+            Expose local ports to the internet in seconds with reliable connectivity,
+            clean operational visibility, and production-ready tunnel management.
           </p>
           <div className="auth-features">
             <div className="auth-feature">
@@ -69,7 +69,7 @@ export function AuthScreen({
             </div>
             <div className="auth-feature">
               <div className="auth-feature-dot"><i className="ti ti-sparkles" /></div>
-              <span>AI-powered diagnostics and insights</span>
+              <span>Operational diagnostics and live tunnel insights</span>
             </div>
             <div className="auth-feature">
               <div className="auth-feature-dot"><i className="ti ti-clock" /></div>

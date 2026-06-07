@@ -14,12 +14,65 @@ import {
   logsService,
 } from "./service";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve as resolvePath } from "path";
 import { homedir } from "os";
+import net from "net";
 
-const args = process.argv.slice(2);
+function normalizeCliArgs(argv: string[]): string[] {
+  const normalized = argv.map((arg) => {
+    if (arg === "--consistent" || arg === "--always-on" || arg === "--background") return "--persistent";
+    if (arg === "--service-name") return "--name";
+    return arg;
+  });
+  const [first, ...rest] = normalized;
+  if (!first) {
+    return normalized;
+  }
+  const firstLower = first.toLowerCase();
+  const knownCommands = new Set([
+    "open",
+    "config",
+    "register",
+    "login",
+    "logout",
+    "whoami",
+    "me",
+    "doctor",
+    "diag",
+    "services",
+    "service",
+    "setup",
+    "init",
+    "http",
+    "tcp",
+    "expose",
+    "share",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-v",
+    "version",
+  ]);
+  if (/^\d+$/.test(first) && !knownCommands.has(first)) {
+    return ["open", ...normalized];
+  }
+  if (firstLower === "login") return ["register", ...rest];
+  if (firstLower === "me") return ["whoami", ...rest];
+  if (firstLower === "diag") return ["doctor", ...rest];
+  if (firstLower === "setup" || firstLower === "init") return ["config", ...rest];
+  if (firstLower === "services" || firstLower === "service") return ["config", "service", ...rest];
+  if (firstLower === "http" || firstLower === "expose" || firstLower === "share") return ["open", ...rest];
+  if (firstLower === "tcp") return rest.includes("--tcp") ? ["open", ...rest] : ["open", ...rest, "--tcp"];
+  return normalized;
+}
+
+const args = normalizeCliArgs(process.argv.slice(2));
 const defaultConfig = loadClientConfig();
-const CONFIG_PATH = join(homedir(), ".portivox", "client.json");
+const PORTIVOX_DIR = process.env.PORTIVOX_HOME
+  ? resolvePath(process.env.PORTIVOX_HOME)
+  : join(homedir(), ".portivox");
+const CONFIG_PATH = join(PORTIVOX_DIR, "client.json");
 const PACKAGE_VERSION = readPackageVersion();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -27,6 +80,18 @@ const PACKAGE_VERSION = readPackageVersion();
 type SavedClientConfig = {
   gatewayUrl?: string;
   apiKey?: string;
+};
+
+type ValidatedPrincipal = {
+  userId: string;
+  authType: string;
+  role: string;
+  scopes: string[];
+};
+
+type TunnelRegistrationFailure = {
+  message: string;
+  code?: string;
 };
 
 type ClientConfig = {
@@ -79,6 +144,206 @@ function pickArg(argv: string[], name: string): string | undefined {
   return argv[idx + 1];
 }
 
+function gatewayApiBaseUrl(gatewayUrl: string): string {
+  const parsed = new URL(gatewayUrl);
+  parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function formatGatewayConnectionError(gatewayUrl: string, error: Error): Error {
+  const details = `${gatewayApiBaseUrl(gatewayUrl)}/api/auth/validate`;
+  const cause = (error as Error & { cause?: { code?: string } }).cause;
+  const code = typeof cause?.code === "string" ? cause.code : "";
+  const message = error.message.toLowerCase();
+
+  if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EHOSTUNREACH" || message.includes("fetch failed")) {
+    return new Error(`Gateway unreachable. Check that ${details} is online and reachable.`);
+  }
+
+  if (code === "ECONNRESET" || code === "EPIPE") {
+    return new Error("Gateway connection was interrupted while validating the API key. Please try again.");
+  }
+
+  return error;
+}
+
+function describeLocalTarget(tunnelType: "http" | "tcp", localBase: string, localTcpHost?: string, localTcpPort?: number): { host: string; port: number } {
+  if (tunnelType === "tcp") {
+    return {
+      host: localTcpHost ?? "127.0.0.1",
+      port: localTcpPort ?? 0,
+    };
+  }
+
+  const target = new URL(localBase);
+  const port = target.port ? Number(target.port) : target.protocol === "https:" ? 443 : 80;
+  return { host: target.hostname, port };
+}
+
+async function ensureLocalServiceReachable(
+  tunnelType: "http" | "tcp",
+  localBase: string,
+  localTcpHost?: string,
+  localTcpPort?: number,
+): Promise<void> {
+  const target = describeLocalTarget(tunnelType, localBase, localTcpHost, localTcpPort);
+  if (!Number.isInteger(target.port) || target.port <= 0 || target.port > 65535) {
+    throw new Error(`Local app target is invalid. Check the configured port for ${localBase}.`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.createConnection({ host: target.host, port: target.port });
+    const fail = (error: Error): void => {
+      socket.destroy();
+      reject(error);
+    };
+
+    socket.setTimeout(3000);
+    socket.once("connect", () => {
+      socket.end();
+      resolve();
+    });
+    socket.once("timeout", () => fail(new Error("LOCAL_TIMEOUT")));
+    socket.once("error", (error) => fail(error));
+  }).catch((error: unknown) => {
+    const code = error instanceof Error ? ((error as Error & { code?: string }).code ?? error.message) : "";
+    if (code === "LOCAL_TIMEOUT" || code === "ECONNREFUSED" || code === "EHOSTUNREACH" || code === "ENOTFOUND") {
+      throw new Error(`Local app on port ${target.port} is not reachable. Start it first, then try again.`);
+    }
+    throw new Error(`Could not reach the local app on ${target.host}:${target.port}.`);
+  });
+}
+
+function formatTunnelOpenFailure(
+  failure: TunnelRegistrationFailure,
+  context: { requestedSubdomain?: string; tcpMode: boolean },
+): Error {
+  switch (failure.code) {
+    case "SUBDOMAIN_TAKEN":
+      return new Error(
+        context.requestedSubdomain
+          ? `Subdomain "${context.requestedSubdomain}" is already taken. Choose another one or omit --subdomain.`
+          : "Requested subdomain is already taken. Choose another one or omit --subdomain.",
+      );
+    case "TCP_PORT_EXHAUSTED":
+      return new Error("TCP port range exhausted. No public TCP ports are currently available.");
+    case "TCP_PORT_BUSY":
+      return new Error("Requested TCP public port is unavailable. Try again or choose a different mapping.");
+    case "TCP_TUNNEL_DISABLED":
+      return new Error("TCP tunneling is disabled on this gateway.");
+    case "SUBDOMAIN_ALLOCATE_FAILED":
+      return new Error("No public subdomains are currently available. Please try again in a moment.");
+    case "TCP_PORT_ALLOCATE_FAILED":
+      return new Error("Could not allocate a public TCP port right now. Please try again in a moment.");
+    case "GATEWAY_MAINTENANCE":
+      return new Error("Gateway is in maintenance mode. Try again in a moment.");
+    case "GATEWAY_DRAINING":
+      return new Error("Gateway is temporarily draining and not accepting new tunnels. Try again shortly.");
+    default:
+      break;
+  }
+
+  const message = failure.message.toLowerCase();
+  if (message.includes("maintenance")) {
+    return new Error("Gateway is in maintenance mode. Try again in a moment.");
+  }
+  if (message.includes("draining")) {
+    return new Error("Gateway is temporarily draining and not accepting new tunnels. Try again shortly.");
+  }
+  if (context.tcpMode && message.includes("tcp")) {
+    return new Error("Could not open the TCP tunnel. Please try again in a moment.");
+  }
+  return new Error(failure.message);
+}
+
+async function verifyApiKeyWithGateway(gatewayUrl: string, apiKey: string): Promise<void> {
+  await fetchValidatedPrincipal(gatewayUrl, apiKey);
+}
+
+async function fetchValidatedPrincipal(gatewayUrl: string, apiKey: string): Promise<ValidatedPrincipal> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  const url = `${gatewayApiBaseUrl(gatewayUrl)}/api/auth/validate`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "x-api-key": apiKey,
+        accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    if (response.ok) {
+      const payload = await response.json() as { principal?: ValidatedPrincipal };
+      if (!payload?.principal) {
+        throw new Error("Gateway validation response did not include principal details.");
+      }
+      return payload.principal;
+    }
+
+    let message = "Could not verify API key";
+    try {
+      const payload = await response.json() as { error?: { message?: string } };
+      if (payload?.error?.message) {
+        message = payload.error.message;
+      }
+    } catch {
+      // ignore JSON parsing errors
+    }
+
+    if (response.status === 401) {
+      throw new Error("Invalid API key.");
+    }
+    if (response.status === 503) {
+      throw new Error("Gateway responded but auth service is unavailable.");
+    }
+    throw new Error(`API key verification failed: ${message}`);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Gateway timed out while verifying the API key.");
+    }
+    if (error instanceof Error) {
+      throw formatGatewayConnectionError(gatewayUrl, error);
+    }
+    throw new Error("Failed to verify API key with the gateway.");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchGatewayReadyStatus(gatewayUrl: string): Promise<{ ready: boolean; draining: boolean; maintenanceMode: boolean; activeTunnels: number }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  const url = `${gatewayApiBaseUrl(gatewayUrl)}/readyz`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Gateway readiness check failed (${response.status})`);
+    }
+    return await response.json() as { ready: boolean; draining: boolean; maintenanceMode: boolean; activeTunnels: number };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Gateway timed out while checking readiness.");
+    }
+    if (error instanceof Error) {
+      throw formatGatewayConnectionError(gatewayUrl, error);
+    }
+    throw new Error("Failed to check gateway readiness.");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function readSavedConfig(): SavedClientConfig {
   try {
     return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as SavedClientConfig;
@@ -127,6 +392,26 @@ function printUsage(): void {
     [
       "Portivox client commands:",
       "",
+      "Quick start:",
+      "  register <apiKey>            Save your API key",
+      "  login <apiKey>               Friendly alias for register",
+      "  logout                       Remove your saved API key",
+      "  whoami                       Show the identity behind the current API key",
+      "  doctor                       Check gateway, auth, and service readiness",
+      "  3000                         Expose local port 3000 over HTTP",
+      "  expose 3000                  First-class public alias for open 3000",
+      "  http 3000                    Same as above",
+      "  tcp 22                       Expose local port 22 as a TCP tunnel",
+      "  3000 --always-on             Keep the tunnel alive across reboots",
+      "",
+      "Common commands:",
+      "  open [port]                  Open an HTTP tunnel",
+      "  open [port] --tcp            Open a raw TCP tunnel",
+      "  services list                Show installed background services",
+      "  services logs <name>         Tail service logs",
+      "  setup                        Open the setup wizard",
+      "",
+      "Advanced setup:",
       "  config                        Interactive setup (gateway URL + API key)",
       "  config --show                 Print saved configuration",
       "  config <key> <value>          Set a single config field",
@@ -142,26 +427,43 @@ function printUsage(): void {
       "  config service remove  <name> Stop + permanently uninstall a service",
       "  config service logs    <name> [--lines 50]  Tail the service log",
       "",
-      "  open [port] [--gateway url] [--subdomain name] [--host 127.0.0.1]",
+      "Tunnel options:",
+      "  open [port] [--subdomain name] [--host 127.0.0.1]",
       "       [--tcp] [--no-ip-protection]",
-      "       [--persistent] [--name <service-name>]",
+      "       [--persistent|--always-on|--background] [--name <service-name>]",
       "",
       "       --persistent   Register + start as an OS background service (survives reboots).",
+      "       --always-on    Friendly alias for --persistent.",
+      "       --background   Friendly alias for --persistent.",
       "                      Returns immediately.  Use 'config service *' to manage it.",
+      "",
+      "Developer option:",
+      "  --gateway <url>                Override the saved gateway for advanced setups.",
       "",
       "Config keys: gatewayUrl, apiKey",
       "",
       "Examples:",
+      "  portivox register tk_abc123",
+      "  portivox login tk_abc123",
+      "  portivox whoami",
+      "  portivox doctor",
+      "  portivox logout",
+      "  portivox setup",
+      "  portivox expose 3000",
+      "  portivox http 3000",
+      "  portivox tcp 22 --always-on",
       "  portivox config",
       "  portivox config --show",
       "  portivox config apiKey tk_abc123",
       "  portivox config service install",
       "  portivox open 3000",
+      "  portivox 3000",
       "  portivox open 3000 --persistent",
+      "  portivox 3000 --always-on",
       "  portivox open 3000 --persistent --name myapp",
       "  portivox open 22 --tcp --persistent",
-      "  portivox config service list",
-      "  portivox config service logs myapp",
+      "  portivox services list",
+      "  portivox services logs myapp",
     ].join("\n"),
   );
 }
@@ -194,6 +496,10 @@ async function runConfigWizard(): Promise<void> {
     saved.apiKey && apiKeyInput === maskApiKey(saved.apiKey)
       ? saved.apiKey
       : apiKeyInput || saved.apiKey;
+
+  if (apiKey) {
+    await verifyApiKeyWithGateway(gatewayUrl, apiKey);
+  }
 
   // Summary
   console.log("\n──────────────────────────────────────────────────");
@@ -243,6 +549,80 @@ function runConfigReset(): void {
   }
 }
 
+function runLogout(): void {
+  const saved = readSavedConfig();
+  if (!saved.apiKey) {
+    console.log("No saved API key found. You are already logged out.");
+    return;
+  }
+
+  const next: SavedClientConfig = { ...saved };
+  delete next.apiKey;
+  writeSavedConfig(next);
+  console.log("✔ Logged out locally. Saved API key removed.");
+  console.log("Next: portivox register <apiKey>");
+}
+
+async function runWhoAmI(): Promise<void> {
+  const saved = readSavedConfig();
+  const gatewayUrl = saved.gatewayUrl ?? defaultConfig.gatewayUrl;
+  const apiKey = process.env.TUNNEL_API_KEY ?? saved.apiKey;
+
+  if (!apiKey) {
+    throw new Error("No API key found. Run `portivox register <apiKey>` first.");
+  }
+
+  const principal = await fetchValidatedPrincipal(gatewayUrl, apiKey);
+  console.log("Portivox identity:\n");
+  console.log(`  Gateway   ${gatewayUrl}`);
+  console.log(`  User ID   ${principal.userId}`);
+  console.log(`  Auth      ${principal.authType}`);
+  console.log(`  Role      ${principal.role}`);
+  console.log(`  Scopes    ${principal.scopes.join(", ") || "(none)"}`);
+}
+
+async function runDoctor(): Promise<void> {
+  const saved = readSavedConfig();
+  const gatewayUrl = saved.gatewayUrl ?? defaultConfig.gatewayUrl;
+  const apiKey = process.env.TUNNEL_API_KEY ?? saved.apiKey;
+
+  const checks: Array<{ label: string; ok: boolean; detail: string }> = [];
+
+  try {
+    validateGatewayUrl(gatewayUrl);
+    checks.push({ label: "Gateway URL", ok: true, detail: gatewayUrl });
+  } catch (error) {
+    checks.push({ label: "Gateway URL", ok: false, detail: error instanceof Error ? error.message : String(error) });
+  }
+
+  try {
+    const ready = await fetchGatewayReadyStatus(gatewayUrl);
+    checks.push({
+      label: "Gateway reachability",
+      ok: true,
+      detail: `ready=${ready.ready} draining=${ready.draining} maintenance=${ready.maintenanceMode} activeTunnels=${ready.activeTunnels}`,
+    });
+  } catch (error) {
+    checks.push({ label: "Gateway reachability", ok: false, detail: error instanceof Error ? error.message : String(error) });
+  }
+
+  if (apiKey) {
+    try {
+      const principal = await fetchValidatedPrincipal(gatewayUrl, apiKey);
+      checks.push({ label: "API key", ok: true, detail: `${maskApiKey(apiKey)} (${principal.role}, ${principal.authType})` });
+    } catch (error) {
+      checks.push({ label: "API key", ok: false, detail: error instanceof Error ? error.message : String(error) });
+    }
+  } else {
+    checks.push({ label: "API key", ok: false, detail: "No saved API key. Run `portivox register <apiKey>`." });
+  }
+
+  console.log("Portivox doctor:\n");
+  for (const check of checks) {
+    console.log(`  ${check.ok ? "✔" : "✖"} ${check.label.padEnd(20)} ${check.detail}`);
+  }
+}
+
 function validateGatewayUrl(v: string): string {
   let parsed: URL;
   try {
@@ -269,13 +649,34 @@ const CONFIG_KEY_VALIDATORS: Record<string, (v: string) => unknown> = {
   apiKey: (v) => v,
 };
 
+const CONFIG_KEY_ALIASES: Record<string, keyof typeof CONFIG_KEY_VALIDATORS> = {
+  gateway: "gatewayUrl",
+  gatewayurl: "gatewayUrl",
+  "gateway-url": "gatewayUrl",
+  apikey: "apiKey",
+  "api-key": "apiKey",
+  key: "apiKey",
+};
+
+function resolveConfigKey(rawKey: string): keyof typeof CONFIG_KEY_VALIDATORS | undefined {
+  if (rawKey in CONFIG_KEY_VALIDATORS) {
+    return rawKey as keyof typeof CONFIG_KEY_VALIDATORS;
+  }
+
+  const lowered = rawKey.trim().toLowerCase();
+  return CONFIG_KEY_ALIASES[lowered];
+}
+
 function runConfigSet(key: string, value: string): void {
-  const validator = CONFIG_KEY_VALIDATORS[key];
+  const resolvedKey = resolveConfigKey(key);
+  const validator = resolvedKey ? CONFIG_KEY_VALIDATORS[resolvedKey] : undefined;
   if (!validator) {
     console.error(`Unknown config key: ${key}`);
     console.error(`Valid keys: ${Object.keys(CONFIG_KEY_VALIDATORS).join(", ")}`);
+    console.error("Tip: `apikey`, `api-key`, and `gateway` also work as friendly aliases.");
     process.exit(1);
   }
+  const canonicalKey = resolvedKey as keyof typeof CONFIG_KEY_VALIDATORS;
   let parsed: unknown;
   try {
     parsed = validator(value);
@@ -284,8 +685,17 @@ function runConfigSet(key: string, value: string): void {
     process.exit(1);
   }
   const saved = readSavedConfig();
-  writeSavedConfig({ ...saved, [key]: parsed });
-  console.log(`✔ Set ${key} = ${String(parsed)}`);
+  writeSavedConfig({ ...saved, [canonicalKey]: parsed });
+  console.log(`✔ Set ${canonicalKey} = ${String(parsed)}`);
+}
+
+async function runRegister(apiKey: string, gatewayOverride?: string): Promise<void> {
+  const saved = readSavedConfig();
+  const gatewayUrl = gatewayOverride ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
+  await verifyApiKeyWithGateway(gatewayUrl, apiKey);
+  writeSavedConfig({ ...saved, apiKey, gatewayUrl });
+  console.log(`✔ API key verified and saved to ${CONFIG_PATH}`);
+  console.log("Next: portivox 3000");
 }
 
 // ── Client runner ─────────────────────────────────────────────────────────────
@@ -298,6 +708,7 @@ function startClient({
   localTcpHost,
   localTcpPort,
   apiKey,
+  onFatalError,
 }: {
   gatewayUrl: string;
   localBase: string;
@@ -306,6 +717,7 @@ function startClient({
   localTcpHost?: string;
   localTcpPort?: number;
   apiKey?: string;
+  onFatalError?: (error: TunnelRegistrationFailure) => void;
 }): void {
   const client = new TunnelClient({
     gatewayUrl,
@@ -318,6 +730,7 @@ function startClient({
     maxResponseBodyBytes: defaultConfig.maxLocalResponseBodyBytes,
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
+    onFatalError,
   });
 
   client.start();
@@ -421,17 +834,29 @@ async function run(): Promise<void> {
     return;
   }
 
-  // ── register (deprecated) ───────────────────────────────────────────────
+  // ── register ────────────────────────────────────────────────────────────
   if (command === "register") {
-    console.warn("⚠  `register` is deprecated. Use `portivox config` instead.");
     const apiKey = args[1]?.trim();
     if (!apiKey) {
-      console.error("Missing API key. Usage: register <apiKey>");
+      console.error("Missing API key. Usage: portivox register <apiKey>");
       process.exit(1);
     }
-    const gatewayUrl = pickArg(args, "--gateway") ?? readSavedConfig().gatewayUrl ?? defaultConfig.gatewayUrl;
-    writeSavedConfig({ ...readSavedConfig(), apiKey, gatewayUrl });
-    console.log(`Registered API key locally at ${CONFIG_PATH}`);
+    await runRegister(apiKey, pickArg(args, "--gateway"));
+    return;
+  }
+
+  if (command === "logout") {
+    runLogout();
+    return;
+  }
+
+  if (command === "whoami") {
+    await runWhoAmI();
+    return;
+  }
+
+  if (command === "doctor") {
+    await runDoctor();
     return;
   }
 
@@ -455,11 +880,18 @@ async function run(): Promise<void> {
     const apiKey = process.env.TUNNEL_API_KEY ?? saved.apiKey;
 
     if (!apiKey) {
-      console.error(
-        "No API key found. Run `portivox config` to set one, or set TUNNEL_API_KEY env var.",
-      );
+      console.error("No API key found. Run `portivox register <apiKey>` first.");
       process.exit(1);
     }
+    await verifyApiKeyWithGateway(gatewayUrl, apiKey);
+    const ready = await fetchGatewayReadyStatus(gatewayUrl);
+    if (ready.maintenanceMode) {
+      throw new Error("Gateway is in maintenance mode. Try again in a moment.");
+    }
+    if (ready.draining) {
+      throw new Error("Gateway is temporarily draining and not accepting new tunnels. Try again shortly.");
+    }
+    await ensureLocalServiceReachable(tcpMode ? "tcp" : "http", localBase, host, port);
 
     // ── persistent service mode ────────────────────────────────────────────
     const persistent  = args.includes("--persistent");
@@ -488,11 +920,21 @@ async function run(): Promise<void> {
       localTcpHost: host,
       localTcpPort: port,
       apiKey,
+      onFatalError: (failure) => {
+        const formatted = formatTunnelOpenFailure(failure, { requestedSubdomain, tcpMode });
+        console.error(formatted.message);
+        process.exit(1);
+      },
     });
     return;
   }
 
   // ── legacy env-driven mode ───────────────────────────────────────────────
+  if (!command.startsWith("--")) {
+    console.error(`Unknown command: ${command}`);
+    console.error("Run `portivox --help` to see available commands.");
+    process.exit(1);
+  }
   const saved = readSavedConfig();
   const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
   const localBase = pickArg(args, "--local") ?? defaultConfig.localUrl;
@@ -505,3 +947,4 @@ run().catch((err: unknown) => {
   console.error((err as Error).message ?? String(err));
   process.exit(1);
 });
+

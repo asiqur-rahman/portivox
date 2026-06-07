@@ -108,6 +108,7 @@ export type HeartbeatAck = {
 export type ErrorMessage = {
   type: "error";
   message: string;
+  code?: string;
   streamId?: string;
 };
 

@@ -2,6 +2,7 @@ export type TunnelStatus = "live" | "reserved" | "offline";
 
 export type TunnelRecord = {
   id: string;
+  userId?: string | null;
   subdomain: string;
   createdAt: string;
   /** True when a live WebSocket client is currently connected for this subdomain. */
@@ -141,6 +142,11 @@ export class GatewayApi {
 
   async listTunnels(): Promise<TunnelRecord[]> {
     const result = await this.request<{ tunnels: TunnelRecord[] }>("/api/tunnels", { method: "GET" });
+    return Array.isArray(result.tunnels) ? result.tunnels : [];
+  }
+
+  async listAdminTunnels(): Promise<TunnelRecord[]> {
+    const result = await this.request<{ tunnels: TunnelRecord[] }>("/api/admin/tunnels", { method: "GET" });
     return Array.isArray(result.tunnels) ? result.tunnels : [];
   }
 

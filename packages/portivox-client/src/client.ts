@@ -19,6 +19,8 @@ export type TunnelClientConfig = {
   heartbeatIntervalMs?: number;
   /** Whether to request IP link protection for TCP tunnels (default: true). */
   ipProtection?: boolean;
+  /** Called when tunnel registration fails before the tunnel becomes active. */
+  onFatalError?: (error: { message: string; code?: string }) => void;
 };
 
 export class TunnelClient {
@@ -27,6 +29,7 @@ export class TunnelClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private stopped = false;
+  private registered = false;
   private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createConsoleLogger("client");
   // Keep-alive agents reuse the loopback TCP connection across requests,
@@ -60,6 +63,7 @@ export class TunnelClient {
   }
 
   private connect(): void {
+    this.registered = false;
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -103,6 +107,7 @@ export class TunnelClient {
       }
 
       if (msg.type === "registered") {
+        this.registered = true;
         if (msg.subdomain) {
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
           // Derive the full public tunnel URL from the redirect URL's origin.
@@ -131,6 +136,11 @@ export class TunnelClient {
       }
 
       if (msg.type === "error") {
+        if (!this.registered) {
+          this.config.onFatalError?.({ message: msg.message, code: msg.code });
+          this.stop();
+          return;
+        }
         this.logger.error(`Gateway error: ${msg.message}`);
         return;
       }

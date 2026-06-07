@@ -19,7 +19,6 @@ import { useTunnelActions } from "./hooks/useTunnelActions";
 import { useApiKeyActions } from "./hooks/useApiKeyActions";
 import { useRealtimeGatewayEvents } from "./hooks/useRealtimeGatewayEvents";
 import { ConfirmModal as SharedConfirmModal, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
-import { AiPage as SharedAiPage } from "./pages/AiPage";
 import { ApiKeysPage as SharedApiKeysPage } from "./pages/ApiKeysPage";
 import { AdminAuditPage as SharedAdminAuditPage } from "./pages/AdminAuditPage";
 import { AdminGatewayPage as SharedAdminGatewayPage } from "./pages/AdminGatewayPage";
@@ -108,18 +107,6 @@ export function App() {
     },
     [showToast],
   );
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "k") {
-        event.preventDefault();
-        setCurrentPage("ai");
-      }
-    };
-
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, []);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -276,7 +263,6 @@ export function App() {
               {currentPage === "devices" && (
                 <SharedDevicesPage user={user} onCopy={copyToClipboard} />
               )}
-              {currentPage === "ai" && <SharedAiPage />}
               {currentPage === "usage" && (
                 <SharedUsagePage api={api} tunnelCount={tunnels.length} />
               )}

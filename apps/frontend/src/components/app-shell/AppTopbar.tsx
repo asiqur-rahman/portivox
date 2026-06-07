@@ -45,10 +45,10 @@ export function AppTopbar({
         </div>
       </div>
       <div className="topbar-right">
-        <div className="search-box search-box-clickable" onClick={() => onNavigate("ai")}>
+        <div className="search-box" aria-hidden="true">
           <i className="ti ti-search" />
-          <span>Search or ask AI…</span>
-          <span className="search-shortcut">⌘K</span>
+          <span>Search tunnels, logs, and settings...</span>
+          <span className="search-shortcut">Ctrl+K</span>
         </div>
         <div
           className={`notif-btn ${gatewayStatus?.ready ? "notif-btn-ready" : ""}`}
@@ -56,9 +56,6 @@ export function AppTopbar({
         >
           <i className={`ti ti-${gatewayStatus?.ready ? "circle-check" : "circle-dashed"}`} />
         </div>
-        <button className="ai-btn" onClick={() => onNavigate("ai")}>
-          <i className="ti ti-sparkles" /> Ask AI
-        </button>
         <button className="logout-btn" onClick={onLogout}>
           <i className="ti ti-logout" /> Log out
         </button>

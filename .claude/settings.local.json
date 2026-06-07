@@ -55,7 +55,16 @@
       "Bash(git -C \"D:/RnD/Project_Tunnelix\" log --oneline -5)",
       "Bash(git -C \"D:/RnD/Project_Tunnelix\" status --short)",
       "Bash(git -C \"D:/RnD/Project_Tunnelix\" add apps/gateway-server/src/server.ts apps/tunnel-client/src/client.ts packages/portivox-client/src/client.ts packages/portivox-client/src/protocol.ts)",
-      "Bash(git -C D:/RnD/Project_Tunnelix commit -m ' *)"
+      "Bash(git -C D:/RnD/Project_Tunnelix commit -m ' *)",
+      "Bash(node -e \"console.log\\(process.execPath\\)\")",
+      "Bash(npm root *)",
+      "Bash(node -e \"const p = require\\('path'\\); const os = require\\('os'\\); console.log\\(os.platform\\(\\), os.homedir\\(\\)\\)\")",
+      "Bash(node -e \"console.log\\(process.argv[1]\\)\")",
+      "Bash(where portivox *)",
+      "Bash(ls \"C:\\\\nvm4w\\\\nodejs\\\\portivox\"* 2>/dev/null | head -10 || true)",
+      "Bash(cat \"C:/nvm4w/nodejs/portivox\" 2>/dev/null | head -10 || true)",
+      "Bash(git -C D:\\\\RnD\\\\Project_Tunnelix status)",
+      "Bash(git -C D:\\\\RnD\\\\Project_Tunnelix diff --stat HEAD)"
     ]
   }
 }

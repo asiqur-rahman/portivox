@@ -6,7 +6,7 @@ import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 export function AdminGatewayPage({
   api,
-  tunnels: allTunnels,
+  tunnels: initialTunnels,
   showToast,
   onConfirm,
 }: {
@@ -22,15 +22,17 @@ export function AdminGatewayPage({
     chunkIncompleteTimeouts: number;
     activeChunkAssemblies?: number;
   } | null>(null);
+  const [adminTunnels, setAdminTunnels] = useState<TunnelRecord[]>(initialTunnels);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
 
   const refresh = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
-    Promise.all([api.getReadyz(), api.getChunkDiagnostics()])
-      .then(([gatewayStatus, diagnostics]) => {
+    Promise.all([api.getReadyz(), api.getChunkDiagnostics(), api.listAdminTunnels()])
+      .then(([gatewayStatus, diagnostics, tunnels]) => {
         setStatus(gatewayStatus);
         setChunkDiag(diagnostics as typeof chunkDiag);
+        setAdminTunnels(tunnels);
       })
       .catch((error: unknown) => {
         if (!options?.silent) {
@@ -168,9 +170,9 @@ export function AdminGatewayPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-topology-star-3" /> Tunnel Sessions ({allTunnels.length})</div>
+          <div className="section-title"><i className="ti ti-topology-star-3" /> Tunnel Sessions ({adminTunnels.length})</div>
         </div>
-        {allTunnels.length === 0 ? (
+        {adminTunnels.length === 0 ? (
           <div className="empty">
             <i className="ti ti-topology-star-3" />
             <div className="empty-title">No active tunnels</div>
@@ -179,7 +181,7 @@ export function AdminGatewayPage({
         ) : (
           <>
             <div className="mobile-card-list">
-              {allTunnels.map((tunnel) => (
+              {adminTunnels.map((tunnel) => (
                 <article key={tunnel.id} className="mobile-list-card">
                   <div className="mobile-list-card-head">
                     <div className="mobile-list-title">
@@ -210,7 +212,7 @@ export function AdminGatewayPage({
             <table className="tbl">
               <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th><th>Status</th></tr></thead>
               <tbody>
-                {allTunnels.map((tunnel) => (
+                {adminTunnels.map((tunnel) => (
                   <tr key={tunnel.id}>
                     <td>
                       <a href={`//${tunnel.subdomain}.${window.location.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--accent)" }}>

@@ -67,11 +67,34 @@ export function SettingsPage({
 
   return (
     <div className="page">
+      <div className="section settings-overview-card">
+        <div className="settings-overview-grid">
+          <div className="settings-overview-main">
+            <div className="settings-overview-kicker">Account settings</div>
+            <div className="settings-overview-name">{displayName || user?.name || "Anonymous"}</div>
+            <div className="settings-overview-meta">
+              <span>{user?.email ?? "No email available"}</span>
+              <span className="settings-overview-divider">•</span>
+              <span>{isAnonymous ? "Anonymous mode" : "Authenticated user"}</span>
+            </div>
+          </div>
+          <div className="settings-overview-side">
+            <div className="settings-overview-chip">
+              <i className={`ti ti-${isAnonymous ? "shield-off" : "shield-check"}`} />
+              {isAnonymous ? "Auth disabled" : "Account protected"}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="section">
         <div className="section-head">
           <div className="section-title"><i className="ti ti-user-circle" /> Profile</div>
         </div>
         <div className="form-body">
+          <div className="settings-section-copy">
+            Update the display details shown in the dashboard on this device.
+          </div>
           <div className="form-field">
             <label className="form-lbl">Display name</label>
             <input
@@ -96,9 +119,12 @@ export function SettingsPage({
       {!isAnonymous ? (
         <div className="section">
           <div className="section-head">
-            <div className="section-title"><i className="ti ti-lock" /> Change password</div>
+            <div className="section-title"><i className="ti ti-lock" /> Security</div>
           </div>
           <div className="form-body">
+            <div className="settings-section-copy">
+              Change your password for this Portivox account.
+            </div>
             <div className="form-field">
               <label className="form-lbl">Current password</label>
               <input type="password" className="form-inp" value={curPass} onChange={(event) => setCurPass(event.target.value)} placeholder="........" />
@@ -125,15 +151,14 @@ export function SettingsPage({
         </div>
       ) : (
         <div className="section">
-          <div style={{ padding: "18px 22px" }}>
-            <div className="ai-insight">
-              <div className="ai-badge"><i className="ti ti-info-circle" /></div>
-              <div style={{ flex: 1 }}>
-                <div className="ai-insight-label">Auth disabled</div>
-                <div className="ai-insight-text">
-                  This gateway is running with <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=false</code>.
-                  Password management is not available in anonymous mode.
-                </div>
+          <div className="form-body">
+            <div className="settings-readonly-note">
+              <i className="ti ti-info-circle" />
+              <div>
+                <strong>Authentication is disabled</strong>
+                <span>
+                  This gateway is running with <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=false</code>, so password management is unavailable in anonymous mode.
+                </span>
               </div>
             </div>
           </div>

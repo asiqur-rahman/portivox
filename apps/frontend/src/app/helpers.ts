@@ -51,11 +51,6 @@ export function getTunnelUrl(subdomain: string): string {
   return `${proto}//${subdomain}.${host}`;
 }
 
-export function getWsGatewayUrl(): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/connect`;
-}
-
 export function timeAgo(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (Number.isNaN(seconds)) return "-";

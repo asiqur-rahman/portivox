@@ -36,6 +36,8 @@ export type TunnelClientConfig = {
   /** Called once when the gateway confirms tunnel registration. Used by the CLI
    *  to write session info to ~/.portivox/sessions.json. */
   onRegistered?: (info: RegisteredInfo) => void;
+  /** Called when tunnel registration fails before the tunnel becomes active. */
+  onFatalError?: (error: { message: string; code?: string }) => void;
   /** When true, the client exits instead of reconnecting after a disconnect.
    *  Used by the CLI when reconnectMode is "once". */
   noReconnect?: boolean;
@@ -47,6 +49,7 @@ export class TunnelClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private stopped = false;
+  private registered = false;
   /** Timestamp of the last frame received from the gateway (used for liveness check). */
   private lastActivityAt = 0;
   private readonly tcpConnections = new Map<string, net.Socket>();
@@ -99,6 +102,7 @@ export class TunnelClient {
   }
 
   private connect(): void {
+    this.registered = false;
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -150,7 +154,7 @@ export class TunnelClient {
       }
 
       if (msg.type === "registered") {
-        // Clear the exit-on-failure timer — we're connected.
+        this.registered = true;
         if (this.exitTimer) {
           clearTimeout(this.exitTimer);
           this.exitTimer = null;
@@ -204,6 +208,15 @@ export class TunnelClient {
       }
 
       if (msg.type === "error") {
+        if (this.exitTimer) {
+          clearTimeout(this.exitTimer);
+          this.exitTimer = null;
+        }
+        if (!this.registered) {
+          this.config.onFatalError?.({ message: msg.message, code: msg.code });
+          this.stop();
+          return;
+        }
         this.logger.error(`Gateway error: ${msg.message}`);
         return;
       }
@@ -520,3 +533,4 @@ function filterHopByHopHeaders<T extends Record<string, string | string[] | numb
   }
   return next as T;
 }
+

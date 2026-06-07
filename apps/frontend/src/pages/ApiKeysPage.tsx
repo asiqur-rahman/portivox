@@ -145,6 +145,35 @@ export function ApiKeysPage({
           </>
         )}
       </div>
+
+      <div className="section">
+        <div className="section-head">
+          <div className="section-title"><i className="ti ti-terminal-2" /> Developer CLI</div>
+        </div>
+        <div className="form-body">
+          <div className="settings-section-copy">
+            Advanced gateway override commands belong here for operators and developers, not for normal customer onboarding.
+          </div>
+          <div className="form-field">
+            <label className="form-lbl">Custom gateway registration</label>
+            <div className="code-block">
+              <code>portivox register tk_YOUR_API_KEY --gateway wss://your-gateway.example.com/connect</code>
+              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy("portivox register tk_YOUR_API_KEY --gateway wss://your-gateway.example.com/connect")} title="Copy">
+                <i className="ti ti-copy" />
+              </div>
+            </div>
+          </div>
+          <div className="form-field">
+            <label className="form-lbl">Custom gateway tunnel open</label>
+            <div className="code-block">
+              <code>portivox open 3000 --gateway wss://your-gateway.example.com/connect</code>
+              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy("portivox open 3000 --gateway wss://your-gateway.example.com/connect")} title="Copy">
+                <i className="ti ti-copy" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

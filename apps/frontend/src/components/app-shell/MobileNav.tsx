@@ -74,7 +74,6 @@ export function MobileMoreSheet({
         <div className="mobile-sheet-grid">
           {[
             { page: "devices" as Page, label: "Devices", icon: "device-laptop" },
-            { page: "ai" as Page, label: "AI Assistant", icon: "sparkles" },
             { page: "usage" as Page, label: "Usage", icon: "chart-bar" },
             { page: "org" as Page, label: "Organisation", icon: "building" },
             { page: "billing" as Page, label: "Billing", icon: "credit-card" },

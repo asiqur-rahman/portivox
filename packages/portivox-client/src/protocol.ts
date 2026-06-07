@@ -33,7 +33,7 @@ type WireMessage =
       reason?: string;
     }
   | { type: "heartbeat"; at: number }
-  | { type: "error"; message: string; streamId?: string };
+  | { type: "error"; message: string; code?: string; streamId?: string };
 
 type StreamTransportMeta = {
   flags?: string[];
