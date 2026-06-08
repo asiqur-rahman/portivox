@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import net from "node:net";
@@ -891,9 +892,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
 
+  const wsHttpServer = createServer();
   const wsServer = new WebSocketServer({
-    port: config.wsPort,
-    path: "/connect",
+    noServer: true,
     // Cap individual frame size at 64 MiB — prevents a single malformed frame
     // from allocating the full ws-library default of 100 MiB per connection.
     maxPayload: 64 * 1024 * 1024,
@@ -1035,6 +1036,127 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       canAcceptConnections: !isDraining && !maintenanceMode,
       activeTunnels,
     };
+  }
+
+  function sendJsonResponse(
+    res: ServerResponse<IncomingMessage>,
+    statusCode: number,
+    body: unknown,
+    extraHeaders?: Record<string, string>,
+  ): void {
+    if (res.writableEnded) {
+      return;
+    }
+    res.statusCode = statusCode;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        res.setHeader(key, value);
+      }
+    }
+    res.end(JSON.stringify(body));
+  }
+
+  async function handleAuthValidateHttp(headers: IncomingHttpHeaders): Promise<{
+    statusCode: number;
+    body: unknown;
+    responseHeaders?: Record<string, string>;
+  }> {
+    const endpoint = "/api/auth/validate";
+    const apiKeyHeader = headers["x-api-key"];
+    const bearerHeader = headers.authorization;
+    const hasPresentedCredential =
+      (typeof apiKeyHeader === "string" && apiKeyHeader.trim().length > 0) ||
+      (Array.isArray(apiKeyHeader) && apiKeyHeader.some((value) => typeof value === "string" && value.trim().length > 0)) ||
+      (typeof bearerHeader === "string" && bearerHeader.trim().length > 0);
+
+    const principal = await resolvePrincipal(headers as Record<string, unknown>);
+    if (!hasPresentedCredential || !principal || principal.authType === "anonymous") {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return {
+        statusCode: 401,
+        body: { error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } },
+      };
+    }
+
+    const apiLimit = apiReadLimiter.take(`api:read:auth_validate:${principal.userId}`);
+    const resetSeconds = Math.max(1, Math.ceil(apiLimit.retryAfterMs / 1000));
+    const responseHeaders: Record<string, string> = {
+      "ratelimit-limit": String(apiLimit.limit),
+      "ratelimit-remaining": String(apiLimit.remaining),
+      "ratelimit-reset": String(resetSeconds),
+      "x-ratelimit-limit": String(apiLimit.limit),
+      "x-ratelimit-remaining": String(apiLimit.remaining),
+      "x-ratelimit-reset": String(resetSeconds),
+    };
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      responseHeaders["retry-after"] = String(Math.ceil(apiLimit.retryAfterMs / 1000));
+      return {
+        statusCode: 429,
+        responseHeaders,
+        body: { error: { code: "RATE_LIMITED", message: "API request limit exceeded" } },
+      };
+    }
+
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return {
+      statusCode: 200,
+      responseHeaders,
+      body: {
+        ok: true,
+        principal: {
+          userId: principal.userId,
+          authType: principal.authType,
+          role: principal.role,
+          scopes: principal.scopes,
+        },
+      },
+    };
+  }
+
+  if (wsHttpServer) {
+    wsHttpServer.on("request", (req, res) => {
+      void (async () => {
+        try {
+          const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+          if (req.method === "GET" && url.pathname === "/readyz") {
+            const state = gatewayState();
+            sendJsonResponse(res, state.ready ? 200 : 503, state);
+            return;
+          }
+          if (req.method === "GET" && url.pathname === "/api/auth/validate") {
+            const result = await handleAuthValidateHttp(req.headers);
+            sendJsonResponse(res, result.statusCode, result.body, result.responseHeaders);
+            return;
+          }
+          if (url.pathname !== "/connect") {
+            sendJsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Route not found" } });
+          }
+        } catch (error) {
+          app.log.error({ err: error }, "ws http sidecar request failed");
+          sendJsonResponse(res, 500, { error: { code: "INTERNAL_ERROR", message: "Internal server error" } });
+        }
+      })();
+    });
+    wsHttpServer.on("upgrade", (req, socket, head) => {
+      try {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+        if (url.pathname !== "/connect") {
+          socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        wsServer.handleUpgrade(req, socket, head, (client) => {
+          wsServer.emit("connection", client, req);
+        });
+      } catch {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+      }
+    });
   }
 
   function canReceiveLiveEvent(principal: Principal, event: LiveEvent): boolean {
@@ -2308,42 +2430,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   });
 
   app.get("/api/auth/validate", async (req, reply) => {
-    const endpoint = "/api/auth/validate";
-    const apiKeyHeader = req.headers["x-api-key"];
-    const bearerHeader = req.headers.authorization;
-    const hasPresentedCredential =
-      (typeof apiKeyHeader === "string" && apiKeyHeader.trim().length > 0) ||
-      (Array.isArray(apiKeyHeader) && apiKeyHeader.some((value) => typeof value === "string" && value.trim().length > 0)) ||
-      (typeof bearerHeader === "string" && bearerHeader.trim().length > 0);
-
-    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
-    if (!hasPresentedCredential || !principal || principal.authType === "anonymous") {
-      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
-      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    const result = await handleAuthValidateHttp(req.headers as IncomingHttpHeaders);
+    if (result.responseHeaders) {
+      for (const [key, value] of Object.entries(result.responseHeaders)) {
+        reply.header(key, value);
+      }
     }
-
-    const apiLimit = apiReadLimiter.take(`api:read:auth_validate:${principal.userId}`);
-    applyRateLimitHeaders(reply, apiLimit);
-    if (!apiLimit.allowed) {
-      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
-      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply
-        .header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000))
-        .status(429)
-        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
-    }
-
-    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
-    return reply.status(200).send({
-      ok: true,
-      principal: {
-        userId: principal.userId,
-        authType: principal.authType,
-        role: principal.role,
-        scopes: principal.scopes,
-      },
-    });
+    return reply.status(result.statusCode).send(result.body);
   });
 
   app.post("/api/auth/change-password", async (req, reply) => {
@@ -3669,6 +3762,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     app,
     async start(): Promise<void> {
       await app.listen({ port: config.gatewayPort, host: "0.0.0.0" });
+      await new Promise<void>((resolve, reject) => {
+        wsHttpServer.listen(config.wsPort, "0.0.0.0", () => resolve());
+        wsHttpServer.once("error", reject);
+      });
       if (!config.authRequired) {
         // Loud warning — anonymous principal has full admin access in this mode.
         console.warn(
@@ -3703,6 +3800,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       reservedTcpPorts.clear();
       await Promise.allSettled(tcpCloseTasks);
       await app.close();
+      await new Promise<void>((resolve) => wsHttpServer.close(() => resolve()));
       await new Promise<void>((resolve) => wsServer.close(() => resolve()));
       await store.close();
       await authStore.close();
