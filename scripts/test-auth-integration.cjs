@@ -186,37 +186,37 @@ async function main() {
       throw new Error(`owner delete failed: ${ownerDelete.statusCode} ${JSON.stringify(ownerDelete.body)}`);
     }
 
-    const listBeforeRevoke = await requestJson({
+    const listBeforeDelete = await requestJson({
       port: gatewayPort,
       path: "/api/keys",
       method: "GET",
       headers: { authorization: `Bearer ${userToken}` },
     });
-    if (listBeforeRevoke.statusCode !== 200 || !Array.isArray(listBeforeRevoke.body?.keys) || listBeforeRevoke.body.keys.length < 2) {
-      throw new Error(`api key list before revoke failed: ${listBeforeRevoke.statusCode} ${JSON.stringify(listBeforeRevoke.body)}`);
+    if (listBeforeDelete.statusCode !== 200 || !Array.isArray(listBeforeDelete.body?.keys) || listBeforeDelete.body.keys.length < 2) {
+      throw new Error(`api key list before delete failed: ${listBeforeDelete.statusCode} ${JSON.stringify(listBeforeDelete.body)}`);
     }
 
-    const revokeKeyRes = await requestJson({
+    const deleteKeyRes = await requestJson({
       port: gatewayPort,
       path: `/api/keys/${createKeyRes.body.apiKey.id}`,
       method: "DELETE",
       headers: { authorization: `Bearer ${userToken}` },
     });
-    if (revokeKeyRes.statusCode !== 204) {
-      throw new Error(`api key revoke failed: ${revokeKeyRes.statusCode} ${JSON.stringify(revokeKeyRes.body)}`);
+    if (deleteKeyRes.statusCode !== 204) {
+      throw new Error(`api key delete failed: ${deleteKeyRes.statusCode} ${JSON.stringify(deleteKeyRes.body)}`);
     }
 
-    const listAfterRevoke = await requestJson({
+    const listAfterDelete = await requestJson({
       port: gatewayPort,
       path: "/api/keys",
       method: "GET",
       headers: { authorization: `Bearer ${userToken}` },
     });
-    if (listAfterRevoke.statusCode !== 200 || !Array.isArray(listAfterRevoke.body?.keys)) {
-      throw new Error(`api key list after revoke failed: ${listAfterRevoke.statusCode} ${JSON.stringify(listAfterRevoke.body)}`);
+    if (listAfterDelete.statusCode !== 200 || !Array.isArray(listAfterDelete.body?.keys)) {
+      throw new Error(`api key list after delete failed: ${listAfterDelete.statusCode} ${JSON.stringify(listAfterDelete.body)}`);
     }
-    if (listAfterRevoke.body.keys.some((key) => key.id === createKeyRes.body.apiKey.id)) {
-      throw new Error("revoked api key still appears in active api key list");
+    if (listAfterDelete.body.keys.some((key) => key.id === createKeyRes.body.apiKey.id)) {
+      throw new Error("deleted api key still appears in the active api key list");
     }
 
     console.log("Auth integration test passed");

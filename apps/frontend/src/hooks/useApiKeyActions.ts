@@ -68,9 +68,9 @@ export function useApiKeyActions({
 
   const requestRevokeKey = useCallback((id: string, name: string) => {
     setConfirm({
-      title: "Revoke API key?",
-      message: `Revoking "${name}" will immediately invalidate it. Any services or scripts using this key will lose access.`,
-      confirmLabel: "Revoke key",
+      title: "Delete API key?",
+      message: `Deleting "${name}" will immediately invalidate it and remove it from this workspace. Any services or scripts using this key will lose access.`,
+      confirmLabel: "Delete key",
       danger: true,
       onConfirm: () => {
         setConfirm(null);
@@ -82,9 +82,9 @@ export function useApiKeyActions({
           })
           .then(() => api.listApiKeys())
           .then(setApiKeys)
-          .then(() => showToast("API key revoked", "green"))
+          .then(() => showToast("API key deleted", "green"))
           .catch((err: unknown) => {
-            showToast(err instanceof Error ? err.message : "Failed to revoke key", "red");
+            showToast(err instanceof Error ? err.message : "Failed to delete key", "red");
           })
           .finally(() => setLoading(false));
       },

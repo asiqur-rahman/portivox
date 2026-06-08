@@ -103,6 +103,7 @@ export function AdminAuditPage({
           <option value="tunnel_created">tunnel_created</option>
           <option value="tunnel_deleted">tunnel_deleted</option>
           <option value="api_key_created">api_key_created</option>
+          <option value="api_key_deleted">api_key_deleted</option>
           <option value="api_key_revoked">api_key_revoked</option>
           <option value="user_registered">user_registered</option>
           <option value="user_login">user_login</option>

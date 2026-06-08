@@ -18,7 +18,7 @@ import { useAuthFlow } from "./hooks/useAuthFlow";
 import { useTunnelActions } from "./hooks/useTunnelActions";
 import { useApiKeyActions } from "./hooks/useApiKeyActions";
 import { useRealtimeGatewayEvents } from "./hooks/useRealtimeGatewayEvents";
-import { ConfirmModal as SharedConfirmModal, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
+import { ConfirmModal as SharedConfirmModal, GlobalSearchModal as SharedGlobalSearchModal, type GlobalSearchItem, InstallPromptModal as SharedInstallPromptModal, NewKeyModal as SharedNewKeyModal, NewTunnelModal as SharedNewTunnelModal } from "./components/modals";
 import { ApiKeysPage as SharedApiKeysPage } from "./pages/ApiKeysPage";
 import { AdminAuditPage as SharedAdminAuditPage } from "./pages/AdminAuditPage";
 import { AdminGatewayPage as SharedAdminGatewayPage } from "./pages/AdminGatewayPage";
@@ -40,6 +40,18 @@ export function App() {
   const [inspectorSubdomain, setInspectorSubdomain] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [recentSearchIds, setRecentSearchIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("ptx-recent-searches");
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 6) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const [tunnels, setTunnels] = useState<TunnelRecord[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
@@ -113,12 +125,68 @@ export function App() {
     setMobileMoreOpen(false);
   }, [currentPage, screen]);
 
+  useEffect(() => {
+    if (screen !== "app") return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTypingContext =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
+
+      if (!searchOpen && !isTypingContext && event.key === "/") {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [screen, searchOpen]);
+
   const navigateToPage = useCallback((page: Page) => {
     if (page === "inspector") {
       setInspectorSubdomain(null);
     }
     setCurrentPage(page);
   }, []);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, []);
+  const clearRecentSearches = useCallback(() => {
+    setRecentSearchIds([]);
+    try {
+      localStorage.removeItem("ptx-recent-searches");
+    } catch {
+      // ignore
+    }
+  }, []);
+  const registerRecentSearch = useCallback((itemId: string) => {
+    setRecentSearchIds((previous) => {
+      const next = [itemId, ...previous.filter((value) => value !== itemId)].slice(0, 6);
+      try {
+        localStorage.setItem("ptx-recent-searches", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+  const createSearchAction = useCallback((itemId: string, action: () => void) => {
+    return () => {
+      registerRecentSearch(itemId);
+      action();
+    };
+  }, [registerRecentSearch]);
   const { refreshTunnels, createTunnel, requestDeleteTunnel } = useTunnelActions({
     api,
     newTunnelSubdomain,
@@ -144,6 +212,91 @@ export function App() {
   });
 
   useRealtimeGatewayEvents({ api, screen });
+
+  const searchCatalogItems = useMemo<GlobalSearchItem[]>(() => {
+    const pageItems: GlobalSearchItem[] = [
+      { id: "page:tunnels", title: "Tunnels", subtitle: "Manage live, reserved, and offline tunnels", category: "Pages", icon: "ti-topology-star-3", onSelect: createSearchAction("page:tunnels", () => navigateToPage("tunnels")) },
+      { id: "page:devices", title: "Devices", subtitle: "Install and connect client machines", category: "Pages", icon: "ti-device-laptop", onSelect: createSearchAction("page:devices", () => navigateToPage("devices")) },
+      { id: "page:usage", title: "Usage & Logs", subtitle: "Review activity and recent events", category: "Pages", icon: "ti-chart-bar", onSelect: createSearchAction("page:usage", () => navigateToPage("usage")) },
+      { id: "page:api", title: "API Keys", subtitle: "Manage automation and CLI access", category: "Pages", icon: "ti-code", onSelect: createSearchAction("page:api", () => navigateToPage("api")) },
+      { id: "page:inspector", title: "Traffic Inspector", subtitle: "Inspect captured HTTP requests", category: "Pages", icon: "ti-eye", onSelect: createSearchAction("page:inspector", () => navigateToPage("inspector")) },
+      { id: "page:org", title: "Organisation", subtitle: "View workspace ownership details", category: "Pages", icon: "ti-building", onSelect: createSearchAction("page:org", () => navigateToPage("org")) },
+      { id: "page:settings", title: "Settings", subtitle: "Manage account and security settings", category: "Pages", icon: "ti-settings", onSelect: createSearchAction("page:settings", () => navigateToPage("settings")) },
+      { id: "page:billing", title: "Billing", subtitle: "Review billing and invoice placeholders", category: "Pages", icon: "ti-credit-card", onSelect: createSearchAction("page:billing", () => navigateToPage("billing")) },
+    ];
+
+    const adminItems: GlobalSearchItem[] = hasAdminRole(user?.role)
+      ? [
+          { id: "page:admin-overview", title: "Admin Overview", subtitle: "Gateway operations summary", category: "Admin pages", icon: "ti-layout-dashboard", onSelect: createSearchAction("page:admin-overview", () => navigateToPage("admin:overview")) },
+          { id: "page:admin-audit", title: "Audit Log", subtitle: "Review gateway and account events", category: "Admin pages", icon: "ti-clipboard-list", onSelect: createSearchAction("page:admin-audit", () => navigateToPage("admin:audit")) },
+          { id: "page:admin-gateway", title: "Gateway Control", subtitle: "Operate maintenance, drain, and sessions", category: "Admin pages", icon: "ti-server-cog", onSelect: createSearchAction("page:admin-gateway", () => navigateToPage("admin:gateway")) },
+          { id: "page:admin-tcp", title: "TCP Port Mappings", subtitle: "Manage reserved TCP public ports", category: "Admin pages", icon: "ti-network", onSelect: createSearchAction("page:admin-tcp", () => navigateToPage("admin:tcp")) },
+        ]
+      : [];
+
+    const actionItems: GlobalSearchItem[] = [
+      { id: "action:new-tunnel", title: "New tunnel", subtitle: "Reserve a new subdomain from the dashboard", category: "Quick actions", icon: "ti-plus", onSelect: createSearchAction("action:new-tunnel", () => setShowNewTunnel(true)) },
+      { id: "action:new-api-key", title: "Generate API key", subtitle: "Create a new CLI or automation credential", category: "Quick actions", icon: "ti-key", onSelect: createSearchAction("action:new-api-key", () => { setCurrentPage("api"); setShowNewKey(true); }) },
+      { id: "action:refresh-tunnels", title: "Refresh tunnels", subtitle: "Reload the latest tunnel session data", category: "Quick actions", icon: "ti-refresh", onSelect: createSearchAction("action:refresh-tunnels", () => void refreshTunnels()) },
+    ];
+
+    const tunnelItems: GlobalSearchItem[] = tunnels.map((tunnel) => ({
+      id: `tunnel:${tunnel.id}`,
+      title: tunnel.subdomain,
+      subtitle: tunnel.statusMessage ?? (tunnel.active ? "Tunnel is online" : "Tunnel is currently offline"),
+      category: "Tunnels",
+      icon: tunnel.status === "offline" ? "ti-plug-x" : tunnel.status === "reserved" ? "ti-clock-hour-4" : "ti-world",
+      onSelect: createSearchAction(`tunnel:${tunnel.id}`, () => navigateToPage("tunnels")),
+    }));
+
+    const apiKeyItems: GlobalSearchItem[] = apiKeys.map((key) => ({
+      id: `api-key:${key.id}`,
+      title: key.name,
+      subtitle: key.scopes.join(" / ") || "No scopes assigned",
+      category: "API keys",
+      icon: "ti-key",
+      onSelect: createSearchAction(`api-key:${key.id}`, () => navigateToPage("api")),
+    }));
+
+    return [...actionItems, ...pageItems, ...adminItems, ...tunnelItems, ...apiKeyItems];
+  }, [apiKeys, createSearchAction, navigateToPage, refreshTunnels, tunnels, user?.role]);
+
+  const filteredSearchItems = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    const recentSearchItems = recentSearchIds
+      .map((id) => searchCatalogItems.find((item) => item.id === id))
+      .filter((item): item is GlobalSearchItem => Boolean(item))
+      .map((item) => ({ ...item, category: "Recent searches" }));
+
+    if (!normalizedQuery) {
+      const priorityItems = [
+        ...recentSearchItems,
+        ...searchCatalogItems.filter((item) => item.category === "Quick actions").slice(0, 3),
+        ...searchCatalogItems.filter((item) => item.category === "Pages").slice(0, 5),
+      ];
+
+      const deduped = priorityItems.filter((item, index, collection) => collection.findIndex((candidate) => candidate.id === item.id) === index);
+      return deduped.slice(0, 12);
+    }
+
+    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+
+    return searchCatalogItems
+      .map((item) => {
+        const haystack = `${item.title} ${item.subtitle ?? ""} ${item.category}`.toLowerCase();
+        const score = tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+        return { item, score, startsWith: haystack.startsWith(normalizedQuery) || item.title.toLowerCase().startsWith(normalizedQuery) };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((left, right) => {
+        if (left.startsWith !== right.startsWith) {
+          return left.startsWith ? -1 : 1;
+        }
+        return right.score - left.score || left.item.title.localeCompare(right.item.title);
+      })
+      .slice(0, 12)
+      .map((entry) => entry.item);
+  }, [recentSearchIds, searchCatalogItems, searchQuery]);
 
   useEffect(() => {
     if (currentPage !== "api" || screen !== "app") return;
@@ -238,6 +391,7 @@ export function App() {
               currentPage={currentPage}
               mobileNavOpen={mobileNavOpen}
               gatewayStatus={gatewayStatus}
+              onOpenSearch={() => setSearchOpen(true)}
               onToggleMobileNav={() => setMobileNavOpen((prev) => !prev)}
               onNavigate={navigateToPage}
               onLogout={doLogout}
@@ -371,6 +525,14 @@ export function App() {
           onClose={() => setConfirm(null)}
         />
       )}
+      <SharedGlobalSearchModal
+        open={searchOpen}
+        query={searchQuery}
+        setQuery={setSearchQuery}
+        items={filteredSearchItems}
+        onClearRecent={clearRecentSearches}
+        onClose={closeSearch}
+      />
 
       {/* ── Toasts ────────────────────────────────────────────────────────── */}
       {shouldShowInstallPrompt && (
@@ -384,6 +546,7 @@ export function App() {
     </>
   );
 }
+
 
 
 

@@ -1,4 +1,13 @@
-﻿import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+
+export interface GlobalSearchItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  category: string;
+  icon: string;
+  onSelect: () => void;
+}
 
 export function ConfirmModal({
   title,
@@ -80,6 +89,179 @@ export function InstallPromptModal({
   );
 }
 
+export function GlobalSearchModal({
+  open,
+  query,
+  setQuery,
+  items,
+  onClearRecent,
+  onClose,
+}: {
+  open: boolean;
+  query: string;
+  setQuery: (value: string) => void;
+  items: GlobalSearchItem[];
+  onClearRecent: () => void;
+  onClose: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 10);
+    return () => window.clearTimeout(focusTimer);
+  }, [open]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query, items.length]);
+
+  if (!open) {
+    return null;
+  }
+
+  const runItem = (index: number) => {
+    const item = items[index];
+    if (!item) return;
+    onClose();
+    item.onSelect();
+  };
+
+  const renderHighlightedText = (text: string) => {
+    const needle = query.trim();
+    if (!needle) {
+      return text;
+    }
+
+    const lowerText = text.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+      if (matchIndex < 0) {
+        parts.push(text.slice(cursor));
+        break;
+      }
+      if (matchIndex > cursor) {
+        parts.push(text.slice(cursor, matchIndex));
+      }
+      parts.push(
+        <mark key={`${text}-${matchIndex}`} className="global-search-highlight">
+          {text.slice(matchIndex, matchIndex + needle.length)}
+        </mark>,
+      );
+      cursor = matchIndex + needle.length;
+    }
+
+    return parts;
+  };
+
+  const groupedItems = items.reduce<Array<{ title: string; items: Array<{ item: GlobalSearchItem; index: number }> }>>((groups, item, index) => {
+    const existing = groups[groups.length - 1];
+    if (existing && existing.title === item.category) {
+      existing.items.push({ item, index });
+      return groups;
+    }
+    groups.push({ title: item.category, items: [{ item, index }] });
+    return groups;
+  }, []);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal global-search-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="global-search-head">
+          <div className="global-search-input-wrap">
+            <i className="ti ti-search" />
+            <input
+              ref={inputRef}
+              className="global-search-input"
+              placeholder="Search pages, tunnels, API keys, and actions"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onClose();
+                  return;
+                }
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setActiveIndex((prev) => Math.min(prev + 1, Math.max(items.length - 1, 0)));
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveIndex((prev) => Math.max(prev - 1, 0));
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  runItem(activeIndex);
+                }
+              }}
+            />
+          </div>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close search">
+            <i className="ti ti-x" />
+          </button>
+        </div>
+
+        <div className="global-search-results">
+          {items.length === 0 ? (
+            <div className="global-search-empty">
+              <i className="ti ti-search-off" />
+              <strong>No matches found</strong>
+              <span>Try a page name, tunnel subdomain, API key label, or quick action.</span>
+            </div>
+          ) : (
+            groupedItems.map((group) => (
+              <section key={group.title} className="global-search-group">
+                <div className="global-search-group-head">
+                  <div className="global-search-group-title">{group.title}</div>
+                  {group.title === "Recent searches" && (
+                    <button type="button" className="global-search-clear" onClick={onClearRecent}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="global-search-group-items">
+                  {group.items.map(({ item, index }) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`global-search-item ${index === activeIndex ? "active" : ""}`}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onClick={() => runItem(index)}
+                    >
+                      <span className="global-search-item-icon">
+                        <i className={`ti ${item.icon}`} />
+                      </span>
+                      <span className="global-search-item-copy">
+                        <strong>{renderHighlightedText(item.title)}</strong>
+                        {item.subtitle && <span>{renderHighlightedText(item.subtitle)}</span>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))
+          )}
+        </div>
+
+        <div className="global-search-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>Enter</kbd> Open</span>
+          <span><kbd>/</kbd> Search</span>
+          <span><kbd>Esc</kbd> Close</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function NewTunnelModal({
   subdomain,
   setSubdomain,
@@ -141,7 +323,7 @@ const AVAILABLE_SCOPES: Array<{ value: string; label: string; desc: string }> = 
   { value: "tunnel:create", label: "tunnel:create", desc: "Open new tunnels" },
   { value: "tunnel:read", label: "tunnel:read", desc: "List and view tunnels" },
   { value: "tunnel:delete", label: "tunnel:delete", desc: "Close and delete tunnels" },
-  { value: "key:manage", label: "key:manage", desc: "Create and revoke API keys" },
+  { value: "key:manage", label: "key:manage", desc: "Create and delete API keys" },
 ];
 
 export function NewKeyModal({

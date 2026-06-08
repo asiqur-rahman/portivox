@@ -273,19 +273,15 @@ class AuthStore {
 
   async revokeApiKey(userId: string, id: string): Promise<boolean> {
     if (this.prisma) {
-      const existing = await this.prisma.apiKey.findUnique({ where: { id } });
-      if (!existing || existing.userId !== userId) {
-        return false;
-      }
-      await this.prisma.apiKey.update({ where: { id }, data: { revoked: true, revokedAt: new Date() } });
-      return true;
+      const deleted = await this.prisma.apiKey.deleteMany({ where: { id, userId } });
+      return deleted.count > 0;
     }
     const keys = this.memory.get(userId) ?? [];
-    const target = keys.find((item) => item.id === id);
-    if (!target) {
+    const targetIndex = keys.findIndex((item) => item.id === id);
+    if (targetIndex < 0) {
       return false;
     }
-    target.revoked = true;
+    keys.splice(targetIndex, 1);
     return true;
   }
 
@@ -2944,7 +2940,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
       return reply.status(404).send({ error: { code: "API_KEY_NOT_FOUND", message: "API key not found" } });
     }
-    await auditStore.log(principal.userId, "api_key_revoked", "api_key", params.id);
+    await auditStore.log(principal.userId, "api_key_deleted", "api_key", params.id);
     publishLiveEvent("api_keys_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     if (idempotencyStoreKey) {

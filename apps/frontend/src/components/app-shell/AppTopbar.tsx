@@ -7,6 +7,7 @@ interface AppTopbarProps {
   currentPage: Page;
   mobileNavOpen: boolean;
   gatewayStatus: GatewayStatus | null;
+  onOpenSearch: () => void;
   onToggleMobileNav: () => void;
   onNavigate: (page: Page) => void;
   onLogout: () => void;
@@ -16,6 +17,7 @@ export function AppTopbar({
   currentPage,
   mobileNavOpen,
   gatewayStatus,
+  onOpenSearch,
   onToggleMobileNav,
   onNavigate,
   onLogout,
@@ -45,11 +47,26 @@ export function AppTopbar({
         </div>
       </div>
       <div className="topbar-right">
-        <div className="search-box" aria-hidden="true" title="Global search coming soon">
+        <button
+          type="button"
+          className="search-box"
+          onClick={onOpenSearch}
+          title="Search pages, tunnels, and actions"
+          aria-label="Open global search"
+        >
           <i className="ti ti-search" />
-          <span className="search-box-text">Global search coming soon</span>
-          <span className="search-shortcut">Ctrl+K</span>
-        </div>
+          <span className="search-box-text">Search pages, tunnels, and actions</span>
+          <span className="search-shortcut">Ctrl+K /</span>
+        </button>
+        <button
+          type="button"
+          className="notif-btn topbar-search-btn"
+          onClick={onOpenSearch}
+          title="Search"
+          aria-label="Open global search"
+        >
+          <i className="ti ti-search" />
+        </button>
         <div
           className={`notif-btn gateway-status-pill ${gatewayStatus?.ready ? "notif-btn-ready" : ""}`}
           title={gatewayStatus?.ready ? "Gateway healthy" : "Gateway state unavailable"}

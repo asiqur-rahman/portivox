@@ -37,7 +37,7 @@ test.describe("customer dashboard flows", () => {
     await expect(page.locator(".tunnel-status-inline.live small").filter({ hasText: "Client connected and forwarding traffic" }).first()).toBeVisible();
   });
 
-  test("can generate and revoke an API key", async ({ page }) => {
+  test("can generate and delete an API key", async ({ page }) => {
     await page.getByTestId("nav-api").click();
     await expect(page.getByTestId("generate-key-button")).toBeVisible();
 
@@ -49,9 +49,27 @@ test.describe("customer dashboard flows", () => {
     await expect(page.locator("tr").filter({ hasText: "QA CI key" })).toBeVisible();
 
     const row = page.locator("tr", { hasText: "QA CI key" });
-    await row.getByRole("button", { name: "Revoke" }).click();
-    await page.getByRole("button", { name: "Revoke key" }).click();
+    await row.getByRole("button", { name: "Delete" }).click();
+    await page.getByRole("button", { name: "Delete key" }).click();
 
     await expect(page.getByText("QA CI key")).toHaveCount(0);
+  });
+
+  test("opens global search and navigates from search results", async ({ page }) => {
+    await page.keyboard.press("Control+K");
+    await expect(page.getByPlaceholder("Search pages, tunnels, API keys, and actions")).toBeVisible();
+    await expect(page.getByText("Quick actions")).toBeVisible();
+
+    await page.getByPlaceholder("Search pages, tunnels, API keys, and actions").fill("api keys");
+    await page.getByRole("button", { name: /API Keys/i }).click();
+    await expect(page.getByTestId("generate-key-button")).toBeVisible();
+
+    await page.keyboard.press("/");
+    await expect(page.getByText("Recent searches")).toBeVisible();
+    await expect(page.getByRole("button", { name: /API Keys/i }).first()).toBeVisible();
+    await page.getByRole("button", { name: "Clear" }).click();
+    await expect(page.getByText("Recent searches")).toHaveCount(0);
+    await page.getByPlaceholder("Search pages, tunnels, API keys, and actions").fill("ssh-prod");
+    await expect(page.getByRole("button", { name: /ssh-prod/i })).toBeVisible();
   });
 });

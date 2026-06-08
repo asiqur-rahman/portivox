@@ -96,7 +96,7 @@ export function ApiKeysPage({
                   </div>
                   <div className="mobile-card-actions">
                     <button className="stop-btn" disabled={loading} onClick={() => onRevokeKey(key.id, key.name)}>
-                      Revoke
+                      Delete
                     </button>
                   </div>
                 </article>
@@ -133,7 +133,7 @@ export function ApiKeysPage({
                     <td>
                       <div className="row-actions" style={{ justifyContent: "flex-end" }}>
                         <button className="stop-btn" disabled={loading} onClick={() => onRevokeKey(key.id, key.name)}>
-                          Revoke
+                          Delete
                         </button>
                       </div>
                     </td>

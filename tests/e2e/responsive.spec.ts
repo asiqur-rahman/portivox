@@ -21,6 +21,7 @@ test.describe("responsive layout checks", () => {
 
       if (viewport.width < 768) {
         await expect(page.getByRole("button", { name: "More" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Open global search" })).toBeVisible();
         await expect(page.getByTestId("new-tunnel-button")).toBeVisible();
       } else {
         await expect(page.getByText("Workspace")).toBeVisible();
