@@ -35,7 +35,7 @@ export function BillingPage({ showToast }: { showToast: (msg: string, type?: Toa
         <div className="empty">
           <i className="ti ti-receipt-off" />
           <div className="empty-title">No invoices</div>
-          <div className="empty-desc">Your self-hosted instance has no billing requirements.</div>
+          <div className="empty-desc">This self-hosted installation does not require subscription billing.</div>
         </div>
       </div>
 
@@ -44,11 +44,11 @@ export function BillingPage({ showToast }: { showToast: (msg: string, type?: Toa
           <div className="section-title"><i className="ti ti-building" /> Invoice details</div>
         </div>
         <div className="form-body">
-          <div className="ai-insight" style={{ marginBottom: 16 }}>
-            <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+          <div className="info-banner" style={{ marginBottom: 16 }}>
+            <div className="info-badge"><i className="ti ti-info-circle" /></div>
             <div style={{ flex: 1 }}>
-              <div className="ai-insight-label">Stored locally</div>
-              <div className="ai-insight-text">
+              <div className="info-banner-label">Local preferences</div>
+              <div className="info-banner-text">
                 Invoice details are saved in your browser storage for reference. No data is sent to a server.
               </div>
             </div>

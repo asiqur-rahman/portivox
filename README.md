@@ -12,6 +12,7 @@ Portivox is a self-hosted, open-source tunnel gateway that exposes local service
 - NGINX single-subdomain setup: `docs/NGINX_SINGLE_SUBDOMAIN.md`
 - Production deployment: `docs/PRODUCTION_DEPLOYMENT.md`
 - Standalone client publish: `docs/CLIENT_PUBLISH.md`
+- Browser E2E testing: `docs/BROWSER_E2E_TESTING.md`
 
 ## What You Need
 - Node.js 22+
@@ -283,6 +284,13 @@ npm run test:smoke:tcp
 npm run test:smoke:docker
 ```
 
+Run browser validation:
+
+```bash
+npm run test:e2e
+npm run test:e2e:visual
+```
+
 ---
 
 ## TCP Gateway Settings
@@ -293,4 +301,3 @@ Configure gateway for TCP public listeners:
 - `TCP_PUBLIC_HOST=your.public.ip.or.dns`
 - `TCP_PUBLIC_PORT_START=19000`
 - `TCP_PUBLIC_PORT_END=19999`
-

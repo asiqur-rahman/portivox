@@ -17,7 +17,7 @@ export function OrgPage({ user }: { user: UserInfo | null }) {
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-1)" }}>My Workspace</div>
             <div style={{ fontSize: 13, color: "var(--text-2)", marginTop: 3 }}>
-              Self-hosted instance - {user ? "1 member" : "-"}
+              Self-hosted workspace - {user ? "1 member" : "-"}
             </div>
           </div>
         </div>
@@ -27,22 +27,22 @@ export function OrgPage({ user }: { user: UserInfo | null }) {
         <div className="section-head">
           <div className="section-title"><i className="ti ti-users" /> Members</div>
           <button className="btn-ghost" onClick={() => setShowInviteNote((value) => !value)}>
-            <i className="ti ti-user-plus" /> Invite
+            <i className="ti ti-info-circle" /> Access note
           </button>
         </div>
 
         {showInviteNote && (
           <div style={{ padding: "0 22px 16px" }}>
-            <div className="ai-insight">
-              <div className="ai-badge"><i className="ti ti-info-circle" /></div>
+            <div className="info-banner">
+              <div className="info-badge"><i className="ti ti-info-circle" /></div>
               <div style={{ flex: 1 }}>
-                <div className="ai-insight-label">Team management</div>
-                <div className="ai-insight-text">
-                  In self-hosted mode, additional users can sign up directly with the <strong>Create Account</strong> form.
-                  Full invitations, role management, and SSO are planned later.
+                <div className="info-banner-label">Member access</div>
+                <div className="info-banner-text">
+                  In self-hosted mode, additional users can create their own accounts directly from the authentication screen.
+                  Full invitations, role management, and SSO are planned for a later sprint.
                 </div>
               </div>
-              <i className="ti ti-x ai-dismiss" onClick={() => setShowInviteNote(false)} />
+              <i className="ti ti-x info-dismiss" onClick={() => setShowInviteNote(false)} />
             </div>
           </div>
         )}
@@ -77,6 +77,7 @@ export function OrgPage({ user }: { user: UserInfo | null }) {
           <div className="empty">
             <i className="ti ti-users" />
             <div className="empty-title">No members</div>
+            <div className="empty-desc">User accounts will appear here after they sign up on this self-hosted workspace.</div>
           </div>
         )}
       </div>

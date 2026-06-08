@@ -29,36 +29,36 @@ function NewTcpMappingModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
-          <div className="modal-title"><i className="ti ti-network" /> New TCP Port Mapping</div>
+          <div className="modal-title"><i className="ti ti-network" /> Reserve TCP port</div>
           <div className="icon-btn" onClick={onClose}><i className="ti ti-x" /></div>
         </div>
         <div className="modal-body" style={{ display: "grid", gap: 14 }}>
           <div>
-            <label className="form-lbl">Name <span style={{ color: "var(--red)" }}>*</span></label>
-            <input className="form-inp" placeholder="e.g. Postgres DB" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+            <label className="form-lbl">Mapping name <span style={{ color: "var(--red)" }}>*</span></label>
+            <input className="form-inp" placeholder="e.g. Production Postgres" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
           </div>
           <div className="responsive-two-col-grid" style={{ display: "grid", gap: 12 }}>
             <div>
-              <label className="form-lbl">Local Port <span style={{ color: "var(--red)" }}>*</span></label>
+              <label className="form-lbl">Target port <span style={{ color: "var(--red)" }}>*</span></label>
               <input className="form-inp" type="number" min={1} max={65535} placeholder="5432" value={localPort} onChange={(event) => setLocalPort(event.target.value)} />
             </div>
             <div>
-              <label className="form-lbl">Public Port <span style={{ color: "var(--red)" }}>*</span></label>
+              <label className="form-lbl">Public port <span style={{ color: "var(--red)" }}>*</span></label>
               <input className="form-inp" type="number" min={1} max={65535} placeholder="19000" value={publicPort} onChange={(event) => setPublicPort(event.target.value)} />
             </div>
           </div>
           <div>
-            <label className="form-lbl">Description</label>
-            <input className="form-inp" placeholder="Optional note" value={description} onChange={(event) => setDescription(event.target.value)} />
+            <label className="form-lbl">Operational note</label>
+            <input className="form-inp" placeholder="Optional description for your team" value={description} onChange={(event) => setDescription(event.target.value)} />
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn-primary" disabled={saving || !name.trim() || !localPort || !publicPort} onClick={submit}>
-            {saving ? <><i className="ti ti-loader-2 spin" /> Creating...</> : <><i className="ti ti-plus" /> Create mapping</>}
+            {saving ? <><i className="ti ti-loader-2 spin" /> Reserving...</> : <><i className="ti ti-plus" /> Reserve mapping</>}
           </button>
         </div>
       </div>
@@ -105,7 +105,7 @@ export function AdminTcpPage({
       .then((mapping) => {
         setMappings((previous) => [mapping, ...previous]);
         setShowCreate(false);
-        showToast(`TCP mapping "${mapping.name}" created`, "green");
+        showToast(`TCP mapping "${mapping.name}" reserved`, "green");
       })
       .catch((error: unknown) => {
         showToast(error instanceof Error ? error.message : "Create failed", "red");
@@ -116,7 +116,7 @@ export function AdminTcpPage({
   function requestDelete(id: string, name: string) {
     onConfirm({
       title: "Delete TCP mapping?",
-      message: `This will permanently remove "${name}". Any clients using port mapping will lose connectivity.`,
+      message: `This will permanently remove "${name}". Any clients using this public port will lose connectivity.`,
       confirmLabel: "Delete mapping",
       danger: true,
       onConfirm: () => {
@@ -134,39 +134,40 @@ export function AdminTcpPage({
     <div className="page-body">
       <div className="admin-hero">
         <div className="admin-hero-left">
-          <div className="admin-hero-title"><i className="ti ti-network" />TCP Port Mappings<span className="admin-hero-badge">Admin</span></div>
-          <div className="admin-hero-sub">Reserve public ports for TCP tunnels, databases, SSH, and custom protocols</div>
+          <div className="admin-hero-title"><i className="ti ti-network" />TCP port reservations<span className="admin-hero-badge">Operations</span></div>
+          <div className="admin-hero-sub">Reserve public TCP entry points for SSH, databases, and other direct service traffic.</div>
         </div>
         <div className="admin-hero-right">
           <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
             <i className={`ti ti-refresh${loading ? " spin" : ""}`} />
           </button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>
-            <i className="ti ti-plus" /> New mapping
+            <i className="ti ti-plus" /> Reserve port
           </button>
         </div>
       </div>
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-list" /> {mappings.length} mapping{mappings.length !== 1 ? "s" : ""}</div>
+          <div className="section-title"><i className="ti ti-list" /> {mappings.length} reservation{mappings.length !== 1 ? "s" : ""}</div>
         </div>
 
         {loading ? (
           <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>
             <i className="ti ti-loader-2 spin" style={{ fontSize: 22, display: "block", marginBottom: 8 }} />
-            Loading...
+            Loading TCP reservations...
           </div>
         ) : mappings.length === 0 ? (
           <div className="empty">
             <i className="ti ti-network-off" />
-            <div className="empty-title">No TCP port mappings</div>
+            <div className="empty-title">No reserved TCP ports</div>
             <div className="empty-desc">
-              Create a mapping to reserve a public port for TCP tunnels.
-              Clients connect to the public port and the gateway forwards traffic to the local port.
+              Reserve a public port to keep a stable TCP entry point ready for a client service.
+              The gateway will forward traffic from that public port to the target port on the connected machine.
             </div>
             <button className="btn-primary empty-cta-btn" onClick={() => setShowCreate(true)}>
-              <i className="ti ti-plus" /> New mapping
+              <span className="btn-icon-wrap"><i className="ti ti-plus" /></span>
+              <span className="btn-label">Reserve port</span>
             </button>
           </div>
         ) : (

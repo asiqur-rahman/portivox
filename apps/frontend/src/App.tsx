@@ -246,6 +246,7 @@ export function App() {
             {mobileNavOpen && <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
 
             <div className="content">
+              <div className="content-inner">
               {currentPage === "tunnels" && (
                 <SharedTunnelsPage
                   tunnels={tunnels}
@@ -316,6 +317,7 @@ export function App() {
                   onBack={() => navigateToPage("tunnels")}
                 />
               )}
+              </div>
             </div>
 
             <MobileBottomNav

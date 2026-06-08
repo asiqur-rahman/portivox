@@ -142,13 +142,12 @@ async function main() {
     if (readOnlyKeyRes.statusCode !== 201 || !readOnlyKeyRes.body?.apiKey?.token) {
       throw new Error(`read-only key create failed: ${readOnlyKeyRes.statusCode} ${JSON.stringify(readOnlyKeyRes.body)}`);
     }
-    const readOnlyKey = readOnlyKeyRes.body.apiKey.token;
 
     const scopeDeniedCreate = await requestJson({
       port: gatewayPort,
       path: "/api/tunnels",
       method: "POST",
-      headers: { "x-api-key": readOnlyKey },
+      headers: { "x-api-key": readOnlyKeyRes.body.apiKey.token },
       body: { subdomain: "should-deny" },
     });
     if (scopeDeniedCreate.statusCode !== 403) {
@@ -185,6 +184,39 @@ async function main() {
     });
     if (ownerDelete.statusCode !== 204) {
       throw new Error(`owner delete failed: ${ownerDelete.statusCode} ${JSON.stringify(ownerDelete.body)}`);
+    }
+
+    const listBeforeRevoke = await requestJson({
+      port: gatewayPort,
+      path: "/api/keys",
+      method: "GET",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    if (listBeforeRevoke.statusCode !== 200 || !Array.isArray(listBeforeRevoke.body?.keys) || listBeforeRevoke.body.keys.length < 2) {
+      throw new Error(`api key list before revoke failed: ${listBeforeRevoke.statusCode} ${JSON.stringify(listBeforeRevoke.body)}`);
+    }
+
+    const revokeKeyRes = await requestJson({
+      port: gatewayPort,
+      path: `/api/keys/${createKeyRes.body.apiKey.id}`,
+      method: "DELETE",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    if (revokeKeyRes.statusCode !== 204) {
+      throw new Error(`api key revoke failed: ${revokeKeyRes.statusCode} ${JSON.stringify(revokeKeyRes.body)}`);
+    }
+
+    const listAfterRevoke = await requestJson({
+      port: gatewayPort,
+      path: "/api/keys",
+      method: "GET",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    if (listAfterRevoke.statusCode !== 200 || !Array.isArray(listAfterRevoke.body?.keys)) {
+      throw new Error(`api key list after revoke failed: ${listAfterRevoke.statusCode} ${JSON.stringify(listAfterRevoke.body)}`);
+    }
+    if (listAfterRevoke.body.keys.some((key) => key.id === createKeyRes.body.apiKey.id)) {
+      throw new Error("revoked api key still appears in active api key list");
     }
 
     console.log("Auth integration test passed");

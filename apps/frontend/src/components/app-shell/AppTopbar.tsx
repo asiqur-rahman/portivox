@@ -45,19 +45,22 @@ export function AppTopbar({
         </div>
       </div>
       <div className="topbar-right">
-        <div className="search-box" aria-hidden="true">
+        <div className="search-box" aria-hidden="true" title="Global search coming soon">
           <i className="ti ti-search" />
-          <span>Search tunnels, logs, and settings...</span>
+          <span className="search-box-text">Global search coming soon</span>
           <span className="search-shortcut">Ctrl+K</span>
         </div>
         <div
-          className={`notif-btn ${gatewayStatus?.ready ? "notif-btn-ready" : ""}`}
-          title={gatewayStatus?.ready ? "Gateway healthy" : "Gateway status unknown"}
+          className={`notif-btn gateway-status-pill ${gatewayStatus?.ready ? "notif-btn-ready" : ""}`}
+          title={gatewayStatus?.ready ? "Gateway healthy" : "Gateway state unavailable"}
+          aria-label={gatewayStatus?.ready ? "Gateway healthy" : "Gateway state unavailable"}
         >
           <i className={`ti ti-${gatewayStatus?.ready ? "circle-check" : "circle-dashed"}`} />
+          <span className="gateway-status-text">{gatewayStatus?.ready ? "Gateway healthy" : "Gateway offline"}</span>
         </div>
         <button className="logout-btn" onClick={onLogout}>
-          <i className="ti ti-logout" /> Log out
+          <i className="ti ti-logout" />
+          <span className="logout-btn-text">Log out</span>
         </button>
       </div>
     </header>

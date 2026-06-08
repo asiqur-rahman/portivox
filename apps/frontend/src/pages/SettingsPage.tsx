@@ -22,6 +22,8 @@ export function SettingsPage({
   const [confirmPass, setConfirmPass] = useState("");
   const [passLoading, setPassLoading] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const accountLabel = isAnonymous ? "Anonymous access" : "Authenticated account";
+  const protectionLabel = isAnonymous ? "Authentication disabled" : "Account protected";
 
   const saveDisplayName = () => {
     try {
@@ -70,18 +72,18 @@ export function SettingsPage({
       <div className="section settings-overview-card">
         <div className="settings-overview-grid">
           <div className="settings-overview-main">
-            <div className="settings-overview-kicker">Account settings</div>
+            <div className="settings-overview-kicker">Account</div>
             <div className="settings-overview-name">{displayName || user?.name || "Anonymous"}</div>
             <div className="settings-overview-meta">
               <span>{user?.email ?? "No email available"}</span>
               <span className="settings-overview-divider">•</span>
-              <span>{isAnonymous ? "Anonymous mode" : "Authenticated user"}</span>
+              <span>{accountLabel}</span>
             </div>
           </div>
           <div className="settings-overview-side">
             <div className="settings-overview-chip">
               <i className={`ti ti-${isAnonymous ? "shield-off" : "shield-check"}`} />
-              {isAnonymous ? "Auth disabled" : "Account protected"}
+              {protectionLabel}
             </div>
           </div>
         </div>
@@ -93,7 +95,7 @@ export function SettingsPage({
         </div>
         <div className="form-body">
           <div className="settings-section-copy">
-            Update the display details shown in the dashboard on this device.
+            Manage how this account appears inside the dashboard on this device.
           </div>
           <div className="form-field">
             <label className="form-lbl">Display name</label>
@@ -103,8 +105,11 @@ export function SettingsPage({
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && saveDisplayName()}
+              placeholder="How your name appears in the dashboard"
             />
-            <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 5 }}>Stored locally in your browser.</p>
+            <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 5 }}>
+              This preference is stored locally in your browser.
+            </p>
           </div>
           <div className="form-field">
             <label className="form-lbl">Email address</label>
@@ -123,7 +128,7 @@ export function SettingsPage({
           </div>
           <div className="form-body">
             <div className="settings-section-copy">
-              Change your password for this Portivox account.
+              Update the password used to sign in to this Portivox account.
             </div>
             <div className="form-field">
               <label className="form-lbl">Current password</label>
@@ -131,7 +136,7 @@ export function SettingsPage({
             </div>
             <div className="form-field">
               <label className="form-lbl">New password</label>
-              <input type="password" className="form-inp" value={newPass} onChange={(event) => setNewPass(event.target.value)} placeholder="Min. 8 characters" />
+              <input type="password" className="form-inp" value={newPass} onChange={(event) => setNewPass(event.target.value)} placeholder="Minimum 8 characters" />
             </div>
             <div className="form-field">
               <label className="form-lbl">Confirm new password</label>
@@ -155,9 +160,9 @@ export function SettingsPage({
             <div className="settings-readonly-note">
               <i className="ti ti-info-circle" />
               <div>
-                <strong>Authentication is disabled</strong>
+                <strong>Password controls are unavailable</strong>
                 <span>
-                  This gateway is running with <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=false</code>, so password management is unavailable in anonymous mode.
+                  This gateway is running with <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>AUTH_REQUIRED=false</code>. Anonymous access is enabled, so account password management is intentionally unavailable here.
                 </span>
               </div>
             </div>
@@ -173,9 +178,9 @@ export function SettingsPage({
         </div>
         <div className="settings-danger-row">
           <div className="settings-danger-copy">
-            <div className="settings-danger-title">Sign out</div>
+            <div className="settings-danger-title">End current session</div>
             <div className="settings-danger-desc">
-              Sign out of this session. Your tunnels will remain active.
+              Sign out from this browser session. Existing tunnels continue running until they are stopped separately.
             </div>
           </div>
           <button className="btn-danger" onClick={onLogout}>
@@ -187,7 +192,7 @@ export function SettingsPage({
             <div className="settings-danger-copy">
               <div className="settings-danger-title">Delete account</div>
               <div className="settings-danger-desc">
-                Remove your user account from this self-hosted instance.
+                Permanently remove this account from the self-hosted Portivox instance.
               </div>
             </div>
             <button className="btn-danger btn-danger-muted" onClick={() => setShowDeleteConfirm(true)}>
@@ -200,7 +205,7 @@ export function SettingsPage({
       {showDeleteConfirm && (
         <ConfirmModal
           title="Delete account?"
-          message={`Account deletion requires direct database access on a self-hosted instance. Connect to the PostgreSQL database and run: DELETE FROM "User" WHERE email = 'your@email.com'; or use docker compose down -v to wipe all data.`}
+          message="Account deletion is an operator-level action on a self-hosted deployment. Remove the user directly from the instance database, or wipe the environment entirely if this installation is disposable."
           confirmLabel="I understand"
           onConfirm={() => setShowDeleteConfirm(false)}
           onClose={() => setShowDeleteConfirm(false)}

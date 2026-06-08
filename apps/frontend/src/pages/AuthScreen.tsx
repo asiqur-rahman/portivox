@@ -92,8 +92,8 @@ export function AuthScreen({
         </div>
 
         <div className="auth-tabs">
-          <button className={`auth-tab ${authTab === "login" ? "active" : ""}`} onClick={() => setAuthTab("login")}>Sign in</button>
-          <button className={`auth-tab ${authTab === "register" ? "active" : ""}`} onClick={() => setAuthTab("register")}>Create account</button>
+          <button data-testid="auth-tab-login" className={`auth-tab ${authTab === "login" ? "active" : ""}`} onClick={() => setAuthTab("login")}>Sign in</button>
+          <button data-testid="auth-tab-register" className={`auth-tab ${authTab === "register" ? "active" : ""}`} onClick={() => setAuthTab("register")}>Create account</button>
         </div>
 
         <div className={`auth-panel ${authTab === "login" ? "active" : ""}`}>
@@ -105,6 +105,7 @@ export function AuthScreen({
               <input
                 className="field-input"
                 id="login-email"
+                data-testid="login-email"
                 type="email"
                 placeholder="you@company.com"
                 autoComplete="email"
@@ -119,6 +120,7 @@ export function AuthScreen({
                 <input
                   className="field-input"
                   id="login-pass"
+                  data-testid="login-password"
                   type={loginPassShow ? "text" : "password"}
                   placeholder="........"
                   autoComplete="current-password"
@@ -129,7 +131,7 @@ export function AuthScreen({
                 <i className={`ti ${loginPassShow ? "ti-eye-off" : "ti-eye"} field-eye`} onClick={() => setLoginPassShow(!loginPassShow)} />
               </div>
             </div>
-            <button className="auth-submit" disabled={loading} onClick={doLogin}>
+            <button data-testid="login-submit" className="auth-submit" disabled={loading} onClick={doLogin}>
               {loading ? <><i className="ti ti-loader-2 spin" /> Signing in...</> : <><i className="ti ti-login" /> Sign in</>}
             </button>
           </div>
@@ -146,22 +148,23 @@ export function AuthScreen({
             <div className="field-row">
               <div>
                 <label className="field-label">First name</label>
-                <input className="field-input" type="text" placeholder="First name" value={regFirstName} onChange={(event) => setRegFirstName(event.target.value)} />
+                <input data-testid="register-first-name" className="field-input" type="text" placeholder="First name" value={regFirstName} onChange={(event) => setRegFirstName(event.target.value)} />
               </div>
               <div>
                 <label className="field-label">Last name</label>
-                <input className="field-input" type="text" placeholder="Last name" value={regLastName} onChange={(event) => setRegLastName(event.target.value)} />
+                <input data-testid="register-last-name" className="field-input" type="text" placeholder="Last name" value={regLastName} onChange={(event) => setRegLastName(event.target.value)} />
               </div>
             </div>
             <div>
               <label className="field-label">Work email</label>
-              <input className="field-input" type="email" placeholder="you@company.com" value={regEmail} onChange={(event) => setRegEmail(event.target.value)} />
+              <input data-testid="register-email" className="field-input" type="email" placeholder="you@company.com" value={regEmail} onChange={(event) => setRegEmail(event.target.value)} />
             </div>
             <div>
               <label className="field-label">Password</label>
               <div className="field-input-wrap">
                 <input
                   className="field-input"
+                  data-testid="register-password"
                   type={regPassShow ? "text" : "password"}
                   placeholder="Min. 8 characters"
                   value={regPassword}
@@ -171,7 +174,7 @@ export function AuthScreen({
                 <i className={`ti ${regPassShow ? "ti-eye-off" : "ti-eye"} field-eye`} onClick={() => setRegPassShow(!regPassShow)} />
               </div>
             </div>
-            <button className="auth-submit" disabled={loading} onClick={doRegister}>
+            <button data-testid="register-submit" className="auth-submit" disabled={loading} onClick={doRegister}>
               {loading ? <><i className="ti ti-loader-2 spin" /> Creating account...</> : <><i className="ti ti-user-plus" /> Create account</>}
             </button>
           </div>

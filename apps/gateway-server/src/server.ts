@@ -265,10 +265,10 @@ class AuthStore {
 
   async listApiKeys(userId: string): Promise<ApiKeyRecord[]> {
     if (this.prisma) {
-      const rows = await this.prisma.apiKey.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
+      const rows = await this.prisma.apiKey.findMany({ where: { userId, revoked: false }, orderBy: { createdAt: "desc" } });
       return rows.map((row: { id: string; name: string; createdAt: Date; revoked: boolean; keyHash: string; scopes?: string }) => ({ id: row.id, name: row.name, createdAt: row.createdAt.toISOString(), revoked: row.revoked, keyHash: row.keyHash, scopes: parseScopes((row as unknown as { scopes?: string }).scopes, []) }));
     }
-    return [...(this.memory.get(userId) ?? [])];
+    return [...(this.memory.get(userId) ?? [])].filter((item) => !item.revoked);
   }
 
   async revokeApiKey(userId: string, id: string): Promise<boolean> {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+﻿import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type CapturedRequestDetail, type CapturedRequestSummary, type TunnelRecord } from "../api";
 import { subscribeGatewayLiveEvents } from "../app/live-events";
 
@@ -208,8 +208,8 @@ export function InspectorPage({
       <div className="inspector-toolbar">
         <div className="inspector-toolbar-left">
           <button className="btn-ghost" onClick={onBack}><i className="ti ti-arrow-left" /></button>
-          <span className="inspector-toolbar-title">Traffic Inspector</span>
-          <span className="inspector-live-badge"><span className="inspector-live-dot" />Live</span>
+          <span className="inspector-toolbar-title">Traffic inspector</span>
+          <span className="inspector-live-badge"><span className="inspector-live-dot" />Live capture</span>
         </div>
         <div className="inspector-toolbar-right">
           {httpTunnels.length > 0 && (
@@ -235,13 +235,12 @@ export function InspectorPage({
       {httpTunnels.length === 0 ? (
         <div className="empty">
           <i className="ti ti-plug-connected" />
-          <div className="empty-title">No HTTP tunnels active</div>
+          <div className="empty-title">No HTTP tunnels available</div>
           <div className="empty-desc">
-            The Traffic Inspector captures <strong>HTTP</strong> requests only.
-            TCP tunnels (CLI sessions) forward raw bytes and have no request log.
+            The traffic inspector captures <strong>HTTP</strong> requests only.
+            Raw TCP sessions forward bytes directly and do not produce request logs.
             <br /><br />
-            Run <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code> from
-            the portal (New tunnel ? Connect) to start an HTTP session, then come back here to inspect traffic.
+            Start an HTTP tunnel from the tunnels page, then return here to inspect live request traffic.
           </div>
           <button className="btn-ghost empty-cta-btn" onClick={onBack}>
             <i className="ti ti-arrow-left" /> Back to tunnels
@@ -251,20 +250,20 @@ export function InspectorPage({
         <div className="empty">
           <i className="ti ti-eye-off" />
           <div className="empty-title">No tunnel selected</div>
-          <div className="empty-desc">Start a tunnel first, then open the inspector to see live traffic.</div>
+          <div className="empty-desc">Choose an HTTP tunnel to review live request traffic.</div>
         </div>
       ) : (
         <div className="inspector-layout">
           <div className="inspector-list-pane">
             <div className="inspector-list-head">
               <span className="inspector-subdomain">{subdomain}</span>
-              <span className="inspector-request-count">{requests.length} req{requests.length !== 1 ? "s" : ""}</span>
+              <span className="inspector-request-count">{requests.length} request{requests.length !== 1 ? "s" : ""}</span>
             </div>
             <div className="inspector-list-scroll">
               {requests.length === 0 ? (
                 <div className="inspector-list-empty">
                   <i className="ti ti-antenna-bars-1" />
-                  <p className="inspector-list-empty-title">Waiting for HTTP requests…</p>
+                  <p className="inspector-list-empty-title">Waiting for HTTP requests...</p>
                   <p className="inspector-list-empty-copy">Send a request to your public URL to see it here.</p>
                 </div>
               ) : requests.map((request) => (
@@ -290,7 +289,7 @@ export function InspectorPage({
             {!selected ? (
               <div className="inspector-empty-detail">
                 <i className="ti ti-click" />
-                <p>Select a request to inspect</p>
+                <p>Select a request to review</p>
               </div>
             ) : (
               <>
@@ -310,7 +309,7 @@ export function InspectorPage({
                   <div className="inspector-detail-actions">
                     {loadingDetail && <i className="ti ti-loader-2 spin" style={{ fontSize: 16, color: "var(--text-3)" }} />}
                     <button className="btn-ghost" onClick={copyAsCurl} title="Copy as cURL">
-                      <i className="ti ti-terminal" /> cURL
+                      <i className="ti ti-terminal" /> Copy cURL
                     </button>
                   </div>
                 </div>

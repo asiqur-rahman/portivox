@@ -36,7 +36,7 @@ export function AdminGatewayPage({
       })
       .catch((error: unknown) => {
         if (!options?.silent) {
-          showToast(error instanceof Error ? error.message : "Load failed", "red");
+          showToast(error instanceof Error ? error.message : "Failed to load gateway data", "red");
         }
       })
       .finally(() => setLoading(false));
@@ -54,7 +54,7 @@ export function AdminGatewayPage({
   function toggleMode(field: "maintenanceMode" | "draining", value: boolean, confirmMsg: string) {
     if (value) {
       onConfirm({
-        title: `Enable ${field === "maintenanceMode" ? "Maintenance Mode" : "Draining"}?`,
+        title: `Enable ${field === "maintenanceMode" ? "Maintenance mode" : "Draining mode"}?`,
         message: confirmMsg,
         confirmLabel: "Confirm",
         danger: true,
@@ -77,13 +77,19 @@ export function AdminGatewayPage({
   }
 
   const isHealthy = status?.ready && !status?.draining && !status?.maintenanceMode;
+  const gatewayStateLabel = status
+    ? (isHealthy ? "Healthy" : status.maintenanceMode ? "Maintenance" : status.draining ? "Draining" : "Degraded")
+    : "...";
+  const chunkSummary = chunkDiag
+    ? `${chunkDiag.chunkStreamsReassembled} reassembled | ${chunkDiag.chunkIncompleteTimeouts} timeouts`
+    : "";
 
   return (
     <div className="page-body">
       <div className="admin-hero">
         <div className="admin-hero-left">
-          <div className="admin-hero-title"><i className="ti ti-server-cog" />Gateway Control<span className="admin-hero-badge">Admin</span></div>
-          <div className="admin-hero-sub">Live status, tunnel management, and runtime controls</div>
+          <div className="admin-hero-title"><i className="ti ti-server-cog" />Gateway sessions<span className="admin-hero-badge">Operations</span></div>
+          <div className="admin-hero-sub">Runtime status, tunnel visibility, and operational controls</div>
         </div>
         <div className="admin-hero-right">
           <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
@@ -101,12 +107,12 @@ export function AdminGatewayPage({
             {status && (
               <span className="status-live" style={{ color: isHealthy ? "var(--green)" : "var(--red)" }}>
                 <span className={`status-pulse ${isHealthy ? "" : "red"}`} />
-                {isHealthy ? "Healthy" : status.maintenanceMode ? "Maintenance" : status.draining ? "Draining" : "Degraded"}
+                {gatewayStateLabel}
               </span>
             )}
           </div>
           <div className="kpi-val">{status?.activeTunnels ?? "..."}</div>
-          <div className="kpi-label">Active Tunnels</div>
+          <div className="kpi-label">Live tunnels</div>
         </div>
 
         <div className="kpi-card">
@@ -116,32 +122,32 @@ export function AdminGatewayPage({
           <div className="kpi-val" style={{ fontSize: 20, paddingTop: 4 }}>
             {chunkDiag ? `${chunkDiag.chunkFramesReceived}` : "..."}
           </div>
-          <div className="kpi-label">Chunk Frames Received</div>
+          <div className="kpi-label">Chunk frames received</div>
           <div className="kpi-delta neutral">
-            {chunkDiag ? `${chunkDiag.chunkStreamsReassembled} reassembled · ${chunkDiag.chunkIncompleteTimeouts} timeouts` : ""}
+            {chunkSummary}
           </div>
         </div>
       </div>
 
       <div className="section" style={{ marginBottom: 16 }}>
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-settings-2" /> Runtime Controls</div>
+          <div className="section-title"><i className="ti ti-settings-2" /> Runtime controls</div>
         </div>
         <div style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
           <label className="toggle-row">
             <div className="toggle-row-info">
               <div className="toggle-row-title">
                 {status?.maintenanceMode && <span style={{ color: "var(--red)", marginRight: 6, fontSize: 11, fontWeight: 700 }}>ACTIVE</span>}
-                Maintenance Mode
+                Maintenance mode
               </div>
-              <div className="toggle-row-desc">Rejects all new requests with HTTP 503. Use before upgrades.</div>
+              <div className="toggle-row-desc">Reject new inbound traffic with HTTP 503 while you prepare an upgrade or maintenance window.</div>
             </div>
             <label className="toggle-switch">
               <input
                 type="checkbox"
                 checked={status?.maintenanceMode ?? false}
                 disabled={toggling || loading}
-                onChange={(event) => toggleMode("maintenanceMode", event.target.checked, "This will reject all new tunnel connections and return 503 to clients. Existing sessions are preserved.")}
+                onChange={(event) => toggleMode("maintenanceMode", event.target.checked, "This will reject new tunnel connections and return HTTP 503 for new inbound traffic while existing sessions remain connected.")}
               />
               <span className="toggle-track" />
             </label>
@@ -151,16 +157,16 @@ export function AdminGatewayPage({
             <div className="toggle-row-info">
               <div className="toggle-row-title">
                 {status?.draining && <span style={{ color: "var(--yellow)", marginRight: 6, fontSize: 11, fontWeight: 700 }}>ACTIVE</span>}
-                Draining Mode
+                Draining mode
               </div>
-              <div className="toggle-row-desc">Stops accepting new WebSocket clients. Allows graceful node shutdown.</div>
+              <div className="toggle-row-desc">Stop accepting new websocket tunnel clients while allowing existing traffic to finish cleanly.</div>
             </div>
             <label className="toggle-switch">
               <input
                 type="checkbox"
                 checked={status?.draining ?? false}
                 disabled={toggling || loading}
-                onChange={(event) => toggleMode("draining", event.target.checked, "This will stop accepting new WebSocket tunnel connections. Enable before a rolling restart or node removal.")}
+                onChange={(event) => toggleMode("draining", event.target.checked, "This will stop accepting new websocket tunnel connections. Enable it before a rolling restart or node removal.")}
               />
               <span className="toggle-track" />
             </label>
@@ -170,13 +176,13 @@ export function AdminGatewayPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-topology-star-3" /> Tunnel Sessions ({adminTunnels.length})</div>
+          <div className="section-title"><i className="ti ti-topology-star-3" /> Tunnel sessions ({adminTunnels.length})</div>
         </div>
         {adminTunnels.length === 0 ? (
           <div className="empty">
             <i className="ti ti-topology-star-3" />
-            <div className="empty-title">No active tunnels</div>
-            <div className="empty-desc">Tunnels appear here as users connect via the CLI.</div>
+            <div className="empty-title">No tunnel sessions</div>
+            <div className="empty-desc">Sessions appear here when clients connect through the Portivox CLI.</div>
           </div>
         ) : (
           <>

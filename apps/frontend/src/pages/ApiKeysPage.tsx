@@ -24,13 +24,13 @@ export function ApiKeysPage({
   return (
     <div className="page">
       {createdKeyToken && (
-        <div className="ai-insight" style={{ borderColor: "rgba(0,184,148,0.2)", background: "var(--green-bg)", marginBottom: 16 }}>
-          <div className="ai-badge" style={{ background: "var(--green)" }}>
+        <div className="info-banner" style={{ borderColor: "rgba(0,184,148,0.2)", background: "var(--green-bg)", marginBottom: 16 }}>
+          <div className="info-badge" style={{ background: "var(--green)" }}>
             <i className="ti ti-check" />
           </div>
           <div style={{ flex: 1 }}>
-            <div className="ai-insight-label" style={{ color: "var(--green)" }}>Key generated, copy now</div>
-            <div className="ai-insight-text token-callout-row" style={{ marginTop: 4 }}>
+            <div className="info-banner-label" style={{ color: "var(--green)" }}>Key ready - copy it now</div>
+            <div className="info-banner-text token-callout-row" style={{ marginTop: 4 }}>
               <span className="url-pill token-pill" style={{ userSelect: "all", cursor: "text" }}>{createdKeyToken}</span>
               <span style={{ fontSize: 12, color: "var(--text-2)" }}>This token is shown only once.</span>
             </div>
@@ -39,7 +39,7 @@ export function ApiKeysPage({
             <div className="icon-btn" onClick={() => onCopy(createdKeyToken)} title="Copy token">
               <i className="ti ti-copy" />
             </div>
-            <i className="ti ti-x ai-dismiss" onClick={onDismissToken} />
+            <i className="ti ti-x info-dismiss" onClick={onDismissToken} />
           </div>
         </div>
       )}
@@ -51,7 +51,7 @@ export function ApiKeysPage({
             <button className="btn-ghost" onClick={onRefresh} disabled={loading}>
               {loading ? <><i className="ti ti-loader-2 spin" /> Refreshing</> : <><i className="ti ti-refresh" /> Refresh</>}
             </button>
-            <button className="btn-primary" onClick={onNewKey}>
+            <button data-testid="generate-key-button" className="btn-primary" onClick={onNewKey}>
               <i className="ti ti-plus" /> Generate key
             </button>
           </div>
@@ -68,10 +68,9 @@ export function ApiKeysPage({
             <i className="ti ti-key" />
             <div className="empty-title">No API keys yet</div>
             <div className="empty-desc">
-              Generate a key to automate tunnel management, integrate with CI/CD pipelines,
-              or build on top of the Portivox API.
+              Generate a key for automation, CI pipelines, or controlled access to the Portivox API.
             </div>
-            <button className="btn-primary empty-cta-btn" onClick={onNewKey}>
+            <button data-testid="generate-first-key-button" className="btn-primary empty-cta-btn" onClick={onNewKey}>
               <i className="ti ti-plus" /> Generate your first key
             </button>
           </div>
@@ -152,7 +151,7 @@ export function ApiKeysPage({
         </div>
         <div className="form-body">
           <div className="settings-section-copy">
-            Advanced gateway override commands belong here for operators and developers, not for normal customer onboarding.
+            Advanced gateway override commands belong here for operators and developers, not for standard customer onboarding.
           </div>
           <div className="form-field">
             <label className="form-lbl">Custom gateway registration</label>

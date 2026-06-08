@@ -9,15 +9,15 @@ export function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (
     <div className="page">
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-device-laptop" /> CLI installation</div>
+          <div className="section-title"><i className="ti ti-device-laptop" /> Client installation</div>
         </div>
         <div style={{ padding: "18px 22px", display: "grid", gap: 20 }}>
           <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.65 }}>
-            Install the Portivox client on the target machine, register the API key once, then open the local port you want to expose.
+            Install the Portivox client on the target machine, register the API key once, then open the local port that should be exposed through the gateway.
           </p>
           <div>
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
-              Install client
+              Install package
             </p>
             <div className="code-block">
               <code>{installCmd}</code>
@@ -39,7 +39,7 @@ export function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (
           </div>
           <div>
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
-              Open tunnel
+              Start tunnel
             </p>
             <div className="code-block">
               <code>{openCmd}</code>
@@ -51,10 +51,10 @@ export function DevicesPage({ user, onCopy }: { user: UserInfo | null; onCopy: (
           {user && user.email !== "local@anonymous" && (
             <div>
               <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 4 }}>
-                Automation
+                Automation and unattended use
               </p>
               <p style={{ fontSize: 12, color: "var(--text-3)", marginBottom: 8 }}>
-                Generate a dedicated key in <strong>API Keys</strong> when you need CI, scripts, or unattended device setup.
+                Generate a dedicated key in <strong>API Keys</strong> when you need CI pipelines, scripts, or unattended device setup.
               </p>
             </div>
           )}

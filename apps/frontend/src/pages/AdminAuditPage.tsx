@@ -86,12 +86,12 @@ export function AdminAuditPage({
     <div className="page-body">
       <div className="admin-hero">
         <div className="admin-hero-left">
-          <div className="admin-hero-title"><i className="ti ti-clipboard-list" />Audit Log<span className="admin-hero-badge">Admin</span></div>
-          <div className="admin-hero-sub">Full event history with user, resource, and timestamp details</div>
+          <div className="admin-hero-title"><i className="ti ti-clipboard-list" />Audit activity<span className="admin-hero-badge">Operations</span></div>
+          <div className="admin-hero-sub">Review gateway activity across users, resources, and timestamps in one place.</div>
         </div>
         <div className="admin-hero-right">
           <button className="btn-ghost btn-ghost-on-dark" onClick={exportCsv} disabled={items.length === 0}>
-            <i className="ti ti-download" /> Export CSV
+            <i className="ti ti-download" /> Export report
           </button>
         </div>
       </div>
@@ -147,7 +147,7 @@ export function AdminAuditPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-list" /> {items.length} events</div>
+          <div className="section-title"><i className="ti ti-list" /> {items.length} event{items.length !== 1 ? "s" : ""}</div>
           <div className="section-actions">
             <button
               className="btn-ghost"
@@ -166,13 +166,13 @@ export function AdminAuditPage({
         {loading ? (
           <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>
             <i className="ti ti-loader-2 spin" style={{ fontSize: 22, display: "block", marginBottom: 8 }} />
-            Loading...
+            Loading audit activity...
           </div>
         ) : items.length === 0 ? (
           <div className="empty">
             <i className="ti ti-clipboard-off" />
             <div className="empty-title">No events match your filters</div>
-            <div className="empty-desc">Try clearing the filters to see all audit events.</div>
+            <div className="empty-desc">Adjust or clear the filters to review recent gateway activity.</div>
           </div>
         ) : (
           <>

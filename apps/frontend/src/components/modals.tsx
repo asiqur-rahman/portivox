@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 
 export function ConfirmModal({
   title,
@@ -59,12 +59,12 @@ export function InstallPromptModal({
         </div>
         <div className="modal-body">
           <p className="install-modal-copy">
-            Install Portivox for faster access, desktop/mobile app experience, and better offline readiness.
+            Install Portivox for faster access, a more app-like experience, and better offline readiness on desktop or mobile.
           </p>
           {!canInstallDirectly && (
             <div className="install-help">
               <strong>Manual install</strong>
-              <span>Browser menu -&gt; "Install app" / "Add to Home Screen".</span>
+              <span>Use your browser menu and choose “Install app” or “Add to Home Screen”.</span>
             </div>
           )}
         </div>
@@ -104,12 +104,12 @@ export function NewTunnelModal({
         </div>
         <div className="modal-body">
           <p style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 16, lineHeight: 1.6 }}>
-            Reserve a subdomain. Once a client connects using this subdomain, traffic
-            will be routed automatically.
+            Reserve a subdomain for a future client session. Once a matching Portivox client connects, traffic will be routed automatically.
           </p>
           <label className="form-lbl">Subdomain</label>
           <div className="modal-inline-input-row">
             <input
+              data-testid="new-tunnel-subdomain"
               className="form-inp"
               style={{ flex: 1 }}
               placeholder="myapp"
@@ -123,12 +123,12 @@ export function NewTunnelModal({
             </span>
           </div>
           <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 6 }}>
-            3-32 chars, lowercase letters, numbers, and hyphens only
+            Use 3-32 lowercase letters, numbers, or hyphens
           </p>
         </div>
         <div className="modal-foot">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={loading || subdomain.length < 3} onClick={onCreate}>
+          <button data-testid="create-tunnel-submit" className="btn-primary" disabled={loading || subdomain.length < 3} onClick={onCreate}>
             {loading ? <><i className="ti ti-loader-2 spin" /> Creating...</> : <><i className="ti ti-plus" /> Create tunnel</>}
           </button>
         </div>
@@ -187,6 +187,7 @@ export function NewKeyModal({
             <div>
               <label className="form-lbl">Description</label>
               <input
+                data-testid="new-key-description"
                 className="form-inp"
                 style={{ width: "100%" }}
                 placeholder="e.g. ci-cd-deploy, production-server"
@@ -196,7 +197,7 @@ export function NewKeyModal({
                 autoFocus
               />
               <p style={{ fontSize: 11, color: "var(--text-3)", marginTop: 5, lineHeight: 1.5 }}>
-                A short label to identify this key later
+                Use a short label so this key is easy to identify later
               </p>
             </div>
 
@@ -310,7 +311,7 @@ export function NewKeyModal({
         </div>
         <div className="modal-foot">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={loading || !name.trim() || scopes.length === 0} onClick={onCreate}>
+          <button data-testid="generate-key-submit" className="btn-primary" disabled={loading || !name.trim() || scopes.length === 0} onClick={onCreate}>
             {loading ? <><i className="ti ti-loader-2 spin" /> Generating...</> : <><i className="ti ti-check" /> Generate key</>}
           </button>
         </div>
@@ -318,3 +319,4 @@ export function NewKeyModal({
     </div>
   );
 }
+

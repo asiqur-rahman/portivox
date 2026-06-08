@@ -23,7 +23,10 @@ export function AdminOverviewPage({
   const [toggling, setToggling] = useState(false);
 
   const refresh = useCallback((options?: { silent?: boolean }) => {
-    setLoading(true);
+    const shouldShowLoading = !options?.silent || status === null || chunkDiag === null;
+    if (shouldShowLoading) {
+      setLoading(true);
+    }
     Promise.all([api.getReadyz(), api.getChunkDiagnostics(), api.getAudit(10)])
       .then(([gatewayStatus, diagnostics, audit]) => {
         setStatus(gatewayStatus);
@@ -35,8 +38,12 @@ export function AdminOverviewPage({
           showToast(error instanceof Error ? error.message : "Failed to load admin data", "red");
         }
       })
-      .finally(() => setLoading(false));
-  }, [api, showToast, chunkDiag]);
+      .finally(() => {
+        if (shouldShowLoading) {
+          setLoading(false);
+        }
+      });
+  }, [api, showToast, chunkDiag, status]);
 
   useEffect(() => {
     refresh();
@@ -66,6 +73,15 @@ export function AdminOverviewPage({
   }
 
   const isHealthy = status?.ready && !status?.draining && !status?.maintenanceMode;
+  const gatewayStateLabel = loading
+    ? "..."
+    : isHealthy
+      ? "Healthy"
+      : status?.maintenanceMode
+        ? "Maintenance"
+        : status?.draining
+          ? "Draining"
+          : "Unavailable";
 
   return (
     <div className="page-body">
@@ -73,10 +89,10 @@ export function AdminOverviewPage({
         <div className="admin-hero-left">
           <div className="admin-hero-title">
             <i className="ti ti-shield-check" />
-            Administration
-            <span className="admin-hero-badge">Admin Panel</span>
+            Gateway operations
+            <span className="admin-hero-badge">Operations</span>
           </div>
-          <div className="admin-hero-sub">System overview with live operational updates</div>
+          <div className="admin-hero-sub">Operational status, gateway controls, and recent system activity</div>
         </div>
         <div className="admin-hero-right">
           <button className="btn-ghost btn-ghost-on-dark" onClick={() => refresh()} disabled={loading}>
@@ -98,8 +114,8 @@ export function AdminOverviewPage({
             )}
           </div>
           <div className="kpi-val">{loading ? "..." : (status?.activeTunnels ?? 0)}</div>
-          <div className="kpi-label">Active Tunnels</div>
-          <div className="kpi-delta neutral">Connected right now</div>
+          <div className="kpi-label">Live tunnels</div>
+          <div className="kpi-delta neutral">Currently connected sessions</div>
         </div>
 
         <div className="kpi-card">
@@ -107,12 +123,12 @@ export function AdminOverviewPage({
             <div className="kpi-icon green"><i className="ti ti-server" /></div>
           </div>
           <div className="kpi-val" style={{ fontSize: 18, paddingTop: 4 }}>
-            {loading ? "..." : isHealthy ? "Healthy" : status?.maintenanceMode ? "Maintenance" : status?.draining ? "Draining" : "Unknown"}
+            {gatewayStateLabel}
           </div>
-          <div className="kpi-label">Gateway Status</div>
+          <div className="kpi-label">Gateway state</div>
           <div className={`kpi-delta ${isHealthy ? "up" : "down"}`}>
             <i className={`ti ti-${isHealthy ? "circle-check" : "alert-triangle"}`} />
-            {isHealthy ? "All systems operational" : "Action needed"}
+            {isHealthy ? "Ready for traffic" : "Attention required"}
           </div>
         </div>
 
@@ -121,7 +137,7 @@ export function AdminOverviewPage({
             <div className="kpi-icon purple"><i className="ti ti-stack-2" /></div>
           </div>
           <div className="kpi-val">{loading ? "..." : (chunkDiag?.chunkFramesReceived ?? 0)}</div>
-          <div className="kpi-label">Chunk Frames</div>
+          <div className="kpi-label">Chunk frames</div>
           <div className="kpi-delta neutral">
             {chunkDiag ? `${chunkDiag.chunkStreamsReassembled} reassembled` : "Loading..."}
           </div>
@@ -134,25 +150,24 @@ export function AdminOverviewPage({
             </div>
           </div>
           <div className="kpi-val">{loading ? "..." : (chunkDiag?.chunkIncompleteTimeouts ?? 0)}</div>
-          <div className="kpi-label">Incomplete Timeouts</div>
+          <div className="kpi-label">Chunk timeouts</div>
           <div className={`kpi-delta ${(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "down" : "up"}`}>
             <i className={`ti ti-${(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "alert-triangle" : "circle-check"}`} />
-            {(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "Needs attention" : "Within normal range"}
+            {(chunkDiag?.chunkIncompleteTimeouts ?? 0) > 0 ? "Investigate stream health" : "No active timeout issue"}
           </div>
         </div>
       </div>
 
       <div className="section" style={{ marginBottom: 16 }}>
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-adjustments" /> Gateway Controls</div>
+          <div className="section-title"><i className="ti ti-adjustments" /> Gateway controls</div>
         </div>
         <div style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
           <label className="toggle-row">
             <div className="toggle-row-info">
-              <div className="toggle-row-title"><i className="ti ti-tools" style={{ marginRight: 6 }} />Maintenance Mode</div>
+              <div className="toggle-row-title"><i className="ti ti-tools" style={{ marginRight: 6 }} />Maintenance mode</div>
               <div className="toggle-row-desc">
-                Rejects all new tunnel connections and inbound requests with 503.
-                Existing WebSocket sessions are preserved.
+                Reject new tunnel connections and return `503` for new inbound traffic while existing websocket sessions stay connected.
               </div>
             </div>
             <label className="toggle-switch">
@@ -163,10 +178,9 @@ export function AdminOverviewPage({
 
           <label className="toggle-row">
             <div className="toggle-row-info">
-              <div className="toggle-row-title"><i className="ti ti-arrows-left-right" style={{ marginRight: 6 }} />Draining Mode</div>
+              <div className="toggle-row-title"><i className="ti ti-arrows-left-right" style={{ marginRight: 6 }} />Draining mode</div>
               <div className="toggle-row-desc">
-                Stops accepting new WebSocket clients. Allows in-flight requests to complete
-                before a rolling restart or node removal.
+                Stop accepting new websocket tunnel clients while allowing in-flight traffic to complete before restart or node removal.
               </div>
             </div>
             <label className="toggle-switch">
@@ -179,8 +193,8 @@ export function AdminOverviewPage({
 
       <div className="section">
         <div className="section-head">
-          <div className="section-title"><i className="ti ti-activity" /> Recent Activity</div>
-          <div style={{ fontSize: 12, color: "var(--text-3)" }}>Last 10 events</div>
+          <div className="section-title"><i className="ti ti-activity" /> Recent activity</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)" }}>Latest 10 audit events</div>
         </div>
         {loading ? (
           <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)" }}>

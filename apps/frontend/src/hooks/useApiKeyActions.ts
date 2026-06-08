@@ -77,6 +77,9 @@ export function useApiKeyActions({
         setLoading(true);
         api
           .revokeApiKey(id)
+          .then(() => {
+            setApiKeys((previous) => previous.filter((item) => item.id !== id));
+          })
           .then(() => api.listApiKeys())
           .then(setApiKeys)
           .then(() => showToast("API key revoked", "green"))

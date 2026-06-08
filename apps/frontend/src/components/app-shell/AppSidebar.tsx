@@ -36,7 +36,7 @@ export function AppSidebar({
       <div className="nav-body">
         <span className="nav-group-label">Workspace</span>
         {(["tunnels", "devices"] as Page[]).map((page) => (
-          <div key={page} className={`nav-item ${currentPage === page ? "active" : ""}`} onClick={() => onNavigate(page)}>
+          <div key={page} data-testid={`nav-${page.replace(":", "-")}`} className={`nav-item ${currentPage === page ? "active" : ""}`} onClick={() => onNavigate(page)}>
             <i className={`ti ti-${page === "tunnels" ? "topology-star-3" : "device-laptop"}`} />
             {PAGE_TITLES[page]}
             {page === "tunnels" && activeTunnelCount > 0 && <span className="nav-badge">{activeTunnelCount}</span>}
@@ -44,21 +44,21 @@ export function AppSidebar({
         ))}
 
         <span className="nav-group-label">Analytics</span>
-        <div className={`nav-item ${currentPage === "usage" ? "active" : ""}`} onClick={() => onNavigate("usage")}>
+        <div data-testid="nav-usage" className={`nav-item ${currentPage === "usage" ? "active" : ""}`} onClick={() => onNavigate("usage")}>
           <i className="ti ti-chart-bar" /> {PAGE_TITLES.usage}
         </div>
 
         <span className="nav-group-label">Developer</span>
-        <div className={`nav-item ${currentPage === "api" ? "active" : ""}`} onClick={() => onNavigate("api")}>
+        <div data-testid="nav-api" className={`nav-item ${currentPage === "api" ? "active" : ""}`} onClick={() => onNavigate("api")}>
           <i className="ti ti-code" /> {PAGE_TITLES.api}
         </div>
-        <div className={`nav-item ${currentPage === "inspector" ? "active" : ""}`} onClick={() => onNavigate("inspector")}>
+        <div data-testid="nav-inspector" className={`nav-item ${currentPage === "inspector" ? "active" : ""}`} onClick={() => onNavigate("inspector")}>
           <i className="ti ti-eye" /> {PAGE_TITLES.inspector}
         </div>
 
         <span className="nav-group-label">Account</span>
         {(["org", "settings", "billing"] as Page[]).map((page) => (
-          <div key={page} className={`nav-item ${currentPage === page ? "active" : ""}`} onClick={() => onNavigate(page)}>
+          <div key={page} data-testid={`nav-${page.replace(":", "-")}`} className={`nav-item ${currentPage === page ? "active" : ""}`} onClick={() => onNavigate(page)}>
             <i className={`ti ti-${page === "org" ? "building" : page === "settings" ? "settings" : "credit-card"}`} />
             {PAGE_TITLES[page]}
           </div>
@@ -70,17 +70,17 @@ export function AppSidebar({
               <span className="nav-admin-dot" />
               Administration
             </span>
-            <div className={`nav-item ${currentPage === "admin:overview" ? "active" : ""}`} onClick={() => onNavigate("admin:overview")}>
+            <div data-testid="nav-admin-overview" className={`nav-item ${currentPage === "admin:overview" ? "active" : ""}`} onClick={() => onNavigate("admin:overview")}>
               <i className="ti ti-layout-dashboard" /> Overview
               <span className="nav-admin-badge">Admin</span>
             </div>
-            <div className={`nav-item ${currentPage === "admin:audit" ? "active" : ""}`} onClick={() => onNavigate("admin:audit")}>
+            <div data-testid="nav-admin-audit" className={`nav-item ${currentPage === "admin:audit" ? "active" : ""}`} onClick={() => onNavigate("admin:audit")}>
               <i className="ti ti-clipboard-list" /> Audit Log
             </div>
-            <div className={`nav-item ${currentPage === "admin:gateway" ? "active" : ""}`} onClick={() => onNavigate("admin:gateway")}>
+            <div data-testid="nav-admin-gateway" className={`nav-item ${currentPage === "admin:gateway" ? "active" : ""}`} onClick={() => onNavigate("admin:gateway")}>
               <i className="ti ti-server-cog" /> Gateway
             </div>
-            <div className={`nav-item ${currentPage === "admin:tcp" ? "active" : ""}`} onClick={() => onNavigate("admin:tcp")}>
+            <div data-testid="nav-admin-tcp" className={`nav-item ${currentPage === "admin:tcp" ? "active" : ""}`} onClick={() => onNavigate("admin:tcp")}>
               <i className="ti ti-network" /> TCP Ports
             </div>
           </>

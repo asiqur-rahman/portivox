@@ -1,6 +1,6 @@
 import type { Page } from "./types";
 
-export const DEFAULT_GATEWAY = (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "";
+export const DEFAULT_GATEWAY = ((import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? "").trim();
 export const INSTALL_PROMPT_REMIND_MS = 3 * 24 * 60 * 60 * 1000;
 
 export const PAGE_TITLES: Record<Page, string> = {

@@ -111,26 +111,26 @@ export function TunnelsPage({
       </div>
 
       {aiInsightVisible && tunnels.length > 0 && (
-        <div className="ai-insight">
-          <div className="ai-badge"><i className="ti ti-sparkles" /></div>
+        <div className="info-banner">
+          <div className="info-badge"><i className="ti ti-sparkles" /></div>
           <div style={{ flex: 1 }}>
-            <div className="ai-insight-label">Status summary</div>
-            <div className="ai-insight-text">
+            <div className="info-banner-label">Operational summary</div>
+            <div className="info-banner-text">
               {offlineCount > 0
-                ? <>You have <strong>{offlineCount}</strong> tunnel{offlineCount !== 1 ? "s" : ""} whose <strong>client machine is not reachable</strong>. Bring the remote machine back online or restart the Portivox client to reactivate them.</>
+                ? <>You have <strong>{offlineCount}</strong> tunnel{offlineCount !== 1 ? "s" : ""} whose <strong>client machine is not reachable</strong>. Bring the remote machine back online or restart the Portivox client service to reactivate them.</>
                 : activeCount === 0
-                  ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no live connections</strong>. Run <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>portivox open &lt;port&gt; --subdomain &lt;name&gt;</code> to activate one.</>
-                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. They are connected and ready. Use the <strong>Inspect</strong> button to replay and debug HTTP requests in real time.</>}
+                  ? <>You have <strong>{tunnels.length}</strong> reserved subdomain{tunnels.length !== 1 ? "s" : ""} but <strong>no active client connections</strong>. Start the matching Portivox client session to bring one online.</>
+                  : <>You have <strong>{activeCount}</strong> live tunnel{activeCount !== 1 ? "s" : ""}. Use <strong>Inspect</strong> to review HTTP traffic and troubleshoot requests in real time.</>}
             </div>
           </div>
-          <i className="ti ti-x ai-dismiss" onClick={() => setAiInsightVisible(false)} />
+          <i className="ti ti-x info-dismiss" onClick={() => setAiInsightVisible(false)} />
         </div>
       )}
 
       <div className="section">
         <div className="section-head">
           <div className="section-title">
-            <i className="ti ti-topology-star-3" /> Live sessions
+            <i className="ti ti-topology-star-3" /> Tunnel sessions
             <span className="section-live-indicator">
               <span className="section-live-dot" />
               live updates
@@ -140,7 +140,7 @@ export function TunnelsPage({
             <button className="btn-ghost" onClick={onRefresh} disabled={loading}>
               {loading ? <><i className="ti ti-loader-2 spin" /> Refreshing</> : <><i className="ti ti-refresh" /> Refresh</>}
             </button>
-            <button className="btn-primary" onClick={onNewTunnel}>
+            <button data-testid="new-tunnel-button" className="btn-primary" onClick={onNewTunnel}>
               <i className="ti ti-plus" /> New tunnel
             </button>
           </div>
@@ -158,10 +158,11 @@ export function TunnelsPage({
             <i className="ti ti-topology-star-3" />
             <div className="empty-title">No tunnels yet</div>
             <div className="empty-desc">
-              Reserve a subdomain here, then connect from the CLI with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>. Live sessions appear here automatically.
+              Reserve a subdomain here, then start the matching client with <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>portivox open &lt;port&gt;</code>. Connected sessions will appear here automatically.
             </div>
-            <button className="btn-primary empty-cta-btn" onClick={onNewTunnel}>
-              <i className="ti ti-plus" /> New tunnel
+            <button data-testid="new-tunnel-empty-button" className="btn-primary empty-cta-btn" onClick={onNewTunnel}>
+              <span className="btn-icon-wrap"><i className="ti ti-plus" /></span>
+              <span className="btn-label">New tunnel</span>
             </button>
           </div>
         ) : (

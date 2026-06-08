@@ -1,12 +1,14 @@
 export function AppFooter() {
   return (
     <footer className="app-footer">
-      <span>
-        Developed and maintained by Md. Asiqur Rahman Khan ·{" "}
-        <a href="https://github.com/asiqur-rahman" target="_blank" rel="noreferrer">
-          github.com/asiqur-rahman
-        </a>
-      </span>
+      <div className="app-footer-inner">
+        <span>
+          Developed and maintained by{" "}
+          <a href="https://github.com/asiqur-rahman" target="_blank" rel="noreferrer">
+            Md. Asiqur Rahman Khan
+          </a>
+        </span>
+      </div>
     </footer>
   );
 }

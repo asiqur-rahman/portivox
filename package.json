@@ -17,6 +17,10 @@
     "openapi:check-sdk-compat": "node ./scripts/check-sdk-openapi-compat.cjs",
     "prepare": "git config core.hooksPath .githooks || true",
     "test:ci": "npm run build && npm run openapi:export && npm run openapi:check-sdk-compat && npm run test:smoke && npm run test:smoke:tcp && npm run test:chunk && npm run test:audit-replay && npm run test:api-contract && npm run test:rate-limit-contract && npm run test:security-cors-contract && npm run test:payload-validation-contract && npm run test:idempotency-contract && npm run test:audit-query-contract && npm run test:sdk && npm run test:auth",
+    "test:e2e": "playwright test",
+    "test:e2e:list": "playwright test --list",
+    "test:e2e:visual": "playwright test tests/e2e/visual.spec.ts",
+    "test:e2e:update-snapshots": "playwright test tests/e2e/visual.spec.ts --update-snapshots",
     "test:smoke": "node ./scripts/smoke-e2e.cjs",
     "test:smoke:tcp": "node ./scripts/smoke-tcp-e2e.cjs",
     "test:smoke:docker": "node ./scripts/smoke-docker-e2e.cjs",
@@ -54,6 +58,7 @@
     "portivox": "node ./scripts/portivox-cli.cjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@prisma/client": "^6.8.2",
     "jsonwebtoken": "^9.0.2",
     "prisma": "^6.8.2"
