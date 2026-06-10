@@ -394,8 +394,9 @@ function isRunningLaunchd(name: string): boolean {
 
 // ── Platform: Task Scheduler (Windows) ───────────────────────────────────────
 
-function taskName(name: string): string       { return `Portivox_${name}`; }
+function taskName(name: string): string       { return `\\Portivox\\${name}`; }
 function cmdWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.cmd`); }
+function vbsWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.vbs`); }
 
 /**
  * Escape a string for safe embedding inside a double-quoted cmd.exe argument.
@@ -431,6 +432,19 @@ function buildCmdWrapper(entry: ServiceEntry): string {
   ].join("\r\n");
 }
 
+function escapeVbsString(value: string): string {
+  return value.replace(/"/g, '""');
+}
+
+function buildVbsWrapper(entry: ServiceEntry): string {
+  const cmdPath = cmdWrapperPath(entry.name);
+  return [
+    'Set shell = CreateObject("WScript.Shell")',
+    `shell.Run """${escapeVbsString(cmdPath)}""", 0, False`,
+    "",
+  ].join("\r\n");
+}
+
 /**
  * Run schtasks.exe via spawnSync (bypasses cmd.exe entirely).
  * This avoids the quote-escaping minefield when cmd.exe parses a command
@@ -447,19 +461,43 @@ function spawnSchtasksOrFail(schArgs: string[], label: string): void {
   if (!ok) throw new Error(`${label}: ${detail || "unknown error"}`);
 }
 
+function isWindowsAccessDenied(detail: string): boolean {
+  return /access is denied/i.test(detail);
+}
+
 function installWindows(entry: ServiceEntry): void {
   mkdirSync(SERVICES_DIR, { recursive: true, mode: 0o700 });
   const cmdPath = cmdWrapperPath(entry.name);
+  const vbsPath = vbsWrapperPath(entry.name);
   writeFileSync(cmdPath, buildCmdWrapper(entry), { encoding: "utf8" });
+  writeFileSync(vbsPath, buildVbsWrapper(entry), { encoding: "utf8" });
   const tn = taskName(entry.name);
 
   // Pass /TR as a plain string in the argument array — spawnSync sends it
   // directly to schtasks.exe without any shell processing, so paths with
   // spaces reach Task Scheduler verbatim.
-  spawnSchtasksOrFail(
-    ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F"],
-    "schtasks create",
-  );
+  const systemTask = spawnSchtasks([
+    "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F",
+  ]);
+
+  if (!systemTask.ok) {
+    if (!isWindowsAccessDenied(systemTask.detail)) {
+      throw new Error(`schtasks create: ${systemTask.detail || "unknown error"}`);
+    }
+
+    console.warn("Windows denied machine-startup service registration.");
+    console.warn("Installing a current-user startup task instead. It will reconnect after you sign in.");
+    const userTask = spawnSchtasks([
+      "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
+    ]);
+    if (!userTask.ok) {
+      throw new Error(
+        "Could not create the Windows startup task. " +
+        `${userTask.detail || systemTask.detail || "unknown error"}. ` +
+        "If an older elevated Portivox task exists, remove it from an Administrator terminal or choose a different --name.",
+      );
+    }
+  }
 
   // Start immediately — non-fatal (will run at next logon if this fails)
   spawnSchtasks(["/Run", "/TN", tn]);
@@ -470,7 +508,9 @@ function removeWindows(name: string): void {
   spawnSchtasks(["/End",    "/TN", tn]);        // ignore result — may already be stopped
   spawnSchtasks(["/Delete", "/TN", tn, "/F"]);  // ignore result — may already be gone
   const cmdPath = cmdWrapperPath(name);
+  const vbsPath = vbsWrapperPath(name);
   if (existsSync(cmdPath)) rmSync(cmdPath);
+  if (existsSync(vbsPath)) rmSync(vbsPath);
 }
 
 function startWindows(name: string): void {
@@ -527,7 +567,7 @@ function requireEntry(name: string): ServiceEntry {
   const entry = reg[name];
   if (!entry) {
     console.error(
-      `No service named "${name}". Run 'portivox config service list' to see installed services.`,
+      `No service named "${name}". Run 'portivox services' to see installed background tunnels.`,
     );
     process.exit(1);
   }
@@ -548,7 +588,7 @@ function requireEntry(name: string): ServiceEntry {
 
 /**
  * Check and print the status of service infrastructure on this machine.
- * Run by `portivox config service install` as a pre-flight check.
+ * Run by `portivox services install` as a pre-flight check.
  */
 export function installInfrastructure(): void {
   const p = process.platform;
@@ -620,7 +660,7 @@ export function installService(opts: InstallOpts): void {
   if (reg[opts.name]) {
     console.error(
       `Service "${opts.name}" already exists. ` +
-      `Remove it first: portivox config service remove ${opts.name}`,
+      `Remove it first: portivox remove ${opts.name}`,
     );
     process.exit(1);
   }
@@ -659,11 +699,11 @@ export function installService(opts: InstallOpts): void {
   if (opts.gatewayUrl) console.log(`  Gateway      : ${opts.gatewayUrl}`);
   console.log(`  Log file     : ${logFile}`);
   console.log("\nManage it:");
-  console.log(`  portivox config service status  ${opts.name}`);
-  console.log(`  portivox config service logs    ${opts.name}`);
-  console.log(`  portivox config service stop    ${opts.name}`);
-  console.log(`  portivox config service restart ${opts.name}`);
-  console.log(`  portivox config service remove  ${opts.name}`);
+  console.log(`  portivox status  ${opts.name}`);
+  console.log(`  portivox logs    ${opts.name}`);
+  console.log(`  portivox stop    ${opts.name}`);
+  console.log(`  portivox restart ${opts.name}`);
+  console.log(`  portivox remove  ${opts.name}`);
 }
 
 /** Stop + permanently uninstall one service. */
@@ -761,7 +801,7 @@ export function statusService(name?: string): void {
 /** Tail the log file for a service. */
 export function logsService(name: string, lines: number): void {
   if (!name) {
-    console.error("Usage: portivox config service logs <name> [--lines 50]");
+    console.error("Usage: portivox logs <name> [--lines 50]");
     process.exit(1);
   }
   requireEntry(name); // validates existence and name safety

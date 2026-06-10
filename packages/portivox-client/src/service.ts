@@ -32,7 +32,9 @@ import { homedir } from "node:os";
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
-const PORTIVOX_DIR  = join(homedir(), ".portivox");
+const PORTIVOX_DIR  = process.env.PORTIVOX_HOME
+  ? resolvePath(process.env.PORTIVOX_HOME)
+  : join(homedir(), ".portivox");
 const SERVICES_DIR  = join(PORTIVOX_DIR, "services");
 const SERVICES_PATH = join(PORTIVOX_DIR, "services.json");
 const LOGS_DIR      = join(PORTIVOX_DIR, "logs");
@@ -45,10 +47,14 @@ export type ServiceEntry = {
   tunnelType: "http" | "tcp";
   /** undefined = read from ~/.portivox/client.json at runtime */
   gatewayUrl?: string;
+  /** Optional API key captured at install time for unattended startup */
+  apiKey?: string;
   subdomain?: string;
   host: string;
   /** TCP only; false = pass --no-ip-protection; undefined = default (true) */
   ipProtection?: boolean;
+  /** Portivox home to reuse even if the service runs under another account */
+  portivoxHome: string;
   /** Absolute path to the Node.js binary recorded at install time */
   nodeBin: string;
   /** Absolute path to the portivox entry-point JS file */
@@ -64,6 +70,7 @@ export type InstallOpts = {
   port: number;
   tunnelType: "http" | "tcp";
   gatewayUrl?: string;
+  apiKey?: string;
   subdomain?: string;
   host: string;
   ipProtection?: boolean;
@@ -162,6 +169,14 @@ function sdQuote(s: string): string {
   return dollarEscaped;
 }
 
+function buildSystemdEnvironment(entry: ServiceEntry): string[] {
+  const lines = [`Environment=${sdQuote(`PORTIVOX_HOME=${entry.portivoxHome}`)}`];
+  if (entry.apiKey) {
+    lines.push(`Environment=${sdQuote(`TUNNEL_API_KEY=${entry.apiKey}`)}`);
+  }
+  return lines;
+}
+
 function buildSystemdUnit(entry: ServiceEntry): string {
   const openArgs = buildOpenArgs(entry);
   const exec = [entry.nodeBin, ...openArgs].map(sdQuote).join(" ");
@@ -174,6 +189,7 @@ function buildSystemdUnit(entry: ServiceEntry): string {
     "",
     "[Service]",
     "Type=simple",
+    ...buildSystemdEnvironment(entry),
     `ExecStart=${exec}`,
     "Restart=always",
     "RestartSec=5",
@@ -255,6 +271,19 @@ function buildLaunchdPlist(entry: ServiceEntry): string {
   const openArgs  = buildOpenArgs(entry);
   const allArgs   = [entry.nodeBin, ...openArgs];
   const argXml    = allArgs.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n");
+  const envXml = [
+    "  <key>EnvironmentVariables</key>",
+    "  <dict>",
+    "    <key>PORTIVOX_HOME</key>",
+    `    <string>${escapeXml(entry.portivoxHome)}</string>`,
+    ...(entry.apiKey
+      ? [
+          "    <key>TUNNEL_API_KEY</key>",
+          `    <string>${escapeXml(entry.apiKey)}</string>`,
+        ]
+      : []),
+    "  </dict>",
+  ].join("\n");
   const logFile   = join(LOGS_DIR, `${entry.name}.log`);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -266,6 +295,7 @@ function buildLaunchdPlist(entry: ServiceEntry): string {
   <array>
 ${argXml}
   </array>
+${envXml}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -319,8 +349,9 @@ function isRunningLaunchd(name: string): boolean {
 
 // ── Platform: Task Scheduler (Windows) ───────────────────────────────────────
 
-function taskName(name: string): string       { return `Portivox_${name}`; }
+function taskName(name: string): string       { return `\\Portivox\\${name}`; }
 function cmdWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.cmd`); }
+function vbsWrapperPath(name: string): string { return join(SERVICES_DIR, `${name}.vbs`); }
 
 /**
  * Escape a string for safe embedding inside a double-quoted cmd.exe argument.
@@ -346,10 +377,25 @@ function buildCmdWrapper(entry: ServiceEntry): string {
   const quotedLog  = escapeCmdArg(logFile);
   return [
     "@echo off",
+    `set "PORTIVOX_HOME=${entry.portivoxHome.replace(/%/g, "%%")}"`,
+    ...(entry.apiKey ? [`set "TUNNEL_API_KEY=${entry.apiKey.replace(/%/g, "%%")}"`] : []),
     ":restart",
     `${quotedNode} ${quotedArgs.join(" ")} >> ${quotedLog} 2>&1`,
     "timeout /t 5 /nobreak > nul",
     "goto restart",
+    "",
+  ].join("\r\n");
+}
+
+function escapeVbsString(value: string): string {
+  return value.replace(/"/g, '""');
+}
+
+function buildVbsWrapper(entry: ServiceEntry): string {
+  const cmdPath = cmdWrapperPath(entry.name);
+  return [
+    'Set shell = CreateObject("WScript.Shell")',
+    `shell.Run """${escapeVbsString(cmdPath)}""", 0, False`,
     "",
   ].join("\r\n");
 }
@@ -370,19 +416,31 @@ function spawnSchtasksOrFail(schArgs: string[], label: string): void {
   if (!ok) throw new Error(`${label}: ${detail || "unknown error"}`);
 }
 
+function isWindowsAccessDenied(detail: string): boolean {
+  return /access is denied/i.test(detail);
+}
+
 function installWindows(entry: ServiceEntry): void {
   mkdirSync(SERVICES_DIR, { recursive: true, mode: 0o700 });
   const cmdPath = cmdWrapperPath(entry.name);
+  const vbsPath = vbsWrapperPath(entry.name);
   writeFileSync(cmdPath, buildCmdWrapper(entry), { encoding: "utf8" });
+  writeFileSync(vbsPath, buildVbsWrapper(entry), { encoding: "utf8" });
   const tn = taskName(entry.name);
 
   // Pass /TR as a plain string in the argument array — spawnSync sends it
   // directly to schtasks.exe without any shell processing, so paths with
   // spaces reach Task Scheduler verbatim.
-  spawnSchtasksOrFail(
-    ["/Create", "/TN", tn, "/TR", `cmd /c "${cmdPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
-    "schtasks create",
-  );
+  const userTask = spawnSchtasks([
+    "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
+  ]);
+  if (!userTask.ok) {
+    throw new Error(
+      isWindowsAccessDenied(userTask.detail)
+        ? "Could not create the Windows startup task. Windows reported Access is denied. If an older elevated Portivox task exists, remove it from an Administrator terminal or choose a different --name."
+        : `schtasks create: ${userTask.detail || "unknown error"}`,
+    );
+  }
 
   // Start immediately — non-fatal (will run at next logon if this fails)
   spawnSchtasks(["/Run", "/TN", tn]);
@@ -393,7 +451,9 @@ function removeWindows(name: string): void {
   spawnSchtasks(["/End",    "/TN", tn]);        // ignore result — may already be stopped
   spawnSchtasks(["/Delete", "/TN", tn, "/F"]);  // ignore result — may already be gone
   const cmdPath = cmdWrapperPath(name);
+  const vbsPath = vbsWrapperPath(name);
   if (existsSync(cmdPath)) rmSync(cmdPath);
+  if (existsSync(vbsPath)) rmSync(vbsPath);
 }
 
 function startWindows(name: string): void {
@@ -450,7 +510,7 @@ function requireEntry(name: string): ServiceEntry {
   const entry = reg[name];
   if (!entry) {
     console.error(
-      `No service named "${name}". Run 'portivox config service list' to see installed services.`,
+      `No service named "${name}". Run 'portivox services' to see installed background tunnels.`,
     );
     process.exit(1);
   }
@@ -471,7 +531,7 @@ function requireEntry(name: string): ServiceEntry {
 
 /**
  * Check and print the status of service infrastructure on this machine.
- * Run by `portivox config service install` as a pre-flight check.
+ * Run by `portivox services install` as a pre-flight check.
  */
 export function installInfrastructure(): void {
   const p = process.platform;
@@ -542,7 +602,7 @@ export function installService(opts: InstallOpts): void {
   if (reg[opts.name]) {
     console.error(
       `Service "${opts.name}" already exists. ` +
-      `Remove it first: portivox config service remove ${opts.name}`,
+      `Remove it first: portivox remove ${opts.name}`,
     );
     process.exit(1);
   }
@@ -556,9 +616,11 @@ export function installService(opts: InstallOpts): void {
     port:        opts.port,
     tunnelType:  opts.tunnelType,
     gatewayUrl:  opts.gatewayUrl,
+    apiKey:      opts.apiKey,
     subdomain:   opts.subdomain,
     host:        opts.host,
     ipProtection: opts.ipProtection,
+    portivoxHome: PORTIVOX_DIR,
     nodeBin,
     scriptPath,
     installedAt: new Date().toISOString(),
@@ -579,11 +641,11 @@ export function installService(opts: InstallOpts): void {
   if (opts.gatewayUrl) console.log(`  Gateway      : ${opts.gatewayUrl}`);
   console.log(`  Log file     : ${logFile}`);
   console.log("\nManage it:");
-  console.log(`  portivox config service status  ${opts.name}`);
-  console.log(`  portivox config service logs    ${opts.name}`);
-  console.log(`  portivox config service stop    ${opts.name}`);
-  console.log(`  portivox config service restart ${opts.name}`);
-  console.log(`  portivox config service remove  ${opts.name}`);
+  console.log(`  portivox status  ${opts.name}`);
+  console.log(`  portivox logs    ${opts.name}`);
+  console.log(`  portivox stop    ${opts.name}`);
+  console.log(`  portivox restart ${opts.name}`);
+  console.log(`  portivox remove  ${opts.name}`);
 }
 
 /** Stop + permanently uninstall one service. */
@@ -681,7 +743,7 @@ export function statusService(name?: string): void {
 /** Tail the log file for a service. */
 export function logsService(name: string, lines: number): void {
   if (!name) {
-    console.error("Usage: portivox config service logs <name> [--lines 50]");
+    console.error("Usage: portivox logs <name> [--lines 50]");
     process.exit(1);
   }
   requireEntry(name); // validates existence and name safety

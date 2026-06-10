@@ -47,6 +47,12 @@ function normalizeCliArgs(argv: string[]): string[] {
     "tunnels",
     "services",
     "service",
+    "logs",
+    "start",
+    "stop",
+    "restart",
+    "remove",
+    "uninstall",
     "setup",
     "init",
     "http",
@@ -70,8 +76,14 @@ function normalizeCliArgs(argv: string[]): string[] {
   if (firstLower === "me") return ["whoami", ...rest];
   if (firstLower === "diag") return ["doctor", ...rest];
   if (firstLower === "setup" || firstLower === "init") return ["config", ...rest];
-  if (firstLower === "services" || firstLower === "service") return ["config", "service", ...rest];
-  if (firstLower === "status" || firstLower === "tunnels") return ["list", ...rest];
+  if (firstLower === "services" || firstLower === "service") {
+    return ["config", "service", ...(rest.length > 0 ? rest : ["list"])];
+  }
+  if (["logs", "start", "stop", "restart", "remove", "uninstall"].includes(firstLower)) {
+    return ["config", "service", firstLower === "uninstall" ? "remove" : firstLower, ...rest];
+  }
+  if (firstLower === "status") return rest.length > 0 ? ["config", "service", "status", ...rest] : ["list", ...rest];
+  if (firstLower === "tunnels") return ["list", ...rest];
   if (firstLower === "http" || firstLower === "expose" || firstLower === "share") return ["open", ...rest];
   if (firstLower === "tcp") return rest.includes("--tcp") ? ["open", ...rest] : ["open", ...rest, "--tcp"];
   return normalized;
@@ -267,6 +279,24 @@ function formatGatewayConnectionError(gatewayUrl: string, error: Error): Error {
   }
 
   return error;
+}
+
+function isLoopbackGatewayUrl(gatewayUrl: string): boolean {
+  try {
+    const parsed = new URL(gatewayUrl);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function isGatewayUnreachableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("gateway unreachable") || message.includes("timed out while verifying the api key");
 }
 
 function describeLocalTarget(tunnelType: "http" | "tcp", localBase: string, localTcpHost?: string, localTcpPort?: number): { host: string; port: number } {
@@ -469,8 +499,13 @@ function printUsage(): void {
       "  list                         Show active tunnels",
       "  status                       Friendly alias for list",
       "  tunnels                      Friendly alias for list",
-      "  services list                Show installed background services",
-      "  services logs <name>         Tail service logs",
+      "  services                     Show installed background services",
+      "  status <name>                Show one background tunnel",
+      "  logs <name>                  Tail background tunnel logs",
+      "  stop <name>                  Stop a background tunnel",
+      "  start <name>                 Start a background tunnel",
+      "  restart <name>               Restart a background tunnel",
+      "  remove <name>                Remove a background tunnel",
       "  setup                        Open the setup wizard",
       "",
       "Advanced setup:",
@@ -479,15 +514,11 @@ function printUsage(): void {
       "  config <key> <value>          Set a single config field",
       "  config --reset                Delete saved configuration",
       "",
-      "  config service install        Set up OS service infrastructure (run once)",
-      "  config service uninstall      Remove ALL persistent services",
-      "  config service list           List installed persistent services + status",
-      "  config service status [name]  Detailed status for one or all services",
-      "  config service stop    <name> Stop a running service",
-      "  config service start   <name> Start a stopped service",
-      "  config service restart <name> Restart a service",
-      "  config service remove  <name> Stop + permanently uninstall a service",
-      "  config service logs    <name> [--lines 50]  Tail the service log",
+      "  services install              Prepare background service support",
+      "  services uninstall            Remove ALL background tunnels",
+      "  services list                 Same as services",
+      "  services status [name]        Detailed status",
+      "  services logs <name>          Same as logs <name>",
       "",
       "Tunnel options:",
       "  open [port] [--subdomain name] [--host 127.0.0.1]",
@@ -500,7 +531,7 @@ function printUsage(): void {
       "       --consistent   Friendly alias for --persistent.",
       "       --always-on    Friendly alias for --persistent.",
       "       --background   Friendly alias for --persistent.",
-      "                      Returns immediately.  Use 'config service *' to manage it.",
+      "                      Returns immediately. Manage with 'status', 'logs', 'stop', 'restart'.",
       "                      Without --persistent: runs in the foreground (default behaviour).",
       "",
       "Developer option:",
@@ -521,7 +552,6 @@ function printUsage(): void {
       "  portivox config",
       "  portivox config --show",
       "  portivox config apiKey tk_abc123",
-      "  portivox config service install",
       "  portivox open 3000",
       "  portivox 3000",
       "  portivox open 3000 --persistent",
@@ -529,8 +559,10 @@ function printUsage(): void {
       "  portivox 3000 --always-on",
       "  portivox open 3000 --persistent --name myapp",
       "  portivox open 22 --tcp --persistent",
-      "  portivox services list",
-      "  portivox services logs myapp",
+      "  portivox services",
+      "  portivox status myapp",
+      "  portivox logs myapp",
+      "  portivox restart myapp",
       "  portivox list",
     ].join("\n"),
   );
