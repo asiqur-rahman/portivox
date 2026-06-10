@@ -56,6 +56,12 @@ function normalizeCliArgs(argv: string[]): string[] {
     "help",
     "--help",
     "-h",
+    "--version",
+    "-v",
+    "version",
+    "--version",
+    "-v",
+    "version",
   ]);
   if (/^\d+$/.test(first) && !knownCommands.has(first)) {
     return ["open", ...normalized];
@@ -78,6 +84,7 @@ const PORTIVOX_DIR = process.env.PORTIVOX_HOME
   : join(homedir(), ".portivox");
 const CONFIG_PATH = join(PORTIVOX_DIR, "client.json");
 const SESSIONS_PATH = join(PORTIVOX_DIR, "sessions.json");
+const PACKAGE_VERSION = readPackageVersion();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -109,6 +116,16 @@ type TunnelRegistrationFailure = {
   message: string;
   code?: string;
 };
+
+function readPackageVersion(): string {
+  try {
+    const raw = readFileSync(join(__dirname, "..", "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version?.trim() || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 // ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -897,6 +914,11 @@ function startClient({
 
 async function run(): Promise<void> {
   const command = args[0];
+
+  if (command === "--version" || command === "-v" || command === "version") {
+    console.log(PACKAGE_VERSION);
+    return;
+  }
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printUsage();
