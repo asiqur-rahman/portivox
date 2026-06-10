@@ -6,6 +6,7 @@ export default defineConfig({
   expect: {
     timeout: 10_000,
   },
+  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{ext}",
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

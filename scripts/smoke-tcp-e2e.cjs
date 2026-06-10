@@ -1,3 +1,5 @@
+process.env.DATABASE_URL = "";
+
 const net = require("node:net");
 
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");

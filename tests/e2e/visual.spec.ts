@@ -19,9 +19,10 @@ test.describe("visual baselines", () => {
     await prepareVisualUi(page);
     await seedSession(page, { role: "owner", name: "Asiqur Rahman", initials: "AR" });
     await gotoApp(page);
+    await expect(page.locator(".tbl").getByText("alpha-demo", { exact: true }).first()).toBeVisible();
     await disableMotion(page);
 
-    await expect(page.locator("#screen-app .content")).toHaveScreenshot("customer-dashboard.png", {
+    await expect(page.locator("#screen-app .content-inner")).toHaveScreenshot("customer-dashboard.png", {
       animations: "disabled",
       caret: "hide",
     });
@@ -33,9 +34,10 @@ test.describe("visual baselines", () => {
     await seedSession(page, { role: "admin", name: "Admin Operator", initials: "AO" });
     await gotoApp(page);
     await page.getByTestId("nav-admin-overview").click();
+    await expect(page.locator(".tbl").getByText("tunnel created", { exact: true }).first()).toBeVisible();
     await disableMotion(page);
 
-    await expect(page.locator("#screen-app .content")).toHaveScreenshot("admin-overview.png", {
+    await expect(page.locator("#screen-app .content-inner")).toHaveScreenshot("admin-overview.png", {
       animations: "disabled",
       caret: "hide",
     });
@@ -47,9 +49,10 @@ test.describe("visual baselines", () => {
     await seedSession(page, { role: "admin", name: "Inspector QA", initials: "IQ" });
     await gotoApp(page);
     await page.getByTestId("nav-inspector").click();
+    await expect(page.getByText("/api/health", { exact: true })).toBeVisible();
     await disableMotion(page);
 
-    await expect(page.locator("#screen-app .content")).toHaveScreenshot("inspector-desktop.png", {
+    await expect(page.locator("#screen-app .content-inner")).toHaveScreenshot("inspector-desktop.png", {
       animations: "disabled",
       caret: "hide",
     });
@@ -61,9 +64,10 @@ test.describe("visual baselines", () => {
     await prepareVisualUi(page);
     await seedSession(page, { role: "owner", name: "Asiqur Rahman", initials: "AR" });
     await gotoApp(page);
+    await expect(page.locator(".mobile-card-list").getByText("alpha-demo", { exact: true }).first()).toBeVisible();
     await disableMotion(page);
 
-    await expect(page.locator("#screen-app .content")).toHaveScreenshot("customer-dashboard-mobile.png", {
+    await expect(page.locator("#screen-app .content-inner")).toHaveScreenshot("customer-dashboard-mobile.png", {
       animations: "disabled",
       caret: "hide",
     });

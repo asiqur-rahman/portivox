@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GatewayApi, type AuditItem, type GatewayStatus } from "../api";
 import { actionBadge, timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
@@ -21,9 +21,10 @@ export function AdminOverviewPage({
   const [recentAudit, setRecentAudit] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
+  const hasLoadedRef = useRef(false);
 
   const refresh = useCallback((options?: { silent?: boolean }) => {
-    const shouldShowLoading = !options?.silent || status === null || chunkDiag === null;
+    const shouldShowLoading = !options?.silent || !hasLoadedRef.current;
     if (shouldShowLoading) {
       setLoading(true);
     }
@@ -39,11 +40,12 @@ export function AdminOverviewPage({
         }
       })
       .finally(() => {
+        hasLoadedRef.current = true;
         if (shouldShowLoading) {
           setLoading(false);
         }
       });
-  }, [api, showToast, chunkDiag, status]);
+  }, [api, showToast]);
 
   useEffect(() => {
     refresh();

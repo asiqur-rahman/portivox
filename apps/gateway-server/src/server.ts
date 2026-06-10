@@ -1071,7 +1071,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       (typeof bearerHeader === "string" && bearerHeader.trim().length > 0);
 
     const principal = await resolvePrincipal(headers as Record<string, unknown>);
-    if (!hasPresentedCredential || !principal || principal.authType === "anonymous") {
+    if (!principal || (!hasPresentedCredential && config.authRequired) || (principal.authType === "anonymous" && config.authRequired)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
       return {

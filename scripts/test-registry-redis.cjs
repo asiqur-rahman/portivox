@@ -1,3 +1,5 @@
+process.env.DATABASE_URL = "";
+
 const { randomUUID } = require("node:crypto");
 const WebSocket = require("ws");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");

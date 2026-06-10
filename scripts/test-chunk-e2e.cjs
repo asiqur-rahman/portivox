@@ -1,3 +1,5 @@
+process.env.DATABASE_URL = "";
+
 const http = require("node:http");
 const WebSocket = require("ws");
 
