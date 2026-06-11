@@ -9,6 +9,8 @@ import { decodeWireMessage, encodeWireMessage, type WireMessage } from "./protoc
 export type RegisteredInfo = {
   subdomain?: string;
   tunnelType?: "http" | "tcp";
+  publicPort?: number;
+  publicHost?: string;
   publicTcpPort?: number;
   publicTcpHost?: string;
   accessLink?: string;
@@ -171,8 +173,9 @@ export class TunnelClient {
             );
           }
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
-          // Derive the full public tunnel URL from the redirect URL's origin.
-          if (msg.redirectUrl) {
+          if (msg.tunnelType === "http" && msg.publicHost && msg.publicPort) {
+            this.logger.info(`Public tunnel URL: http://${msg.publicHost}:${msg.publicPort}`);
+          } else if (msg.redirectUrl) {
             try {
               const u = new URL(msg.redirectUrl);
               this.logger.info(`Public tunnel URL: ${u.protocol}//${msg.subdomain}.${u.hostname}`);
@@ -198,6 +201,8 @@ export class TunnelClient {
         this.config.onRegistered?.({
           subdomain: msg.subdomain,
           tunnelType: msg.tunnelType,
+          publicPort: msg.publicPort,
+          publicHost: msg.publicHost,
           publicTcpPort: msg.publicTcpPort,
           publicTcpHost: msg.publicTcpHost,
           accessLink: msg.accessLink,

@@ -156,6 +156,8 @@
                       connected: { type: "boolean" },
                       tunnelType: { type: "string", enum: ["http", "tcp"] },
                       subdomain: { type: "string", nullable: true },
+                      publicHost: { type: "string", nullable: true },
+                      publicPort: { type: "integer", nullable: true },
                       publicTcpPort: { type: "integer", nullable: true },
                       publicTcpHost: { type: "string", nullable: true },
                       accessLink: { type: "string", nullable: true },

@@ -169,7 +169,7 @@ export function TunnelsPage({
           <>
             <div className="mobile-card-list">
               {tunnels.map((tunnel) => {
-                const url = getTunnelUrl(tunnel.subdomain);
+                const url = getTunnelUrl(tunnel);
                 const statusClass = tunnelStatusClass(tunnel);
                 return (
                   <article key={tunnel.id} className="mobile-list-card">
@@ -230,7 +230,7 @@ export function TunnelsPage({
               </thead>
               <tbody>
                 {tunnels.map((tunnel) => {
-                  const url = getTunnelUrl(tunnel.subdomain);
+                  const url = getTunnelUrl(tunnel);
                   const statusClass = tunnelStatusClass(tunnel);
                   return (
                     <tr key={tunnel.id}>

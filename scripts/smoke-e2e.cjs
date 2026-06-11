@@ -62,6 +62,27 @@ function requestTunnel(gatewayHttpPort, subdomain, rootDomain) {
   });
 }
 
+function requestPublicPort(publicPort) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port: publicPort,
+        path: "/",
+        method: "GET",
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on("end", () => resolve({ statusCode: res.statusCode || 0, body: Buffer.concat(chunks).toString("utf8") }));
+      },
+    );
+
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function main() {
   let localServer;
   let gateway;
@@ -79,15 +100,18 @@ async function main() {
       tunnelResponseTimeoutMs: 20000,
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
+      tcpPublicHost: "127.0.0.1",
+      tcpPublicPortStart: await getFreePort(),
     };
+    gatewayConfig.tcpPublicPortEnd = gatewayConfig.tcpPublicPortStart + 5;
 
     localServer = await startLocalApp(localAppPort);
 
     gateway = createGatewayServer(gatewayConfig);
     await gateway.start();
 
-    // Wait for the gateway to confirm registration and return the actual subdomain.
-    const registeredSubdomain = await new Promise((resolve, reject) => {
+    // Wait for the gateway to confirm registration and return the assigned public HTTP port.
+    const registeredInfo = await new Promise((resolve, reject) => {
       const timeout = setTimeout(
         () => reject(new Error("Tunnel registration timed out after 10s")),
         10000,
@@ -96,18 +120,21 @@ async function main() {
       client = new TunnelClient({
         gatewayUrl: `ws://127.0.0.1:${gatewayWsPort}/connect`,
         localBase: `http://127.0.0.1:${localAppPort}`,
-        requestedSubdomain: "smokehttp",
         localTimeoutMs: 15000,
         maxResponseBodyBytes: 2097152,
         onRegistered: (info) => {
           clearTimeout(timeout);
-          resolve(info.subdomain);
+          resolve(info);
         },
       });
       client.start();
     });
 
-    const result = await requestTunnel(gatewayHttpPort, registeredSubdomain, gatewayConfig.rootDomain);
+    if (!registeredInfo.publicPort) {
+      throw new Error(`Smoke failed: expected public HTTP port, got ${JSON.stringify(registeredInfo)}`);
+    }
+
+    const result = await requestPublicPort(registeredInfo.publicPort);
     if (result.statusCode !== 200 || result.body !== "smoke-ok") {
       throw new Error(`Smoke failed: status=${result.statusCode} body=${result.body}`);
     }

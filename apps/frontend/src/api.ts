@@ -4,6 +4,8 @@ export type TunnelRecord = {
   id: string;
   userId?: string | null;
   subdomain: string;
+  publicHost?: string | null;
+  publicPort?: number | null;
   createdAt: string;
   /** True when a live WebSocket client is currently connected for this subdomain. */
   active: boolean;

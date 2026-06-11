@@ -42,6 +42,7 @@ export type GatewayConfig = {
   tcpPublicHost: string;
   tcpPublicPortStart: number;
   tcpPublicPortEnd: number;
+  httpPublicPortMode: boolean;
   ipProtectionDefault: boolean;
   tcpConnectionRateLimit: number;
   gatewayPublicBaseUrl: string;

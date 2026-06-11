@@ -124,6 +124,7 @@ function loadGatewayConfig() {
     tcpPublicHost: parseString("TCP_PUBLIC_HOST", ""),
     tcpPublicPortStart: parseInteger("TCP_PUBLIC_PORT_START", 19000),
     tcpPublicPortEnd: parseInteger("TCP_PUBLIC_PORT_END", 19999),
+    httpPublicPortMode: parseBoolean("HTTP_PUBLIC_PORT_MODE", true),
     // IP link protection — TCP ports are dark by default until IP is whitelisted
     ipProtectionDefault: parseBoolean("IP_PROTECTION_DEFAULT", true),
     // Per-IP new-connection rate limit for TCP tunnels (per minute). Defends
@@ -161,4 +162,3 @@ module.exports = {
   loadGatewayConfig,
   loadClientConfig,
 };
-

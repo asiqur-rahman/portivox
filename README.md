@@ -190,7 +190,9 @@ Optional:
   npm run portivox:open -- 3000 --gateway wss://portivox.braintechsolution.com/connect
   ```
 
-When connected, the client prints the assigned subdomain/session details.
+When connected, the client prints the assigned public URL. By default HTTP tunnels use a public port, for example `http://portivox.braintechsolution.com:19000`.
+
+Custom subdomains are a premium/admin-enabled feature. Grant the API key `tunnel:subdomain`, then run `--subdomain myapp`.
 
 ### TCP tunnel (SSH/RDP/DB)
 Expose local port `22` as a raw TCP tunnel:
@@ -212,7 +214,13 @@ Use that host/port from remote machine to connect over SSH/RDP/TCP client.
 
 ## 5) Access Your Exposed App
 
-If your root domain is `portivox.braintechsolution.com` and assigned subdomain is `demo`, access:
+Default HTTP tunnel access uses the gateway domain plus the assigned public port:
+
+```text
+http://portivox.braintechsolution.com:19000
+```
+
+Premium subdomain access, when enabled for the user/API key, uses:
 
 ```text
 http://demo.portivox.braintechsolution.com

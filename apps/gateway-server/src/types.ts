@@ -47,6 +47,8 @@ export type Registered = {
    *  that are reachable via domain:publicPort rather than a subdomain. */
   subdomain?: string;
   tunnelType?: "http" | "tcp";
+  publicHost?: string;
+  publicPort?: number;
   publicTcpHost?: string;
   publicTcpPort?: number;
   /** Click-to-whitelist URL (TCP tunnels with IP protection enabled). Visiting

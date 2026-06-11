@@ -28,6 +28,12 @@ portivox register <apiKey>
 portivox 3000
 ```
 
+The gateway prints a public URL like:
+
+```text
+http://portivox.braintechsolution.com:19000
+```
+
 ### 3. Expose SSH or another TCP service
 
 ```bash
@@ -65,7 +71,7 @@ portivox services logs <name>
 
 ## Examples
 
-Reserve a named HTTP subdomain:
+Premium/admin-enabled named HTTP subdomain:
 
 ```bash
 portivox open 3000 --subdomain myapp
@@ -91,4 +97,3 @@ Most users do not need gateway overrides. If you are connecting to a custom Port
 ```bash
 portivox config
 ```
-

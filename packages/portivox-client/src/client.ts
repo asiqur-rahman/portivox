@@ -110,8 +110,9 @@ export class TunnelClient {
         this.registered = true;
         if (msg.subdomain) {
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
-          // Derive the full public tunnel URL from the redirect URL's origin.
-          if (msg.redirectUrl) {
+          if (msg.tunnelType === "http" && msg.publicHost && msg.publicPort) {
+            this.logger.info(`Public tunnel URL: http://${msg.publicHost}:${msg.publicPort}`);
+          } else if (msg.redirectUrl) {
             try {
               const u = new URL(msg.redirectUrl);
               this.logger.info(`Public tunnel URL: ${u.protocol}//${msg.subdomain}.${u.hostname}`);

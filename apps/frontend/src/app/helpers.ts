@@ -45,9 +45,13 @@ export function deriveName(email: string): string {
     .trim();
 }
 
-export function getTunnelUrl(subdomain: string): string {
+export function getTunnelUrl(tunnel: string | { subdomain: string; publicHost?: string | null; publicPort?: number | null }): string {
   const proto = window.location.protocol;
   const host = window.location.hostname;
+  if (typeof tunnel !== "string" && tunnel.publicHost && tunnel.publicPort) {
+    return `${proto}//${tunnel.publicHost}:${tunnel.publicPort}`;
+  }
+  const subdomain = typeof tunnel === "string" ? tunnel : tunnel.subdomain;
   return `${proto}//${subdomain}.${host}`;
 }
 

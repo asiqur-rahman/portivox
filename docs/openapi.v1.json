@@ -290,6 +290,14 @@
                       "type": "string",
                       "nullable": true
                     },
+                    "publicHost": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "publicPort": {
+                      "type": "integer",
+                      "nullable": true
+                    },
                     "publicTcpPort": {
                       "type": "integer",
                       "nullable": true

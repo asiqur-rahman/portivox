@@ -62,6 +62,7 @@ export type GatewayRuntimeConfig = {
   tcpPublicHost?: string;
   tcpPublicPortStart?: number;
   tcpPublicPortEnd?: number;
+  httpPublicPortMode?: boolean;
   /** Default IP protection mode for TCP tunnels (default: true). */
   ipProtectionDefault?: boolean;
   /** Max new TCP connections per IP per minute before the connection is dropped (default: 10). */
@@ -128,6 +129,8 @@ type RedirectEntry = {
   userId?: string;
   tunnelType: "http" | "tcp";
   subdomain?: string;
+  publicHost?: string;
+  publicPort?: number;
   publicTcpPort?: number;
   publicTcpHost?: string;
   accessLink?: string;
@@ -1483,6 +1486,67 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return host || config.rootDomain;
   }
 
+  async function bindHttpPortTunnel(key: string): Promise<{ publicPort: number; publicHost: string }> {
+    if (tcpBindingsBySubdomain.has(key)) {
+      const existing = tcpBindingsBySubdomain.get(key)!;
+      return { publicPort: existing.publicPort, publicHost: resolveTcpPublicHost() };
+    }
+
+    const port = allocateTcpPort();
+    if (port === null) {
+      throw new Error("HTTP_PORT_EXHAUSTED");
+    }
+    if (usedTcpPorts.has(port) || reservedTcpPorts.has(port)) {
+      throw new Error("HTTP_PORT_BUSY");
+    }
+    reservedTcpPorts.add(port);
+
+    const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+      try {
+        const payload = await readRequestBody(req, config.maxRequestBodyBytes);
+        const injected = await app.inject({
+          method: (req.method ?? "GET") as "GET",
+          url: req.url ?? "/",
+          headers: {
+            ...req.headers,
+            host: `${key}.${config.rootDomain}`,
+            "x-forwarded-host": `${resolveTcpPublicHost()}:${port}`,
+            "x-forwarded-proto": "http",
+          },
+          payload,
+        });
+        res.statusCode = injected.statusCode;
+        for (const [header, value] of Object.entries(injected.headers)) {
+          if (typeof value !== "undefined" && !BLOCKED_RESPONSE_HEADERS.has(header.toLowerCase())) {
+            res.setHeader(header, value as string | string[] | number);
+          }
+        }
+        res.end(injected.payload);
+      } catch {
+        res.statusCode = 502;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ error: { code: "HTTP_PORT_TUNNEL_FAILED", message: "Failed to proxy public port tunnel" } }));
+      }
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error): void => {
+        reservedTcpPorts.delete(port);
+        reject(error);
+      };
+      server.once("error", onError);
+      server.listen(port, config.tcpTunnelBindHost ?? "0.0.0.0", () => {
+        server.off("error", onError);
+        reservedTcpPorts.delete(port);
+        resolve();
+      });
+    });
+
+    tcpBindingsBySubdomain.set(key, { server: server as unknown as net.Server, publicPort: port });
+    usedTcpPorts.add(port);
+    return { publicPort: port, publicHost: resolveTcpPublicHost() };
+  }
+
   async function bindTcpTunnel(
     key: string,
     socket: WebSocket,
@@ -1778,6 +1842,21 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         if (msg.type === "register_tunnel") {
           const requestMessage = msg as RegisterTunnel;
           const isTcp = requestMessage.tunnelType === "tcp";
+          const requestedPremiumSubdomain = !!requestMessage.requestedSubdomain;
+
+          if (
+            !isTcp &&
+            requestedPremiumSubdomain &&
+            config.authRequired !== false &&
+            !isAdminRole(principal.role) &&
+            !hasScope(principal.scopes, "tunnel:subdomain")
+          ) {
+            socket.send(createGatewayError(
+              "Subdomain tunnels are a premium feature. Ask an admin to enable tunnel:subdomain for your API key.",
+              "SUBDOMAIN_NOT_ALLOWED",
+            ));
+            return;
+          }
 
           // Check whether admin has configured a fixed public port for this local port.
           let fixedMapping: TcpPortMappingRecord | null = null;
@@ -1989,7 +2068,22 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 registered = false;
               }
             } else {
-              // HTTP tunnel — redirect URL only, no IP protection
+              let publicBinding: { publicPort: number; publicHost: string } | null = null;
+              if (!requestMessage.requestedSubdomain && (config.httpPublicPortMode ?? true)) {
+                try {
+                  publicBinding = await bindHttpPortTunnel(subdomain);
+                } catch (error) {
+                  const code = error instanceof Error ? error.message : "";
+                  socket.send(createGatewayError(
+                    code === "HTTP_PORT_EXHAUSTED" ? "No public HTTP ports are currently available" : "Failed to allocate public HTTP port",
+                    code === "HTTP_PORT_EXHAUSTED" ? "HTTP_PORT_EXHAUSTED" : "HTTP_PORT_ALLOCATE_FAILED",
+                  ));
+                  registry.removeBySocket(socket);
+                  metrics.setGauge("gateway_active_tunnels", registry.count());
+                  registered = false;
+                  return;
+                }
+              }
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: subdomain,
                 userId: principal.userId,
@@ -1999,12 +2093,22 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 lastSeenAt: Date.now(),
               };
               rEntry.subdomain = subdomain;
+              rEntry.publicHost = publicBinding?.publicHost;
+              rEntry.publicPort = publicBinding?.publicPort;
               rEntry.connected = true;
               rEntry.lastSeenAt = Date.now();
               redirectByToken.set(redirectToken, rEntry);
               redirectTokenByTunnelKey.set(subdomain, redirectToken);
 
-              socket.send(encodeWireMessage({ type: "registered", subdomain, tunnelType: "http", redirectToken, redirectUrl }));
+              socket.send(encodeWireMessage({
+                type: "registered",
+                subdomain,
+                tunnelType: "http",
+                publicHost: publicBinding?.publicHost,
+                publicPort: publicBinding?.publicPort,
+                redirectToken,
+                redirectUrl,
+              }));
             }
           } catch {
             socket.send(createGatewayError("Failed to allocate tunnel subdomain", "SUBDOMAIN_ALLOCATE_FAILED"));
@@ -2507,6 +2611,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       lastSeenAt: string | null;
       disconnectedAt: string | null;
       redirectUrl: string | null;
+      publicHost: string | null;
+      publicPort: number | null;
     } => {
       const liveSession = registry.findBySubdomain(subdomain);
       const redirectToken = redirectTokenByTunnelKey.get(subdomain);
@@ -2523,6 +2629,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt,
           disconnectedAt: null,
           redirectUrl,
+          publicHost: redirectEntry?.publicHost ?? null,
+          publicPort: redirectEntry?.publicPort ?? null,
         };
       }
 
@@ -2534,6 +2642,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt,
           disconnectedAt,
           redirectUrl,
+          publicHost: redirectEntry.publicHost ?? null,
+          publicPort: redirectEntry.publicPort ?? null,
         };
       }
 
@@ -2544,6 +2654,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         lastSeenAt,
         disconnectedAt: null,
         redirectUrl,
+        publicHost: redirectEntry?.publicHost ?? null,
+        publicPort: redirectEntry?.publicPort ?? null,
       };
     };
     // Enrich each record with a live `active` flag so the UI can distinguish
@@ -2559,6 +2671,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         lastSeenAt: state.lastSeenAt,
         disconnectedAt: state.disconnectedAt,
         redirectUrl: state.redirectUrl,
+        publicHost: state.publicHost,
+        publicPort: state.publicPort,
       };
     });
 
@@ -2570,6 +2684,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain))
       .map((s) => {
         const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
+        const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
         const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
         return {
           id: `cli_${s.subdomain}`,
@@ -2583,6 +2698,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt: new Date(s.lastHeartbeatAt).toISOString(),
           disconnectedAt: null,
           redirectUrl,
+          publicHost: redirectEntry?.publicHost ?? null,
+          publicPort: redirectEntry?.publicPort ?? null,
         };
       });
 
@@ -2611,6 +2728,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt: toIso(entry.lastSeenAt),
           disconnectedAt: toIso(entry.disconnectedAt),
           redirectUrl: buildPublicUrl(`/r/${token}`),
+          publicHost: entry.publicHost ?? null,
+          publicPort: entry.publicPort ?? null,
         }];
       });
 
@@ -2657,6 +2776,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       lastSeenAt: string | null;
       disconnectedAt: string | null;
       redirectUrl: string | null;
+      publicHost: string | null;
+      publicPort: number | null;
     } => {
       const liveSession = registry.findBySubdomain(subdomain);
       const redirectToken = redirectTokenByTunnelKey.get(subdomain);
@@ -2673,6 +2794,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt,
           disconnectedAt: null,
           redirectUrl,
+          publicHost: redirectEntry?.publicHost ?? null,
+          publicPort: redirectEntry?.publicPort ?? null,
         };
       }
 
@@ -2684,6 +2807,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt,
           disconnectedAt,
           redirectUrl,
+          publicHost: redirectEntry.publicHost ?? null,
+          publicPort: redirectEntry.publicPort ?? null,
         };
       }
 
@@ -2694,6 +2819,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         lastSeenAt,
         disconnectedAt: null,
         redirectUrl,
+        publicHost: redirectEntry?.publicHost ?? null,
+        publicPort: redirectEntry?.publicPort ?? null,
       };
     };
 
@@ -2708,6 +2835,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         lastSeenAt: state.lastSeenAt,
         disconnectedAt: state.disconnectedAt,
         redirectUrl: state.redirectUrl,
+        publicHost: state.publicHost,
+        publicPort: state.publicPort,
       };
     });
 
@@ -2715,6 +2844,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       .filter((s) => !dbSubdomains.has(s.subdomain))
       .map((s) => {
         const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
+        const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
         const redirectUrl = redirectToken ? buildPublicUrl(`/r/${redirectToken}`) : null;
         return {
           id: `cli_${s.subdomain}`,
@@ -2728,6 +2858,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt: new Date(s.lastHeartbeatAt).toISOString(),
           disconnectedAt: null,
           redirectUrl,
+          publicHost: redirectEntry?.publicHost ?? null,
+          publicPort: redirectEntry?.publicPort ?? null,
         };
       });
 
@@ -2755,6 +2887,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           lastSeenAt: toIso(entry.lastSeenAt),
           disconnectedAt: toIso(entry.disconnectedAt),
           redirectUrl: buildPublicUrl(`/r/${token}`),
+          publicHost: entry.publicHost ?? null,
+          publicPort: entry.publicPort ?? null,
         }];
       });
 
@@ -3509,6 +3643,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       connected: entry.connected,
       tunnelType: entry.tunnelType,
       subdomain: entry.subdomain ?? null,
+      publicHost: entry.publicHost ?? null,
+      publicPort: entry.publicPort ?? null,
       publicTcpPort: entry.publicTcpPort ?? null,
       publicTcpHost: entry.publicTcpHost ?? null,
       accessLink: entry.accessLink ?? null,
