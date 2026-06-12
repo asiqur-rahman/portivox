@@ -14,7 +14,8 @@ COPY packages/logger/package.json          ./packages/logger/
 COPY packages/protocol/package.json        ./packages/protocol/
 COPY packages/sdk/package.json             ./packages/sdk/
 COPY packages/portivox-client/package.json ./packages/portivox-client/
-RUN npm ci
+RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 \
+  || (echo "npm ci failed, retrying..." && sleep 5 && npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000)
 
 # ── builder: compile ─────────────────────────────────────────────────────────
 FROM deps AS builder
