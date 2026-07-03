@@ -242,7 +242,7 @@ export function App() {
 
     const tunnelItems: GlobalSearchItem[] = tunnels.map((tunnel) => ({
       id: `tunnel:${tunnel.id}`,
-      title: tunnel.subdomain,
+      title: tunnel.subdomain ?? (tunnel.publicPort ? `TCP ${tunnel.publicHost ?? ""}:${tunnel.publicPort}` : "TCP tunnel"),
       subtitle: tunnel.statusMessage ?? (tunnel.active ? "Tunnel is online" : "Tunnel is currently offline"),
       category: "Tunnels",
       icon: tunnel.status === "offline" ? "ti-plug-x" : tunnel.status === "reserved" ? "ti-clock-hour-4" : "ti-world",

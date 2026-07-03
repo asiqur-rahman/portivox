@@ -33,6 +33,9 @@ export class TunnelClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private registered = false;
+  /** Stable redirect token from the gateway — replayed on reconnect so the
+   *  /r/:token status URL stays the same across disconnects. */
+  private redirectToken: string | null = null;
   private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createConsoleLogger("client");
   // Keep-alive agents reuse the loopback TCP connection across requests,
@@ -67,6 +70,13 @@ export class TunnelClient {
 
   private connect(): void {
     this.registered = false;
+    // Detach the previous socket's listeners before opening a new one so a
+    // late/stale event from the old connection can't fire against the new
+    // session or leak the old socket via its closures.
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -96,6 +106,8 @@ export class TunnelClient {
         localPort: this.config.localTcpPort,
         // Request IP link protection (TCP only; default true unless opted out).
         ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
+        // Replay the stable redirect token on reconnect to keep the /r/ URL.
+        redirectToken: this.redirectToken ?? undefined,
       });
       this.startHeartbeat();
     });
@@ -111,6 +123,9 @@ export class TunnelClient {
 
       if (msg.type === "registered") {
         this.registered = true;
+        if (msg.redirectToken) {
+          this.redirectToken = msg.redirectToken;
+        }
         if (msg.subdomain) {
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
           if (msg.tunnelType === "http" && msg.publicHost && msg.publicPort) {

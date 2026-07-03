@@ -394,7 +394,18 @@ class AuditStore {
   private readonly ownsPrisma: boolean;
   private readonly sink: AuditSink;
   private readonly memory: Array<AuditEvent & { id: string }> = [];
+  // Cap the DB-less in-memory audit log so a long-running gateway without a
+  // database doesn't grow the heap unbounded (oldest events are dropped).
+  private static readonly MAX_MEMORY_EVENTS = 5000;
   private readonly onLogged?: (event: AuditEvent & { id?: string }) => void;
+
+  private pushMemory(event: AuditEvent & { id: string }): void {
+    this.memory.push(event);
+    const overflow = this.memory.length - AuditStore.MAX_MEMORY_EVENTS;
+    if (overflow > 0) {
+      this.memory.splice(0, overflow);
+    }
+  }
 
   constructor(sink: AuditSink, prisma?: PrismaClient | null, options?: { onLogged?: (event: AuditEvent & { id?: string }) => void }) {
     this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
@@ -414,7 +425,7 @@ class AuditStore {
     };
     if (!this.prisma) {
       const storedEvent = { id: randomUUID(), ...auditEvent };
-      this.memory.push(storedEvent);
+      this.pushMemory(storedEvent);
       await this.sink.emit(auditEvent);
       this.onLogged?.(storedEvent);
       return;
@@ -454,7 +465,7 @@ class AuditStore {
         } catch {
           // Prisma still failing after retry — fall back to in-memory.
           const storedEvent = { id: randomUUID(), ...auditEvent };
-          this.memory.push(storedEvent);
+          this.pushMemory(storedEvent);
           this.onLogged?.(storedEvent);
         }
       } else {
@@ -463,7 +474,7 @@ class AuditStore {
         // `void auditStore.log(...)` (fire-and-forget), which would turn a
         // thrown error into an unhandled rejection and exit the process.
         const storedEvent = { id: randomUUID(), ...auditEvent };
-        this.memory.push(storedEvent);
+        this.pushMemory(storedEvent);
         this.onLogged?.(storedEvent);
       }
       // Emit to configured sinks (JSONL file, webhook) regardless of DB state.
@@ -935,6 +946,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const apiAdminLimiter = new RateLimiter(config.apiRateLimitAdminPerMin ?? 120, 60_000);
   const tunnelIngressLimiter = new RateLimiter(config.ingressRateLimitPerMin ?? 1200, 60_000);
   const responseWaiters = new Map<string, (value: HttpResponse) => void>();
+  // Parallel to responseWaiters: lets the (re-armable) idle timer reject a stream
+  // from outside the promise executor. Always deleted alongside its waiter.
+  const streamRejecters = new Map<string, (error: Error) => void>();
   const streamTimeouts = new Map<string, NodeJS.Timeout>();
   const responseChunksByStream = new Map<string, {
     statusCode: number;
@@ -948,6 +962,36 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     chunkFramesReceived: 0,
     chunkStreamsReassembled: 0,
     chunkIncompleteTimeouts: 0,
+  };
+
+  // (Re)arm the per-stream idle timeout. Called when the request is dispatched
+  // and again on every chunk received, so a healthy but slow chunked response
+  // is not killed mid-transfer — the timer fires only after genuine inactivity.
+  const armStreamIdleTimeout = (streamId: string, socket: WebSocket): void => {
+    const prev = streamTimeouts.get(streamId);
+    if (prev) {
+      clearTimeout(prev);
+    }
+    const timeout = setTimeout(() => {
+      if (!responseWaiters.has(streamId)) {
+        return;
+      }
+      if (responseChunksByStream.has(streamId)) {
+        chunkDiagnostics.chunkIncompleteTimeouts += 1;
+        metrics.increment("gateway_chunk_incomplete_timeouts_total");
+        void auditStore.log(null, "chunk_stream_timeout", "tunnel_stream", streamId, {
+          errorCode: "TUNNEL_STREAM_IDLE_TIMEOUT",
+        });
+      }
+      const reject = streamRejecters.get(streamId);
+      responseWaiters.delete(streamId);
+      streamRejecters.delete(streamId);
+      activeStreamsBySocket.get(socket)?.delete(streamId);
+      streamTimeouts.delete(streamId);
+      responseChunksByStream.delete(streamId);
+      reject?.(new Error("TUNNEL_STREAM_IDLE_TIMEOUT"));
+    }, config.streamIdleTimeoutMs ?? config.tunnelResponseTimeoutMs);
+    streamTimeouts.set(streamId, timeout);
   };
   const socketSubdomain = new WeakMap<object, string>();
   const activeStreamsBySocket = new WeakMap<object, Set<string>>();
@@ -1649,6 +1693,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       const connectionId = randomUUID();
       tcpConnectionsById.set(connectionId, conn);
       connectionIds.add(connectionId);
+      // Single backpressure resume timer per connection (guards against
+      // spawning overlapping intervals when multiple buffered data events fire
+      // after conn.pause()).
+      let resumeTimer: NodeJS.Timeout | null = null;
 
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(encodeWireMessage({ type: "tcp_open", connectionId }));
@@ -1670,16 +1718,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         // Backpressure: if the tunnel client is draining slower than this public
         // peer produces, ws.bufferedAmount backs up in gateway heap. Pause the
         // source until the buffer drains, then resume — bounding memory use.
-        if (socket.bufferedAmount > WS_BACKPRESSURE_HIGH_WATER_BYTES) {
+        // Only one resume timer runs at a time (resumeTimer guard).
+        if (socket.bufferedAmount > WS_BACKPRESSURE_HIGH_WATER_BYTES && !resumeTimer) {
           conn.pause();
-          const resumeTimer = setInterval(() => {
+          resumeTimer = setInterval(() => {
             if (socket.readyState !== WebSocket.OPEN || conn.destroyed) {
-              clearInterval(resumeTimer);
+              if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
               if (!conn.destroyed) conn.destroy();
               return;
             }
             if (socket.bufferedAmount <= WS_BACKPRESSURE_LOW_WATER_BYTES) {
-              clearInterval(resumeTimer);
+              if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
               conn.resume();
             }
           }, 25);
@@ -1688,6 +1737,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       });
 
       const closeConnection = (reason?: string): void => {
+        if (resumeTimer) {
+          clearInterval(resumeTimer);
+          resumeTimer = null;
+        }
         if (!tcpConnectionsById.has(connectionId)) {
           return;
         }
@@ -2022,6 +2075,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               existingREntry.connected = false;  // will be marked true after bind
               existingREntry.disconnectedAt = undefined;
               existingREntry.accessLink = accessLink;
+            } else if (redirectTokenByTunnelKey.has(syntheticKey)) {
+              // A prior binding for this exact fixed port exists but the client
+              // didn't (or couldn't) replay its token — purge the stale entry so
+              // the panel doesn't show a duplicate "offline" ghost that, if
+              // removed, would revoke this live tunnel (same synthetic key).
+              purgeRedirectForKey(syntheticKey);
+              redirectToken = randomBytes(16).toString("base64url");
             } else {
               redirectToken = randomBytes(16).toString("base64url");
             }
@@ -2244,6 +2304,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 streamTimeouts.delete(msg.streamId);
               }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               waiter(msg);
@@ -2268,6 +2329,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               const timeoutBad = streamTimeouts.get(msg.streamId);
               if (timeoutBad) { clearTimeout(timeoutBad); streamTimeouts.delete(msg.streamId); }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               return;
@@ -2293,6 +2355,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               const timeoutOversized = streamTimeouts.get(msg.streamId);
               if (timeoutOversized) { clearTimeout(timeoutOversized); streamTimeouts.delete(msg.streamId); }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               return;
@@ -2300,6 +2363,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
             existing.chunks.set(chunkMeta.index, Buffer.from(msg.bodyBase64, "base64"));
             responseChunksByStream.set(msg.streamId, existing);
+            // Progress was made — reset the idle timer so an actively-streaming
+            // large response isn't killed by the idle deadline.
+            if (responseWaiters.has(msg.streamId)) {
+              armStreamIdleTimeout(msg.streamId, socket);
+            }
 
             const expectedChunks = typeof existing.total === "number"
               ? existing.total
@@ -2328,6 +2396,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 streamTimeouts.delete(msg.streamId);
               }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               chunkDiagnostics.chunkStreamsReassembled += 1;
@@ -2422,6 +2491,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             const waiter = responseWaiters.get(streamId);
             if (waiter) {
               responseWaiters.delete(streamId);
+              streamRejecters.delete(streamId);
               responseChunksByStream.delete(streamId);
               waiter({ type: "http_response", streamId, statusCode: 502, headers: { "content-type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ error: "Tunnel disconnected" })).toString("base64") });
             }
@@ -3850,7 +3920,16 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     // Normalize IPv4-mapped IPv6 addresses.
     const ip = req.ip.replace(/^::ffff:/, "");
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;  // 24 hours
+    const now = Date.now();
+    // Evict expired IPs before inserting so a long-lived tunnel hit by many
+    // distinct source IPs doesn't accumulate them unbounded (they're only
+    // lazily checked at connect time otherwise, never removed).
+    for (const [seenIp, seenExpiry] of entry.allowedIps) {
+      if (now > seenExpiry) {
+        entry.allowedIps.delete(seenIp);
+      }
+    }
+    const expiresAt = now + 24 * 60 * 60 * 1000;  // 24 hours
     entry.allowedIps.set(ip, expiresAt);
 
     return reply.status(200).send({
@@ -4009,6 +4088,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       bodyBase64: bodyBuffer.toString("base64"),
     };
 
+    // Set inside the (synchronous) promise executor when the stream is admitted.
+    // Guards the send below so an over-limit request is NOT forwarded to an
+    // already-saturated client (which would drop the response and double load).
+    let accepted = false;
     const responsePromise = new Promise<HttpResponse>((resolve, reject) => {
       const inflightForSocket = activeStreamsBySocket.get(tunnel.socket);
       const maxConcurrent = config.maxConcurrentStreamsPerTunnel ?? 200;
@@ -4018,28 +4101,16 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         return;
       }
 
+      accepted = true;
       responseWaiters.set(streamId, resolve);
+      streamRejecters.set(streamId, reject);
       activeStreamsBySocket.get(tunnel.socket)?.add(streamId);
-      const timeout = setTimeout(() => {
-        if (responseWaiters.has(streamId)) {
-          if (responseChunksByStream.has(streamId)) {
-            chunkDiagnostics.chunkIncompleteTimeouts += 1;
-            metrics.increment("gateway_chunk_incomplete_timeouts_total");
-            void auditStore.log(null, "chunk_stream_timeout", "tunnel_stream", streamId, {
-              errorCode: "TUNNEL_STREAM_IDLE_TIMEOUT",
-            });
-          }
-          responseWaiters.delete(streamId);
-          activeStreamsBySocket.get(tunnel.socket)?.delete(streamId);
-          streamTimeouts.delete(streamId);
-          responseChunksByStream.delete(streamId);
-          reject(new Error("TUNNEL_STREAM_IDLE_TIMEOUT"));
-        }
-      }, config.streamIdleTimeoutMs ?? config.tunnelResponseTimeoutMs);
-      streamTimeouts.set(streamId, timeout);
+      armStreamIdleTimeout(streamId, tunnel.socket);
     });
 
-    tunnel.socket.send(encodeWireMessage(outbound));
+    if (accepted) {
+      tunnel.socket.send(encodeWireMessage(outbound));
+    }
 
     try {
       const tunnelResponse = await responsePromise;
@@ -4048,6 +4119,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         clearTimeout(timeout);
         streamTimeouts.delete(streamId);
       }
+      streamRejecters.delete(streamId);
       metrics.observeRequestLatency(Date.now() - startedAt);
       reply.code(tunnelResponse.statusCode);
       // Strip hop-by-hop headers, then pass everything else through to the browser.
@@ -4097,6 +4169,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         clearTimeout(timeout);
         streamTimeouts.delete(streamId);
       }
+      streamRejecters.delete(streamId);
       const code = error instanceof Error ? error.message : "UNKNOWN_STREAM_ERROR";
       captured.durationMs = Date.now() - startedAt;
       captured.error = code;

@@ -24,13 +24,13 @@ function redactConfig(config: Record<string, unknown>): Record<string, unknown> 
 
 let shuttingDown = false;
 
-async function shutdown(signal: string): Promise<void> {
+async function shutdown(signal: string, exitCode = 0): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info(`${signal} received; shutting down`);
   try {
     await server.stop();
-    process.exit(0);
+    process.exit(exitCode);
   } catch (error) {
     logger.error("Error during shutdown", { error: error instanceof Error ? error.message : String(error) });
     process.exit(1);
@@ -58,7 +58,9 @@ process.on("unhandledRejection", (reason) => {
 });
 process.on("uncaughtException", (error) => {
   logger.error("Uncaught exception; shutting down", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
-  void shutdown("uncaughtException");
+  // Exit non-zero so process managers (PM2/systemd/k8s) treat this as a crash
+  // and restart, rather than a clean shutdown they leave down.
+  void shutdown("uncaughtException", 1);
 });
 
 boot().catch((error) => {

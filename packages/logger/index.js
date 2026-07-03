@@ -11,7 +11,12 @@ function emit(stream, scope, level, message, meta) {
   };
   if (meta !== undefined && meta !== null) {
     if (typeof meta === "object" && !Array.isArray(meta)) {
-      Object.assign(record, meta);
+      // Merge caller fields but never let them clobber the structural fields
+      // (ts/level/scope/msg) — a stray meta.level would corrupt log parsing.
+      const RESERVED = new Set(["ts", "level", "scope", "msg"]);
+      for (const [key, value] of Object.entries(meta)) {
+        record[RESERVED.has(key) ? `meta_${key}` : key] = value;
+      }
     } else {
       record.meta = meta;
     }

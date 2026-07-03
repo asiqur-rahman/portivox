@@ -222,7 +222,7 @@ export function InspectorPage({
                 setSelected(null);
               }}
             >
-              {httpTunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain}>{tunnel.subdomain}</option>)}
+              {httpTunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain ?? ""}>{tunnel.subdomain ?? ""}</option>)}
             </select>
           )}
           <button className="btn-ghost" onClick={fetchList}><i className="ti ti-refresh" /> Refresh</button>

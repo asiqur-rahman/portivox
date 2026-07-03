@@ -5,8 +5,11 @@ export function isAdminPage(page: Page): boolean {
   return page.startsWith("admin:");
 }
 
+// Platform-admin gate for the UI. Must match the gateway's isPlatformAdmin
+// (role === "admin" only) — "owner" is a normal resource owner, NOT an admin, so
+// admin nav/pages must be hidden from owners (the API returns 403 for them).
 export function hasAdminRole(role?: string): boolean {
-  return role === "admin" || role === "owner";
+  return role === "admin";
 }
 
 export function isStandaloneMode(): boolean {
@@ -45,11 +48,20 @@ export function deriveName(email: string): string {
     .trim();
 }
 
-export function getTunnelUrl(tunnel: string | { subdomain: string; publicHost?: string | null; publicPort?: number | null }): string {
+export function getTunnelUrl(
+  tunnel: string | { subdomain: string | null; publicHost?: string | null; publicPort?: number | null; tunnelType?: "http" | "tcp" },
+): string {
   const proto = window.location.protocol;
   const host = window.location.hostname;
-  if (typeof tunnel !== "string" && tunnel.publicHost && tunnel.publicPort) {
-    return `${proto}//${tunnel.publicHost}:${tunnel.publicPort}`;
+  if (typeof tunnel !== "string") {
+    // Raw TCP tunnel (SSH/DB): the usable value is host:port (e.g. `ssh -p`),
+    // NOT an http(s) URL. Returning a browser URL here made "Open" unusable.
+    if (tunnel.tunnelType === "tcp" && tunnel.publicHost && tunnel.publicPort) {
+      return `${tunnel.publicHost}:${tunnel.publicPort}`;
+    }
+    if (tunnel.publicHost && tunnel.publicPort) {
+      return `${proto}//${tunnel.publicHost}:${tunnel.publicPort}`;
+    }
   }
   const subdomain = typeof tunnel === "string" ? tunnel : tunnel.subdomain;
   return `${proto}//${subdomain}.${host}`;

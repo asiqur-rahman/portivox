@@ -153,7 +153,12 @@ function pickArg(argv: string[], name: string): string | undefined {
   if (idx < 0 || idx + 1 >= argv.length) {
     return undefined;
   }
-  return argv[idx + 1];
+  // Don't consume the next token if it's itself a flag (e.g. `--subdomain --tcp`).
+  const next = argv[idx + 1];
+  if (next.startsWith("--")) {
+    return undefined;
+  }
+  return next;
 }
 
 function gatewayApiBaseUrl(gatewayUrl: string): string {

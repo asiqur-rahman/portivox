@@ -3,9 +3,11 @@ export type TunnelStatus = "live" | "reserved" | "offline";
 export type TunnelRecord = {
   id: string;
   userId?: string | null;
-  subdomain: string;
+  subdomain: string | null;
   publicHost?: string | null;
   publicPort?: number | null;
+  /** "tcp" for raw TCP tunnels (SSH/DB) reachable at host:port, "http" otherwise. */
+  tunnelType?: "http" | "tcp";
   createdAt: string;
   /** True when a live WebSocket client is currently connected for this subdomain. */
   active: boolean;

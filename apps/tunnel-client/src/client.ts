@@ -109,6 +109,13 @@ export class TunnelClient {
 
   private connect(): void {
     this.registered = false;
+    // Detach the previous socket's listeners before opening a new one so a
+    // late/stale event (close/message/error) from the old connection can't fire
+    // against the new session or leak the old socket via its closures.
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -411,12 +418,17 @@ export class TunnelClient {
         // so that internal hostnames, ports, and topology are not leaked to the
         // remote caller.
         this.logger.warn("Local upstream request failed", { streamId: msg.streamId, error: error.message });
+        // Distinguish an oversize local response (accurate 502 + reason) from a
+        // genuine connection failure — the upstream did respond, just too big.
+        const tooLarge = error.message.startsWith("Local response exceeds limit");
         resolve([{
           type: "http_response",
           streamId: msg.streamId,
           statusCode: 502,
           headers: { "content-type": "application/json" },
-          bodyBase64: Buffer.from(JSON.stringify({ error: "Upstream connection failed" })).toString("base64"),
+          bodyBase64: Buffer.from(JSON.stringify({
+            error: tooLarge ? "Upstream response exceeded the client body size limit" : "Upstream connection failed",
+          })).toString("base64"),
           meta: msg.meta,
         }]);
       });
