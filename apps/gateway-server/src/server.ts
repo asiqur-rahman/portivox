@@ -951,6 +951,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   };
   const socketSubdomain = new WeakMap<object, string>();
   const activeStreamsBySocket = new WeakMap<object, Set<string>>();
+  // tunnelKey → live control socket. Unlike the registry (which only tracks
+  // subdomain-routed HTTP/random-TCP tunnels), this also covers fixed-port TCP
+  // tunnels keyed by their synthetic `__tcp_port_<n>__` key, so they can be
+  // revoked from the web panel.
+  const socketByTunnelKey = new Map<string, WebSocket>();
   const tcpBindingsBySubdomain = new Map<string, { server: net.Server; publicPort: number }>();
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
@@ -1745,8 +1750,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
    *  and NOT reconnect, then close the control socket (its close handler tears
    *  down TCP bindings, registry lease, inspector buffers and IP tokens).
    *  Returns true if a live client socket was found and signalled. */
-  function revokeLiveTunnel(subdomain: string, reason: string): boolean {
-    const socket = registry.getSocketBySubdomain(subdomain);
+  function revokeLiveTunnel(tunnelKey: string, reason: string): boolean {
+    // socketByTunnelKey covers both subdomain-routed and fixed-port TCP tunnels;
+    // fall back to the registry for safety.
+    const socket = socketByTunnelKey.get(tunnelKey) ?? registry.getSocketBySubdomain(tunnelKey);
     if (!socket) {
       return false;
     }
@@ -1754,7 +1761,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if (socket.readyState === WebSocket.OPEN) {
         // Queue the revoke frame, then close — ws flushes buffered data before
         // sending the close frame, so the client receives the revoke first.
-        socket.send(encodeWireMessage({ type: "tunnel_revoked", subdomain, reason }));
+        socket.send(encodeWireMessage({ type: "tunnel_revoked", subdomain: tunnelKey, reason }));
         socket.close(4403, "revoked");
       }
     } catch {
@@ -1977,8 +1984,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             // server binding without any changes to that logic.
             const syntheticKey = `__tcp_port_${fixedMapping.publicPort}__`;
             socketSubdomain.set(socket, syntheticKey);
-            // NOTE: do NOT add to registry (no HTTP subdomain routing required)
-            // NOTE: do NOT set ownershipBySubdomain (synthetic key, not a real subdomain)
+            socketByTunnelKey.set(syntheticKey, socket);
+            // NOTE: do NOT add to registry (no HTTP subdomain routing required).
+            // Record ownership under the synthetic key so the tunnel is listable
+            // and revocable by its owner from the web panel.
+            ownershipBySubdomain.set(syntheticKey, principal.userId);
             registered = true;
             metrics.setGauge("gateway_active_tunnels", registry.count());
 
@@ -2079,6 +2089,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               subdomain = await registry.assign(undefined, socket);
             }
             socketSubdomain.set(socket, subdomain);
+            socketByTunnelKey.set(subdomain, socket);
             ownershipBySubdomain.set(subdomain, principal.userId);
             metrics.setGauge("gateway_active_tunnels", registry.count());
             registered = true;
@@ -2393,6 +2404,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         const subdomain = socketSubdomain.get(socket);
         if (subdomain) {
           ownershipBySubdomain.delete(subdomain);
+          socketByTunnelKey.delete(subdomain);
           // Free the inspector ring buffer for this tunnel. Without this the
           // captured request/response bodies (up to ~25 MB per subdomain) are
           // pinned forever and accumulate with tunnel churn → unbounded heap.
@@ -2797,8 +2809,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     // no DB record (the client never called POST /api/tunnels to reserve a subdomain).
     // We identify these by cross-referencing ownershipBySubdomain (populated at
     // WebSocket registration time) against the registry's active sessions.
+    // Subdomains whose redirect entry is a TCP tunnel — rendered by the tcp
+    // block below (with publicTcpPort), so exclude them from the HTTP live list.
+    const tcpSubdomains = new Set(
+      [...redirectByToken.values()]
+        .filter((e) => e.userId === principal.userId && e.tunnelType === "tcp" && !!e.subdomain)
+        .map((e) => e.subdomain as string),
+    );
     const liveSessions = registry.listSessions()
-      .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain))
+      .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain) && !tcpSubdomains.has(s.subdomain))
       .map((s) => {
         const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
         const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
@@ -2850,7 +2869,35 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }];
       });
 
-    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions];
+    // ── TCP tunnels (random-port and admin fixed-port) ─────────────────────
+    // Sourced from redirect entries so both live and offline TCP tunnels are
+    // listed with their public host:port. Fixed-port tunnels have no subdomain
+    // and are keyed by `tcpport_<port>` so the panel can remove them.
+    const tcpSessions = [...redirectByToken.entries()]
+      .filter(([, e]) => e.userId === principal.userId && e.tunnelType === "tcp" && !dbSubdomains.has(e.subdomain ?? ""))
+      .flatMap(([token, e]) => {
+        const isLive = e.subdomain ? !!registry.findBySubdomain(e.subdomain) : e.connected === true;
+        const idBase = e.subdomain ? e.subdomain : `tcpport_${e.publicTcpPort}`;
+        return [{
+          id: isLive ? `cli_${idBase}` : `cli_offline_${idBase}`,
+          userId: principal.userId,
+          subdomain: e.subdomain ?? null,
+          createdAt: new Date(e.createdAt).toISOString(),
+          active: isLive,
+          status: (isLive ? "live" : "offline") as "live" | "offline",
+          statusMessage: isLive ? "Client connected and forwarding traffic" : "Client machine is not reachable",
+          isCliSession: true,
+          tunnelType: "tcp" as const,
+          lastSeenAt: toIso(e.lastSeenAt),
+          disconnectedAt: isLive ? null : toIso(e.disconnectedAt),
+          redirectUrl: buildPublicUrl(`/r/${token}`),
+          publicHost: e.publicTcpHost ?? null,
+          publicPort: e.publicTcpPort ?? null,
+          accessLink: e.accessLink ?? null,
+        }];
+      });
+
+    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions, ...tcpSessions];
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
     return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
   });
@@ -3128,25 +3175,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
     };
 
-    // ── CLI session (live, no DB record): id is `cli_<subdomain>` ────────────
+    // ── CLI session (live/offline, no DB record) ────────────────────────────
     // These are tunnels opened via `portivox open` that never reserved a DB
-    // subdomain. Removing one terminates the connected client's tunnel.
+    // subdomain. The id is `cli_<raw>` / `cli_offline_<raw>` where <raw> is a
+    // subdomain, or `tcpport_<port>` for admin fixed-port TCP tunnels (which use
+    // a synthetic key instead of a subdomain). Removing one terminates the
+    // connected client's tunnel.
     if (id.startsWith("cli_offline_") || id.startsWith("cli_")) {
-      const subdomain = id.startsWith("cli_offline_")
+      const raw = id.startsWith("cli_offline_")
         ? id.slice("cli_offline_".length)
         : id.slice("cli_".length);
-      if (!subdomain) {
+      const tunnelKey = raw.startsWith("tcpport_")
+        ? `__tcp_port_${raw.slice("tcpport_".length)}__`
+        : raw;
+      if (!tunnelKey) {
         return reply.status(404).send({ error: { code: "TUNNEL_NOT_FOUND", message: "Tunnel not found" } });
       }
-      if (!ownsSubdomain(subdomain)) {
+      if (!ownsSubdomain(tunnelKey)) {
         metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
         metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
         return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Tunnel does not belong to this principal" } });
       }
-      const wasLive = revokeLiveTunnel(subdomain, "removed_by_owner");
-      purgeRedirectForKey(subdomain);
-      await releaseTcpTunnelBySubdomain(subdomain);
-      await auditStore.log(principal.userId, "tunnel_revoked", "tunnel_session", subdomain, { wasLive });
+      const wasLive = revokeLiveTunnel(tunnelKey, "removed_by_owner");
+      purgeRedirectForKey(tunnelKey);
+      await releaseTcpTunnelBySubdomain(tunnelKey);
+      ownershipBySubdomain.delete(tunnelKey);
+      await auditStore.log(principal.userId, "tunnel_revoked", "tunnel_session", tunnelKey, { wasLive });
       finish();
       return reply.status(204).send();
     }
