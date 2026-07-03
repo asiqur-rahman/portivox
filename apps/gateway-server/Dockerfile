@@ -44,5 +44,16 @@ COPY --from=builder /app/prisma                                   ./prisma
 COPY apps/gateway-server/docker-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Drop privileges: run as the built-in non-root `node` user so a container
+# escape has a smaller blast radius. chown so the entrypoint can read/generate.
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 8080 7000
+
+# Image-level liveness probe so bare `docker run` / orchestrators without a
+# compose healthcheck still know when the gateway is up.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]

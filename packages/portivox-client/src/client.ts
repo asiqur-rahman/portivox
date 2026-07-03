@@ -21,6 +21,9 @@ export type TunnelClientConfig = {
   ipProtection?: boolean;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
+  /** Called when the gateway revokes this tunnel (owner removed it from the web
+   *  panel). The client stops and will NOT reconnect. */
+  onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 };
 
 export class TunnelClient {
@@ -143,6 +146,18 @@ export class TunnelClient {
           return;
         }
         this.logger.error(`Gateway error: ${msg.message}`);
+        return;
+      }
+
+      if (msg.type === "tunnel_revoked") {
+        // Owner removed this tunnel from the web panel. Close and do NOT
+        // reconnect (stop() sets the flag scheduleReconnect() checks).
+        this.logger.warn("Tunnel removed from the control panel — closing this tunnel.", {
+          subdomain: msg.subdomain ?? null,
+          reason: msg.reason ?? null,
+        });
+        this.config.onRevoked?.({ subdomain: msg.subdomain, reason: msg.reason });
+        this.stop();
         return;
       }
 

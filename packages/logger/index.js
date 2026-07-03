@@ -1,26 +1,41 @@
-function serialize(meta) {
-  if (meta === undefined) {
-    return "";
+// Structured JSON logger: one machine-parseable object per line so log
+// aggregators (Loki/ELK/Datadog) can index level, scope, timestamp and
+// arbitrary metadata without fragile prefix parsing.
+
+function emit(stream, scope, level, message, meta) {
+  const record = {
+    ts: new Date().toISOString(),
+    level,
+    scope,
+    msg: typeof message === "string" ? message : String(message),
+  };
+  if (meta !== undefined && meta !== null) {
+    if (typeof meta === "object" && !Array.isArray(meta)) {
+      Object.assign(record, meta);
+    } else {
+      record.meta = meta;
+    }
   }
+  let line;
   try {
-    return ` ${JSON.stringify(meta)}`;
+    line = JSON.stringify(record);
   } catch {
-    return " [unserializable-meta]";
+    // Fall back to a minimal record if meta contains circular references.
+    line = JSON.stringify({ ts: record.ts, level, scope, msg: record.msg, meta: "[unserializable-meta]" });
   }
+  stream(line);
 }
 
 function createLogger(scope) {
-  const prefix = `[${scope}]`;
-
   return {
     info(message, meta) {
-      console.log(`${prefix} INFO ${message}${serialize(meta)}`);
+      emit(console.log, scope, "info", message, meta);
     },
     warn(message, meta) {
-      console.warn(`${prefix} WARN ${message}${serialize(meta)}`);
+      emit(console.warn, scope, "warn", message, meta);
     },
     error(message, meta) {
-      console.error(`${prefix} ERROR ${message}${serialize(meta)}`);
+      emit(console.error, scope, "error", message, meta);
     },
   };
 }

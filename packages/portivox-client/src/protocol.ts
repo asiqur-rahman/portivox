@@ -33,6 +33,8 @@ type WireMessage =
       reason?: string;
     }
   | { type: "heartbeat"; at: number }
+  | { type: "heartbeat_ack" }
+  | { type: "tunnel_revoked"; subdomain?: string; reason?: string }
   | { type: "error"; message: string; code?: string; streamId?: string };
 
 type StreamTransportMeta = {

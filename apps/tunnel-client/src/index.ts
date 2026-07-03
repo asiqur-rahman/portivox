@@ -922,6 +922,15 @@ function startClient({
         startedAt: new Date().toISOString(),
       });
     },
+    onRevoked: (info) => {
+      // Owner removed this tunnel from the web panel. Drop the local session
+      // record and exit cleanly — the client will not reconnect it.
+      removeSession(sessionId);
+      console.log(
+        `\nTunnel${info.subdomain ? ` '${info.subdomain}'` : ""} was removed from the web control panel. Closing.`,
+      );
+      process.exit(0);
+    },
   });
 
   client.start();

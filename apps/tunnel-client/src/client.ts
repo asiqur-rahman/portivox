@@ -40,6 +40,10 @@ export type TunnelClientConfig = {
   onRegistered?: (info: RegisteredInfo) => void;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
+  /** Called when the gateway revokes this tunnel (owner removed it from the web
+   *  panel). The client stops and will NOT reconnect; the CLI uses this to drop
+   *  the local session entry and exit. */
+  onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
   /** When true, the client exits instead of reconnecting after a disconnect.
    *  Used by the CLI when reconnectMode is "once". */
   noReconnect?: boolean;
@@ -223,6 +227,19 @@ export class TunnelClient {
           return;
         }
         this.logger.error(`Gateway error: ${msg.message}`);
+        return;
+      }
+
+      if (msg.type === "tunnel_revoked") {
+        // The owner removed this tunnel from the web panel. Close the port and
+        // do NOT reconnect. stop() sets `stopped` so scheduleReconnect() is a
+        // no-op when the socket subsequently closes.
+        this.logger.warn("Tunnel removed from the control panel — closing this tunnel.", {
+          subdomain: msg.subdomain ?? null,
+          reason: msg.reason ?? null,
+        });
+        this.config.onRevoked?.({ subdomain: msg.subdomain, reason: msg.reason });
+        this.stop();
         return;
       }
 

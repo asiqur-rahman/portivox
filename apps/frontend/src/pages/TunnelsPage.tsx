@@ -207,11 +207,9 @@ export function TunnelsPage({
                       >
                         <i className="ti ti-external-link" /> {tunnel.active ? "Open" : "Unavailable"}
                       </button>
-                      {!tunnel.isCliSession && (
-                        <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                          Stop
-                        </button>
-                      )}
+                      <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                        {tunnel.isCliSession ? "Remove" : "Stop"}
+                      </button>
                     </div>
                   </article>
                 );
@@ -290,16 +288,9 @@ export function TunnelsPage({
                           >
                             <i className="ti ti-external-link" />
                           </button>
-                          {!tunnel.isCliSession && (
-                            <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                              Stop
-                            </button>
-                          )}
-                          {tunnel.isCliSession && tunnel.active && (
-                            <span style={{ fontSize: 11, color: "var(--text-3)", padding: "0 4px", whiteSpace: "nowrap" }}>
-                              Ctrl+C to stop
-                            </span>
-                          )}
+                          <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
+                            {tunnel.isCliSession ? "Remove" : "Stop"}
+                          </button>
                         </div>
                       </td>
                     </tr>

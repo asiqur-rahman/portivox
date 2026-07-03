@@ -3,6 +3,7 @@ type CounterName =
   | "gateway_request_errors_total"
   | "gateway_ws_connections_total"
   | "gateway_ws_auth_failures_total"
+  | "gateway_ws_socket_errors_total"
   | "gateway_ws_rejected_draining_total"
   | "gateway_chunk_frames_total"
   | "gateway_chunk_reassembled_streams_total"
@@ -62,6 +63,7 @@ export class GatewayMetrics {
     appendSimpleMetric(lines, "gateway_request_errors_total", "counter", "Total gateway request errors", this.counters);
     appendSimpleMetric(lines, "gateway_ws_connections_total", "counter", "Total websocket connections accepted", this.counters);
     appendSimpleMetric(lines, "gateway_ws_auth_failures_total", "counter", "Total websocket auth failures", this.counters);
+    appendSimpleMetric(lines, "gateway_ws_socket_errors_total", "counter", "Total websocket socket-level errors", this.counters);
     appendSimpleMetric(lines, "gateway_ws_rejected_draining_total", "counter", "Total websocket connections rejected while draining or in maintenance", this.counters);
     appendSimpleMetric(lines, "gateway_chunk_frames_total", "counter", "Total chunk frames received from tunnel clients", this.counters);
     appendSimpleMetric(lines, "gateway_chunk_reassembled_streams_total", "counter", "Total chunked streams successfully reassembled", this.counters);

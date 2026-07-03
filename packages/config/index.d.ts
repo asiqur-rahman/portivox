@@ -9,6 +9,7 @@ export type GatewayConfig = {
   authApiKeys: string;
   authApiKeyScopes: string;
   authJwtSecret: string;
+  adminEmails: string;
   registryBackend: "memory" | "redis";
   redisUrl: string;
   redisKeyPrefix: string;

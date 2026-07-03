@@ -73,6 +73,7 @@ async function main() {
     const userToken = signAccessToken({ sub: "user-alpha", scopes: ["key:manage", "tunnel:read", "tunnel:create", "tunnel:delete"] }, jwtSecret, "2h");
     const otherToken = signAccessToken({ sub: "user-beta" }, jwtSecret, "2h");
     const viewerToken = signAccessToken({ sub: "user-viewer", role: "viewer", scopes: ["key:manage", "tunnel:read"] }, jwtSecret, "2h");
+    const adminToken = signAccessToken({ sub: "admin-1", role: "admin", scopes: ["key:manage", "admin:read", "admin:write", "tunnel:read"] }, jwtSecret, "2h");
 
     server = createGatewayServer({
       gatewayPort,
@@ -123,15 +124,28 @@ async function main() {
       throw new Error(`admin state role check failed: expected 403 got ${viewerDeniedAdminState.statusCode}`);
     }
 
-    const ownerAdminState = await requestJson({
+    // A resource "owner" is NOT a platform admin and must be denied admin state.
+    const ownerDeniedAdminState = await requestJson({
       port: gatewayPort,
       path: "/api/admin/state",
       method: "POST",
       headers: { authorization: `Bearer ${userToken}` },
+      body: { maintenanceMode: true },
+    });
+    if (ownerDeniedAdminState.statusCode !== 403) {
+      throw new Error(`owner should be denied admin state: expected 403 got ${ownerDeniedAdminState.statusCode}`);
+    }
+
+    // Only a genuine platform-admin role may change gateway state.
+    const adminState = await requestJson({
+      port: gatewayPort,
+      path: "/api/admin/state",
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
       body: { maintenanceMode: false, draining: false },
     });
-    if (ownerAdminState.statusCode !== 200) {
-      throw new Error(`admin state update failed: ${ownerAdminState.statusCode}`);
+    if (adminState.statusCode !== 200) {
+      throw new Error(`admin state update failed: ${adminState.statusCode} ${JSON.stringify(adminState.body)}`);
     }
 
     const readOnlyKeyRes = await requestJson({
@@ -143,6 +157,26 @@ async function main() {
     });
     if (readOnlyKeyRes.statusCode !== 201 || !readOnlyKeyRes.body?.apiKey?.token) {
       throw new Error(`read-only key create failed: ${readOnlyKeyRes.statusCode} ${JSON.stringify(readOnlyKeyRes.body)}`);
+    }
+
+    // Privilege amplification guard: the owner does not hold admin:write, so a
+    // key it mints must not carry it. tunnel:read (which it holds) survives.
+    const amplifyAttempt = await requestJson({
+      port: gatewayPort,
+      path: "/api/keys",
+      method: "POST",
+      headers: { authorization: `Bearer ${userToken}` },
+      body: { name: "amplify-test", scopes: "tunnel:read,admin:write" },
+    });
+    if (amplifyAttempt.statusCode !== 201) {
+      throw new Error(`amplify key create failed: ${amplifyAttempt.statusCode} ${JSON.stringify(amplifyAttempt.body)}`);
+    }
+    const grantedScopes = amplifyAttempt.body?.apiKey?.scopes || [];
+    if (grantedScopes.includes("admin:write")) {
+      throw new Error(`privilege amplification: minted key was granted admin:write it should not hold (${JSON.stringify(grantedScopes)})`);
+    }
+    if (!grantedScopes.includes("tunnel:read")) {
+      throw new Error(`held scope tunnel:read was not granted (${JSON.stringify(grantedScopes)})`);
     }
 
     const scopeDeniedCreate = await requestJson({

@@ -741,6 +741,7 @@ function startClient({
   localTcpPort,
   apiKey,
   onFatalError,
+  onRevoked,
 }: {
   gatewayUrl: string;
   localBase: string;
@@ -750,6 +751,7 @@ function startClient({
   localTcpPort?: number;
   apiKey?: string;
   onFatalError?: (error: TunnelRegistrationFailure) => void;
+  onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 }): void {
   const client = new TunnelClient({
     gatewayUrl,
@@ -763,6 +765,7 @@ function startClient({
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     onFatalError,
+    onRevoked,
   });
 
   client.start();
@@ -957,6 +960,12 @@ async function run(): Promise<void> {
         const formatted = formatTunnelOpenFailure(failure, { requestedSubdomain, tcpMode });
         console.error(formatted.message);
         process.exit(1);
+      },
+      onRevoked: (info) => {
+        console.log(
+          `\nTunnel${info.subdomain ? ` '${info.subdomain}'` : ""} was removed from the web control panel. Closing.`,
+        );
+        process.exit(0);
       },
     });
     return;
