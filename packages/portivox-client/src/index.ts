@@ -13,9 +13,10 @@ import {
   listServices,
   logsService,
 } from "./service";
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "fs";
 import { dirname, join, resolve as resolvePath } from "path";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import net from "net";
 
 function normalizeCliArgs(argv: string[]): string[] {
@@ -31,6 +32,8 @@ function normalizeCliArgs(argv: string[]): string[] {
   const firstLower = first.toLowerCase();
   const knownCommands = new Set([
     "open",
+    "list",
+    "tunnels",
     "config",
     "register",
     "login",
@@ -73,6 +76,7 @@ function normalizeCliArgs(argv: string[]): string[] {
   if (["logs", "start", "stop", "restart", "remove", "uninstall"].includes(firstLower)) {
     return ["config", "service", firstLower === "uninstall" ? "remove" : firstLower, ...rest];
   }
+  if (firstLower === "tunnels") return ["list", ...rest];
   if (firstLower === "status") return ["config", "service", "status", ...rest];
   if (firstLower === "http" || firstLower === "expose" || firstLower === "share") return ["open", ...rest];
   if (firstLower === "tcp") return rest.includes("--tcp") ? ["open", ...rest] : ["open", ...rest, "--tcp"];
@@ -85,7 +89,49 @@ const PORTIVOX_DIR = process.env.PORTIVOX_HOME
   ? resolvePath(process.env.PORTIVOX_HOME)
   : join(homedir(), ".portivox");
 const CONFIG_PATH = join(PORTIVOX_DIR, "client.json");
+const SESSIONS_PATH = join(PORTIVOX_DIR, "sessions.json");
 const PACKAGE_VERSION = readPackageVersion();
+
+// ── Session tracking ──────────────────────────────────────────────────────────
+// Records active tunnels to ~/.portivox/sessions.json so `portivox list` can
+// report them and revoke can drop them. Mirrors apps/tunnel-client.
+type SessionEntry = {
+  id: string;
+  tunnelType: string;
+  localPort?: number;
+  subdomain?: string | null;
+  publicPort?: number | null;
+  publicHost?: string | null;
+  redirectUrl?: string | null;
+  accessLink?: string | null;
+  startedAt: string;
+};
+
+function readSessions(): SessionEntry[] {
+  try {
+    const raw = JSON.parse(readFileSync(SESSIONS_PATH, "utf8"));
+    return Array.isArray(raw) ? (raw as SessionEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSessions(sessions: SessionEntry[]): void {
+  mkdirSync(PORTIVOX_DIR, { recursive: true });
+  // Atomic write (temp + rename) so a torn write can't wipe the session list.
+  const tmp = `${SESSIONS_PATH}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(sessions, null, 2), { mode: 0o600 });
+  renameSync(tmp, SESSIONS_PATH);
+}
+
+function addSession(entry: SessionEntry): void {
+  const existing = readSessions().filter((s) => s.id !== entry.id);
+  writeSessions([...existing, entry]);
+}
+
+function removeSession(id: string): void {
+  writeSessions(readSessions().filter((s) => s.id !== id));
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -758,6 +804,7 @@ function startClient({
   onFatalError?: (error: TunnelRegistrationFailure) => void;
   onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 }): void {
+  const sessionId = randomUUID();
   const client = new TunnelClient({
     gatewayUrl,
     localBase,
@@ -770,18 +817,39 @@ function startClient({
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     onFatalError,
-    onRevoked,
+    onRegistered: (info) => {
+      addSession({
+        id: sessionId,
+        tunnelType: info.tunnelType ?? tunnelType ?? "http",
+        localPort: localTcpPort,
+        subdomain: info.subdomain ?? null,
+        publicPort: info.publicPort ?? info.publicTcpPort ?? null,
+        publicHost: info.publicHost ?? info.publicTcpHost ?? null,
+        redirectUrl: info.redirectUrl ?? null,
+        accessLink: info.accessLink ?? null,
+        startedAt: new Date().toISOString(),
+      });
+    },
+    onRevoked: (info) => {
+      removeSession(sessionId);
+      onRevoked?.(info);
+    },
   });
 
   client.start();
 
-  process.on("SIGINT", () => {
+  const cleanup = (): void => {
+    removeSession(sessionId);
     client.stop();
+  };
+
+  process.on("SIGINT", () => {
+    cleanup();
     process.exit(0);
   });
 
   process.on("SIGTERM", () => {
-    client.stop();
+    cleanup();
     process.exit(0);
   });
 }
@@ -798,6 +866,36 @@ async function run(): Promise<void> {
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printUsage();
+    return;
+  }
+
+  // ── list active tunnels ────────────────────────────────────────────────────
+  if (command === "list") {
+    const sessions = readSessions();
+    if (sessions.length === 0) {
+      console.log("No active tunnels.");
+      return;
+    }
+    console.log(`Active tunnels (${sessions.length}):\n`);
+    for (const s of sessions) {
+      const publicUrl = (() => {
+        if (s.redirectUrl) {
+          try {
+            const u = new URL(s.redirectUrl);
+            if (s.subdomain) return `${u.protocol}//${s.subdomain}.${u.hostname}`;
+          } catch { /* fall through */ }
+        }
+        if (s.subdomain) return `(subdomain: ${s.subdomain})`;
+        if (s.publicHost && s.publicPort) return `${s.publicHost}:${s.publicPort}`;
+        return "(unknown)";
+      })();
+      console.log(`  [${s.tunnelType.toUpperCase()}] ${publicUrl}`);
+      if (s.localPort) console.log(`    Local port : ${s.localPort}`);
+      if (s.redirectUrl) console.log(`    Status URL : ${s.redirectUrl}`);
+      if (s.accessLink) console.log(`    Access link: ${s.accessLink}`);
+      console.log(`    Started    : ${s.startedAt}`);
+      console.log();
+    }
     return;
   }
 

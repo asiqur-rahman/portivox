@@ -21,6 +21,19 @@ export type TunnelClientConfig = {
   ipProtection?: boolean;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
+  /** Called once when the gateway confirms registration — used to persist the
+   *  active tunnel to the local session file. */
+  onRegistered?: (info: {
+    subdomain?: string;
+    tunnelType?: "http" | "tcp";
+    publicPort?: number;
+    publicHost?: string;
+    publicTcpPort?: number;
+    publicTcpHost?: string;
+    accessLink?: string;
+    redirectToken?: string;
+    redirectUrl?: string;
+  }) => void;
   /** Called when the gateway revokes this tunnel (owner removed it from the web
    *  panel). The client stops and will NOT reconnect. */
   onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
@@ -151,6 +164,17 @@ export class TunnelClient {
         if (msg.redirectUrl) {
           this.logger.info(`Status page (stable): ${msg.redirectUrl}`);
         }
+        this.config.onRegistered?.({
+          subdomain: msg.subdomain,
+          tunnelType: msg.tunnelType,
+          publicPort: msg.publicPort,
+          publicHost: msg.publicHost,
+          publicTcpPort: msg.publicTcpPort,
+          publicTcpHost: msg.publicTcpHost,
+          accessLink: msg.accessLink,
+          redirectToken: msg.redirectToken,
+          redirectUrl: msg.redirectUrl,
+        });
         return;
       }
 
