@@ -239,6 +239,12 @@ export class TunnelRegistry {
     return removed;
   }
 
+  /** The live WebSocket for a subdomain, if a client is currently connected.
+   *  Used to push control frames (e.g. tunnel_revoked) to the owning client. */
+  getSocketBySubdomain(subdomain: string): WebSocket | undefined {
+    return this.bySubdomain.get(subdomain)?.socket;
+  }
+
   listSessions(): Array<{ subdomain: string; connectedAt: number; lastHeartbeatAt: number }> {
     return [...this.bySubdomain.values()].map((entry) => ({
       subdomain: entry.subdomain,

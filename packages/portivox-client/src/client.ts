@@ -21,6 +21,22 @@ export type TunnelClientConfig = {
   ipProtection?: boolean;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
+  /** Called once when the gateway confirms registration — used to persist the
+   *  active tunnel to the local session file. */
+  onRegistered?: (info: {
+    subdomain?: string;
+    tunnelType?: "http" | "tcp";
+    publicPort?: number;
+    publicHost?: string;
+    publicTcpPort?: number;
+    publicTcpHost?: string;
+    accessLink?: string;
+    redirectToken?: string;
+    redirectUrl?: string;
+  }) => void;
+  /** Called when the gateway revokes this tunnel (owner removed it from the web
+   *  panel). The client stops and will NOT reconnect. */
+  onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 };
 
 export class TunnelClient {
@@ -30,6 +46,9 @@ export class TunnelClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private registered = false;
+  /** Stable redirect token from the gateway — replayed on reconnect so the
+   *  /r/:token status URL stays the same across disconnects. */
+  private redirectToken: string | null = null;
   private readonly tcpConnections = new Map<string, net.Socket>();
   private readonly logger = createConsoleLogger("client");
   // Keep-alive agents reuse the loopback TCP connection across requests,
@@ -64,6 +83,13 @@ export class TunnelClient {
 
   private connect(): void {
     this.registered = false;
+    // Detach the previous socket's listeners before opening a new one so a
+    // late/stale event from the old connection can't fire against the new
+    // session or leak the old socket via its closures.
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -93,6 +119,8 @@ export class TunnelClient {
         localPort: this.config.localTcpPort,
         // Request IP link protection (TCP only; default true unless opted out).
         ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
+        // Replay the stable redirect token on reconnect to keep the /r/ URL.
+        redirectToken: this.redirectToken ?? undefined,
       });
       this.startHeartbeat();
     });
@@ -108,6 +136,9 @@ export class TunnelClient {
 
       if (msg.type === "registered") {
         this.registered = true;
+        if (msg.redirectToken) {
+          this.redirectToken = msg.redirectToken;
+        }
         if (msg.subdomain) {
           this.logger.info(`Tunnel active: ${msg.subdomain}`);
           if (msg.tunnelType === "http" && msg.publicHost && msg.publicPort) {
@@ -133,6 +164,17 @@ export class TunnelClient {
         if (msg.redirectUrl) {
           this.logger.info(`Status page (stable): ${msg.redirectUrl}`);
         }
+        this.config.onRegistered?.({
+          subdomain: msg.subdomain,
+          tunnelType: msg.tunnelType,
+          publicPort: msg.publicPort,
+          publicHost: msg.publicHost,
+          publicTcpPort: msg.publicTcpPort,
+          publicTcpHost: msg.publicTcpHost,
+          accessLink: msg.accessLink,
+          redirectToken: msg.redirectToken,
+          redirectUrl: msg.redirectUrl,
+        });
         return;
       }
 
@@ -143,6 +185,18 @@ export class TunnelClient {
           return;
         }
         this.logger.error(`Gateway error: ${msg.message}`);
+        return;
+      }
+
+      if (msg.type === "tunnel_revoked") {
+        // Owner removed this tunnel from the web panel. Close and do NOT
+        // reconnect (stop() sets the flag scheduleReconnect() checks).
+        this.logger.warn("Tunnel removed from the control panel — closing this tunnel.", {
+          subdomain: msg.subdomain ?? null,
+          reason: msg.reason ?? null,
+        });
+        this.config.onRevoked?.({ subdomain: msg.subdomain, reason: msg.reason });
+        this.stop();
         return;
       }
 

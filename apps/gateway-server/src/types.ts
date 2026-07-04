@@ -10,6 +10,7 @@ export type WireMessage =
   | TcpClose
   | Heartbeat
   | HeartbeatAck
+  | TunnelRevoked
   | ErrorMessage;
 
 export type StreamTransportMeta = {
@@ -105,6 +106,14 @@ export type Heartbeat = {
 
 export type HeartbeatAck = {
   type: "heartbeat_ack";
+};
+
+// Gateway → client: this tunnel was removed by its owner from the web panel (or
+// by an admin). The client must close the tunnel and NOT reconnect it.
+export type TunnelRevoked = {
+  type: "tunnel_revoked";
+  subdomain?: string;
+  reason?: string;
 };
 
 export type ErrorMessage = {

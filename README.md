@@ -42,11 +42,13 @@ npm install -g portivox-client
 2. Push tag:
 
 ```bash
-git tag portivox-client-v0.1.0
-git push origin portivox-client-v0.1.0
+git tag portivox-client-v0.4.0
+git push origin portivox-client-v0.4.0
 ```
 
-Or run workflow manually: `publish-portivox-client`.
+The tag version must match `packages/portivox-client/package.json` (the workflow
+refuses to republish an existing version). Or run workflow manually:
+`publish-portivox-client`.
 
 ### Docker Shortcuts
 
@@ -128,10 +130,18 @@ http://localhost:5173
 Frontend supports:
 - Self register/login (JWT)
 - API key login (optional)
-- Tunnel list
+- Tunnel list — including live tunnels opened from the CLI (`portivox open`)
 - Tunnel create
-- Tunnel delete
-- Admin panel (system state, key management, diagnostics, audit)
+- Tunnel remove — stopping any tunnel, including a live CLI session, tells the
+  connected client to close that tunnel immediately (it will not reconnect)
+- Admin panel (system state, key management, diagnostics, audit) — visible only
+  to platform admins
+
+> **Roles:** self-registered users are resource **owners** — they manage only
+> their own tunnels and API keys. Platform **admins** (the only role that can
+> reach `/api/admin/*` and the audit log) are provisioned by listing their email
+> in the `ADMIN_EMAILS` gateway env var, or via a static `AUTH_API_KEYS` key.
+> `AUTH_REQUIRED` defaults to `true` when `NODE_ENV=production`.
 
 ---
 
@@ -209,6 +219,21 @@ npm run portivox:open -- 3389 --tcp --host 127.0.0.1
 
 When connected, client prints `TCP endpoint: <host>:<port>`.  
 Use that host/port from remote machine to connect over SSH/RDP/TCP client.
+
+---
+
+## 4b) List and Remove Tunnels
+
+List the tunnels the current machine has open:
+
+```bash
+npm run portivox -- list
+```
+
+Tunnels opened from the CLI also appear in the web console under your account
+(use an API key created in your own account, not a shared one). Removing a
+tunnel from the console — or via `DELETE /api/tunnels/:id` — tells the connected
+client to close that tunnel immediately; it will not reconnect it.
 
 ---
 

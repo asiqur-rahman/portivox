@@ -87,10 +87,17 @@ function loadGatewayConfig() {
     tunnelResponseTimeoutMs: parseInteger("TUNNEL_RESPONSE_TIMEOUT_MS", 20000),
     wsIdleTimeoutMs: parseInteger("WS_IDLE_TIMEOUT_MS", 30000),
     maxRequestBodyBytes: parseInteger("MAX_REQUEST_BODY_BYTES", 1048576),
-    authRequired: parseBoolean("AUTH_REQUIRED", false),
+    // Fail closed in production: unless AUTH_REQUIRED is explicitly set, require
+    // auth when NODE_ENV=production so a fresh deploy is never an open, anonymous
+    // superuser surface. Non-production keeps the convenient anonymous dev mode.
+    authRequired: parseBoolean("AUTH_REQUIRED", process.env.NODE_ENV === "production"),
     authApiKeys: parseString("AUTH_API_KEYS", ""),
     authApiKeyScopes: parseString("AUTH_API_KEY_SCOPES", "tunnel:create,tunnel:read,tunnel:delete,key:manage"),
     authJwtSecret: parseString("AUTH_JWT_SECRET", ""),
+    // Comma-separated list of emails that are provisioned as platform admins on
+    // register/login. Admins are the only principals allowed to reach /api/admin/*
+    // and /api/audit. Everyone else is a resource "owner".
+    adminEmails: parseString("ADMIN_EMAILS", ""),
     registryBackend: parseEnum("REGISTRY_BACKEND", "memory", ["memory", "redis"]),
     redisUrl: parseString("REDIS_URL", ""),
     redisKeyPrefix: parseString("REDIS_KEY_PREFIX", "portivox:registry"),
@@ -135,11 +142,28 @@ function loadGatewayConfig() {
     gatewayPublicBaseUrl: parseString("GATEWAY_PUBLIC_BASE_URL", ""),
   };
 
-  if (config.authRequired && !config.authJwtSecret) {
-    throw new Error(
-      "AUTH_JWT_SECRET must be set when AUTH_REQUIRED=true. " +
-      "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
-    );
+  if (config.authRequired) {
+    if (!config.authJwtSecret) {
+      throw new Error(
+        "AUTH_JWT_SECRET must be set when AUTH_REQUIRED=true. " +
+        "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+      );
+    }
+    // Reject weak / placeholder secrets — a guessable signing key lets anyone
+    // forge admin JWTs. Require at least 32 characters of real entropy.
+    const placeholders = new Set(["replace_me_strong_secret", "changeme", "secret", "please_change_me"]);
+    if (config.authJwtSecret.length < 32 || placeholders.has(config.authJwtSecret.toLowerCase())) {
+      throw new Error(
+        "AUTH_JWT_SECRET is too weak or is a placeholder. Use at least 32 random characters. " +
+        "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+      );
+    }
+  }
+
+  // The redis registry backend cannot function without a connection string;
+  // fail fast at boot rather than silently degrading at first connect attempt.
+  if (config.registryBackend === "redis" && !config.redisUrl) {
+    throw new Error("REDIS_URL must be set when REGISTRY_BACKEND=redis.");
   }
 
   return config;

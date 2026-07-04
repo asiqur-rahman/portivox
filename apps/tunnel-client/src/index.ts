@@ -15,7 +15,7 @@ import {
   listServices,
   logsService,
 } from "./service";
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -169,7 +169,12 @@ function readSessions(): SessionEntry[] {
 
 function writeSessions(sessions: SessionEntry[]): void {
   mkdirSync(PORTIVOX_DIR, { recursive: true });
-  writeFileSync(SESSIONS_PATH, JSON.stringify(sessions, null, 2), { mode: 0o600 });
+  // Atomic write: serialize to a per-process temp file then rename over the
+  // target. A crash/SIGKILL mid-write can no longer truncate sessions.json
+  // (readSessions swallows a parse error and would return [] — wiping the list).
+  const tmp = `${SESSIONS_PATH}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(sessions, null, 2), { mode: 0o600 });
+  renameSync(tmp, SESSIONS_PATH);
 }
 
 function addSession(entry: SessionEntry): void {
@@ -252,7 +257,13 @@ function pickArg(argv: string[], name: string): string | undefined {
   if (idx < 0 || idx + 1 >= argv.length) {
     return undefined;
   }
-  return argv[idx + 1];
+  // Don't consume the next token if it's itself a flag (e.g. `--subdomain --tcp`
+  // must not set subdomain to "--tcp"); treat the value as missing instead.
+  const next = argv[idx + 1];
+  if (next.startsWith("--")) {
+    return undefined;
+  }
+  return next;
 }
 
 function gatewayApiBaseUrl(gatewayUrl: string): string {
@@ -922,6 +933,15 @@ function startClient({
         startedAt: new Date().toISOString(),
       });
     },
+    onRevoked: (info) => {
+      // Owner removed this tunnel from the web panel. Drop the local session
+      // record and exit cleanly — the client will not reconnect it.
+      removeSession(sessionId);
+      console.log(
+        `\nTunnel${info.subdomain ? ` '${info.subdomain}'` : ""} was removed from the web control panel. Closing.`,
+      );
+      process.exit(0);
+    },
   });
 
   client.start();
@@ -1127,10 +1147,18 @@ async function run(): Promise<void> {
     const apiKey = process.env.TUNNEL_API_KEY ?? saved.apiKey;
 
     const exitAfterRaw = pickArg(args, "--exit-after");
-    const exitAfterMs = exitAfterRaw ? Number(exitAfterRaw) * 1000 : undefined;
+    const exitAfterSeconds = exitAfterRaw !== undefined ? Number(exitAfterRaw) : undefined;
+    if (exitAfterSeconds !== undefined && (!Number.isFinite(exitAfterSeconds) || exitAfterSeconds <= 0)) {
+      throw new Error(`--exit-after must be a positive number of seconds (got "${exitAfterRaw}")`);
+    }
+    const exitAfterMs = exitAfterSeconds !== undefined ? exitAfterSeconds * 1000 : undefined;
 
     const heartbeatRaw = pickArg(args, "--heartbeat");
-    const heartbeatIntervalMs = heartbeatRaw ? Number(heartbeatRaw) : defaultConfig.heartbeatIntervalMs;
+    const heartbeatParsed = heartbeatRaw !== undefined ? Number(heartbeatRaw) : undefined;
+    if (heartbeatParsed !== undefined && (!Number.isFinite(heartbeatParsed) || heartbeatParsed <= 0)) {
+      throw new Error(`--heartbeat must be a positive number of milliseconds (got "${heartbeatRaw}")`);
+    }
+    const heartbeatIntervalMs = heartbeatParsed ?? defaultConfig.heartbeatIntervalMs;
 
     if (!apiKey) {
       // eslint-disable-next-line no-console
@@ -1139,6 +1167,24 @@ async function run(): Promise<void> {
     }
     await verifyApiKeyWithGateway(gatewayUrl, apiKey);
 
+    // Pre-flight: fail fast if the gateway is in maintenance/draining instead of
+    // connecting and getting a runtime error frame after the WebSocket opens.
+    try {
+      const ready = await fetchGatewayReadyStatus(gatewayUrl);
+      if (ready.maintenanceMode) {
+        throw new Error("Gateway is in maintenance mode. Try again in a moment.");
+      }
+      if (ready.draining) {
+        throw new Error("Gateway is temporarily draining and not accepting new tunnels. Try again shortly.");
+      }
+    } catch (error) {
+      // Only abort on the explicit maintenance/draining signals; a failed status
+      // probe (older gateway, transient blip) should not block the tunnel.
+      if (error instanceof Error && /maintenance mode|draining/.test(error.message)) {
+        console.error(error.message);
+        process.exit(1);
+      }
+    }
 
     // ── persistent service mode ────────────────────────────────────────────
     const persistent   = args.includes("--persistent");

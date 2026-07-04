@@ -40,6 +40,10 @@ export type TunnelClientConfig = {
   onRegistered?: (info: RegisteredInfo) => void;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
+  /** Called when the gateway revokes this tunnel (owner removed it from the web
+   *  panel). The client stops and will NOT reconnect; the CLI uses this to drop
+   *  the local session entry and exit. */
+  onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
   /** When true, the client exits instead of reconnecting after a disconnect.
    *  Used by the CLI when reconnectMode is "once". */
   noReconnect?: boolean;
@@ -105,6 +109,13 @@ export class TunnelClient {
 
   private connect(): void {
     this.registered = false;
+    // Detach the previous socket's listeners before opening a new one so a
+    // late/stale event (close/message/error) from the old connection can't fire
+    // against the new session or leak the old socket via its closures.
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
     this.logger.info(`Connecting to gateway ${this.config.gatewayUrl}`, {
       requestedSubdomain: this.config.requestedSubdomain ?? null,
       tunnelType: this.config.tunnelType ?? "http",
@@ -223,6 +234,19 @@ export class TunnelClient {
           return;
         }
         this.logger.error(`Gateway error: ${msg.message}`);
+        return;
+      }
+
+      if (msg.type === "tunnel_revoked") {
+        // The owner removed this tunnel from the web panel. Close the port and
+        // do NOT reconnect. stop() sets `stopped` so scheduleReconnect() is a
+        // no-op when the socket subsequently closes.
+        this.logger.warn("Tunnel removed from the control panel — closing this tunnel.", {
+          subdomain: msg.subdomain ?? null,
+          reason: msg.reason ?? null,
+        });
+        this.config.onRevoked?.({ subdomain: msg.subdomain, reason: msg.reason });
+        this.stop();
         return;
       }
 
@@ -394,12 +418,17 @@ export class TunnelClient {
         // so that internal hostnames, ports, and topology are not leaked to the
         // remote caller.
         this.logger.warn("Local upstream request failed", { streamId: msg.streamId, error: error.message });
+        // Distinguish an oversize local response (accurate 502 + reason) from a
+        // genuine connection failure — the upstream did respond, just too big.
+        const tooLarge = error.message.startsWith("Local response exceeds limit");
         resolve([{
           type: "http_response",
           streamId: msg.streamId,
           statusCode: 502,
           headers: { "content-type": "application/json" },
-          bodyBase64: Buffer.from(JSON.stringify({ error: "Upstream connection failed" })).toString("base64"),
+          bodyBase64: Buffer.from(JSON.stringify({
+            error: tooLarge ? "Upstream response exceeded the client body size limit" : "Upstream connection failed",
+          })).toString("base64"),
           meta: msg.meta,
         }]);
       });

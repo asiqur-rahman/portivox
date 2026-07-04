@@ -195,23 +195,23 @@ export function TunnelsPage({
                     </button>
                     <div className="mobile-card-actions">
                       {tunnel.active && !tunnel.isCliSession && (
-                        <button className="btn-ghost" onClick={() => onInspect(tunnel.subdomain)}>
+                        <button className="btn-ghost" onClick={() => onInspect(tunnel.subdomain ?? "")}>
                           <i className="ti ti-eye" /> Inspect
                         </button>
                       )}
-                      <button
-                        className="btn-ghost"
-                        onClick={() => window.open(url, "_blank", "noreferrer")}
-                        disabled={!tunnel.active}
-                        title={tunnel.active ? "Open tunnel" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
-                      >
-                        <i className="ti ti-external-link" /> {tunnel.active ? "Open" : "Unavailable"}
-                      </button>
-                      {!tunnel.isCliSession && (
-                        <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                          Stop
+                      {tunnel.tunnelType !== "tcp" && (
+                        <button
+                          className="btn-ghost"
+                          onClick={() => window.open(url, "_blank", "noreferrer")}
+                          disabled={!tunnel.active}
+                          title={tunnel.active ? "Open tunnel" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
+                        >
+                          <i className="ti ti-external-link" /> {tunnel.active ? "Open" : "Unavailable"}
                         </button>
                       )}
+                      <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain ?? url)}>
+                        {tunnel.isCliSession ? "Remove" : "Stop"}
+                      </button>
                     </div>
                   </article>
                 );
@@ -275,31 +275,26 @@ export function TunnelsPage({
                       <td>
                         <div className="row-actions" style={{ justifyContent: "flex-end" }}>
                           {tunnel.active && !tunnel.isCliSession && (
-                            <button className="icon-btn" title="Inspect HTTP traffic" onClick={() => onInspect(tunnel.subdomain)}>
+                            <button className="icon-btn" title="Inspect HTTP traffic" onClick={() => onInspect(tunnel.subdomain ?? "")}>
                               <i className="ti ti-eye" />
                             </button>
                           )}
-                          <button className="icon-btn" title="Copy URL" onClick={() => onCopy(url)}>
+                          <button className="icon-btn" title={tunnel.tunnelType === "tcp" ? "Copy address" : "Copy URL"} onClick={() => onCopy(url)}>
                             <i className="ti ti-copy" />
                           </button>
-                          <button
-                            className="icon-btn"
-                            title={tunnel.active ? "Open in browser" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
-                            onClick={() => window.open(url, "_blank", "noreferrer")}
-                            disabled={!tunnel.active}
-                          >
-                            <i className="ti ti-external-link" />
-                          </button>
-                          {!tunnel.isCliSession && (
-                            <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain)}>
-                              Stop
+                          {tunnel.tunnelType !== "tcp" && (
+                            <button
+                              className="icon-btn"
+                              title={tunnel.active ? "Open in browser" : (tunnel.statusMessage ?? "Tunnel is not currently reachable")}
+                              onClick={() => window.open(url, "_blank", "noreferrer")}
+                              disabled={!tunnel.active}
+                            >
+                              <i className="ti ti-external-link" />
                             </button>
                           )}
-                          {tunnel.isCliSession && tunnel.active && (
-                            <span style={{ fontSize: 11, color: "var(--text-3)", padding: "0 4px", whiteSpace: "nowrap" }}>
-                              Ctrl+C to stop
-                            </span>
-                          )}
+                          <button className="stop-btn" disabled={loading} onClick={() => onDeleteTunnel(tunnel.id, tunnel.subdomain ?? url)}>
+                            {tunnel.isCliSession ? "Remove" : "Stop"}
+                          </button>
                         </div>
                       </td>
                     </tr>

@@ -18,14 +18,18 @@ function signAccessToken(payload, secret, expiresIn = "1h") {
   if (!secret) {
     throw new Error("JWT secret missing");
   }
-  return jwt.sign(payload, secret, { expiresIn });
+  // Pin the algorithm explicitly so tokens are always HMAC-SHA256.
+  return jwt.sign(payload, secret, { expiresIn, algorithm: "HS256" });
 }
 
 function verifyAccessToken(token, secret) {
   if (!secret) {
     throw new Error("JWT secret missing");
   }
-  return jwt.verify(token, secret);
+  // Restrict accepted algorithms to HS256. Without this, jsonwebtoken accepts
+  // any algorithm the token header claims, which is the classic algorithm-
+  // confusion vector (e.g. "none", or HS/RS confusion if keys ever change).
+  return jwt.verify(token, secret, { algorithms: ["HS256"] });
 }
 
 function parseScopes(raw, fallback) {

@@ -29,6 +29,7 @@ export type GatewayRuntimeConfig = {
   authApiKeys?: string;
   authApiKeyScopes?: string;
   authJwtSecret?: string;
+  adminEmails?: string;
   registryBackend?: "memory" | "redis";
   redisUrl?: string;
   redisKeyPrefix?: string;
@@ -393,7 +394,18 @@ class AuditStore {
   private readonly ownsPrisma: boolean;
   private readonly sink: AuditSink;
   private readonly memory: Array<AuditEvent & { id: string }> = [];
+  // Cap the DB-less in-memory audit log so a long-running gateway without a
+  // database doesn't grow the heap unbounded (oldest events are dropped).
+  private static readonly MAX_MEMORY_EVENTS = 5000;
   private readonly onLogged?: (event: AuditEvent & { id?: string }) => void;
+
+  private pushMemory(event: AuditEvent & { id: string }): void {
+    this.memory.push(event);
+    const overflow = this.memory.length - AuditStore.MAX_MEMORY_EVENTS;
+    if (overflow > 0) {
+      this.memory.splice(0, overflow);
+    }
+  }
 
   constructor(sink: AuditSink, prisma?: PrismaClient | null, options?: { onLogged?: (event: AuditEvent & { id?: string }) => void }) {
     this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
@@ -413,7 +425,7 @@ class AuditStore {
     };
     if (!this.prisma) {
       const storedEvent = { id: randomUUID(), ...auditEvent };
-      this.memory.push(storedEvent);
+      this.pushMemory(storedEvent);
       await this.sink.emit(auditEvent);
       this.onLogged?.(storedEvent);
       return;
@@ -453,7 +465,7 @@ class AuditStore {
         } catch {
           // Prisma still failing after retry — fall back to in-memory.
           const storedEvent = { id: randomUUID(), ...auditEvent };
-          this.memory.push(storedEvent);
+          this.pushMemory(storedEvent);
           this.onLogged?.(storedEvent);
         }
       } else {
@@ -462,7 +474,7 @@ class AuditStore {
         // `void auditStore.log(...)` (fire-and-forget), which would turn a
         // thrown error into an unhandled rejection and exit the process.
         const storedEvent = { id: randomUUID(), ...auditEvent };
-        this.memory.push(storedEvent);
+        this.pushMemory(storedEvent);
         this.onLogged?.(storedEvent);
       }
       // Emit to configured sinks (JSONL file, webhook) regardless of DB state.
@@ -894,6 +906,22 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   });
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
+  // Emails provisioned as platform admins (case-insensitive). See ADMIN_EMAILS.
+  const adminEmailSet = new Set(
+    (config.adminEmails ?? "")
+      .split(",")
+      .map((email: string) => email.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const isAdminEmail = (email: string): boolean => adminEmailSet.has(email.trim().toLowerCase());
+  // Platform admins are granted admin scopes in addition to the default user scopes.
+  const ADMIN_SCOPES = ["admin:read", "admin:write"] as const;
+
+  // WebSocket send-buffer watermarks for TCP relay backpressure. When a tunnel
+  // client drains slower than the public peer produces, ws.bufferedAmount grows
+  // in gateway heap; pause the source socket above HIGH and resume below LOW.
+  const WS_BACKPRESSURE_HIGH_WATER_BYTES = 8 * 1024 * 1024;
+  const WS_BACKPRESSURE_LOW_WATER_BYTES = 1 * 1024 * 1024;
 
   const wsHttpServer = createServer();
   const wsServer = new WebSocketServer({
@@ -918,6 +946,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   const apiAdminLimiter = new RateLimiter(config.apiRateLimitAdminPerMin ?? 120, 60_000);
   const tunnelIngressLimiter = new RateLimiter(config.ingressRateLimitPerMin ?? 1200, 60_000);
   const responseWaiters = new Map<string, (value: HttpResponse) => void>();
+  // Parallel to responseWaiters: lets the (re-armable) idle timer reject a stream
+  // from outside the promise executor. Always deleted alongside its waiter.
+  const streamRejecters = new Map<string, (error: Error) => void>();
   const streamTimeouts = new Map<string, NodeJS.Timeout>();
   const responseChunksByStream = new Map<string, {
     statusCode: number;
@@ -932,8 +963,43 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     chunkStreamsReassembled: 0,
     chunkIncompleteTimeouts: 0,
   };
+
+  // (Re)arm the per-stream idle timeout. Called when the request is dispatched
+  // and again on every chunk received, so a healthy but slow chunked response
+  // is not killed mid-transfer — the timer fires only after genuine inactivity.
+  const armStreamIdleTimeout = (streamId: string, socket: WebSocket): void => {
+    const prev = streamTimeouts.get(streamId);
+    if (prev) {
+      clearTimeout(prev);
+    }
+    const timeout = setTimeout(() => {
+      if (!responseWaiters.has(streamId)) {
+        return;
+      }
+      if (responseChunksByStream.has(streamId)) {
+        chunkDiagnostics.chunkIncompleteTimeouts += 1;
+        metrics.increment("gateway_chunk_incomplete_timeouts_total");
+        void auditStore.log(null, "chunk_stream_timeout", "tunnel_stream", streamId, {
+          errorCode: "TUNNEL_STREAM_IDLE_TIMEOUT",
+        });
+      }
+      const reject = streamRejecters.get(streamId);
+      responseWaiters.delete(streamId);
+      streamRejecters.delete(streamId);
+      activeStreamsBySocket.get(socket)?.delete(streamId);
+      streamTimeouts.delete(streamId);
+      responseChunksByStream.delete(streamId);
+      reject?.(new Error("TUNNEL_STREAM_IDLE_TIMEOUT"));
+    }, config.streamIdleTimeoutMs ?? config.tunnelResponseTimeoutMs);
+    streamTimeouts.set(streamId, timeout);
+  };
   const socketSubdomain = new WeakMap<object, string>();
   const activeStreamsBySocket = new WeakMap<object, Set<string>>();
+  // tunnelKey → live control socket. Unlike the registry (which only tracks
+  // subdomain-routed HTTP/random-TCP tunnels), this also covers fixed-port TCP
+  // tunnels keyed by their synthetic `__tcp_port_<n>__` key, so they can be
+  // revoked from the web panel.
+  const socketByTunnelKey = new Map<string, WebSocket>();
   const tcpBindingsBySubdomain = new Map<string, { server: net.Server; publicPort: number }>();
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
@@ -1188,7 +1254,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return principal.userId === event.userId || principal.authType === "anonymous";
     }
     if (event.kind === "audit_changed" || event.kind === "tcp_mappings_changed") {
-      return isAdminRole(principal.role) && hasScope(principal.scopes, "key:manage");
+      return isPlatformAdmin(principal.role) && hasScope(principal.scopes, "key:manage");
     }
     if (event.kind === "inspector_changed") {
       if (!hasScope(principal.scopes, "tunnel:read")) {
@@ -1375,7 +1441,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (apiKey) {
       const owned = await authStore.validateApiKey(hashApiKey(apiKey));
       if (owned) {
-        return { userId: owned.userId, authType: "api_key", apiKey, scopes: owned.scopes, role: "admin" };
+        // User-minted API keys carry the "owner" role, never "admin". Platform
+        // administration is intentionally unreachable via a self-service key —
+        // otherwise any user with key:manage could mint themselves admin access.
+        // Operators who need admin-over-API use a static AUTH_API_KEYS key above.
+        return { userId: owned.userId, authType: "api_key", apiKey, scopes: owned.scopes, role: "owner" };
       }
     }
 
@@ -1416,8 +1486,20 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return null;
   }
 
+  // Owner-level authority: the principal may act on *their own* resources
+  // (their API keys, their tunnels' inspector data). Both "owner" and "admin"
+  // qualify. This is NOT sufficient for platform-wide administration.
   function isAdminRole(role: Principal["role"]): boolean {
     return role === "admin" || role === "owner";
+  }
+
+  // Platform-admin authority: cross-tenant / gateway-wide operations
+  // (maintenance & drain state, listing every tenant's tunnels, reading the
+  // full audit log, TCP port mappings). ONLY the dedicated "admin" role
+  // qualifies — a self-registered "owner" must never reach these. Admins are
+  // provisioned out-of-band via ADMIN_EMAILS or a static AUTH_API_KEYS key.
+  function isPlatformAdmin(role: Principal["role"]): boolean {
+    return role === "admin";
   }
 
   function filterHopByHopHeaders<T extends Record<string, unknown>>(headers: T): T {
@@ -1574,7 +1656,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
     reservedTcpPorts.add(port);
 
-    const connectionIds = new Set<string>();
+    // Reuse the socket's existing connection set if it already owns TCP tunnels.
+    // Overwriting with a fresh Set would orphan connections from an earlier
+    // binding on the same socket (their tcp_data would be dropped and their
+    // sockets leaked, since close-cleanup only iterates the surviving set).
+    const connectionIds = tcpConnectionsBySocket.get(socket) ?? new Set<string>();
     tcpConnectionsBySocket.set(socket, connectionIds);
 
     const server = net.createServer((conn) => {
@@ -1607,6 +1693,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       const connectionId = randomUUID();
       tcpConnectionsById.set(connectionId, conn);
       connectionIds.add(connectionId);
+      // Single backpressure resume timer per connection (guards against
+      // spawning overlapping intervals when multiple buffered data events fire
+      // after conn.pause()).
+      let resumeTimer: NodeJS.Timeout | null = null;
 
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(encodeWireMessage({ type: "tcp_open", connectionId }));
@@ -1625,9 +1715,32 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           connectionId,
           dataBase64: Buffer.from(chunk).toString("base64"),
         }));
+        // Backpressure: if the tunnel client is draining slower than this public
+        // peer produces, ws.bufferedAmount backs up in gateway heap. Pause the
+        // source until the buffer drains, then resume — bounding memory use.
+        // Only one resume timer runs at a time (resumeTimer guard).
+        if (socket.bufferedAmount > WS_BACKPRESSURE_HIGH_WATER_BYTES && !resumeTimer) {
+          conn.pause();
+          resumeTimer = setInterval(() => {
+            if (socket.readyState !== WebSocket.OPEN || conn.destroyed) {
+              if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
+              if (!conn.destroyed) conn.destroy();
+              return;
+            }
+            if (socket.bufferedAmount <= WS_BACKPRESSURE_LOW_WATER_BYTES) {
+              if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
+              conn.resume();
+            }
+          }, 25);
+          if (typeof resumeTimer.unref === "function") resumeTimer.unref();
+        }
       });
 
       const closeConnection = (reason?: string): void => {
+        if (resumeTimer) {
+          clearInterval(resumeTimer);
+          resumeTimer = null;
+        }
         if (!tcpConnectionsById.has(connectionId)) {
           return;
         }
@@ -1674,6 +1787,40 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     await new Promise<void>((resolve) => {
       binding.server.close(() => resolve());
     });
+  }
+
+  /** Delete the stable redirect (/r/:token) entry for a tunnel key so a revoked
+   *  tunnel does not linger in the panel as an "offline" session. */
+  function purgeRedirectForKey(tunnelKey: string): void {
+    const rToken = redirectTokenByTunnelKey.get(tunnelKey);
+    if (rToken) {
+      redirectByToken.delete(rToken);
+      redirectTokenByTunnelKey.delete(tunnelKey);
+    }
+  }
+
+  /** Terminate a currently-connected tunnel: tell the client to close the port
+   *  and NOT reconnect, then close the control socket (its close handler tears
+   *  down TCP bindings, registry lease, inspector buffers and IP tokens).
+   *  Returns true if a live client socket was found and signalled. */
+  function revokeLiveTunnel(tunnelKey: string, reason: string): boolean {
+    // socketByTunnelKey covers both subdomain-routed and fixed-port TCP tunnels;
+    // fall back to the registry for safety.
+    const socket = socketByTunnelKey.get(tunnelKey) ?? registry.getSocketBySubdomain(tunnelKey);
+    if (!socket) {
+      return false;
+    }
+    try {
+      if (socket.readyState === WebSocket.OPEN) {
+        // Queue the revoke frame, then close — ws flushes buffered data before
+        // sending the close frame, so the client receives the revoke first.
+        socket.send(encodeWireMessage({ type: "tunnel_revoked", subdomain: tunnelKey, reason }));
+        socket.close(4403, "revoked");
+      }
+    } catch {
+      // best effort — the close handler still runs on any socket teardown
+    }
+    return true;
   }
 
   function parseCreateTunnelBody(rawBody: unknown): { subdomain: string } | null {
@@ -1788,6 +1935,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     metrics.increment("gateway_ws_connections_total");
 
+    // A tunnel socket that emits 'error' with no listener is re-thrown by the
+    // 'ws' library as an uncaught exception, which would crash the whole node
+    // and drop every live tunnel. Attach the handler immediately (before the
+    // async auth resolves) so errors during the auth window are caught too.
+    socket.on("error", (err: Error) => {
+      metrics.increment("gateway_ws_socket_errors_total");
+      app.log.warn({ err, remoteAddress: request.socket.remoteAddress }, "tunnel websocket error");
+    });
+
     // Buffer any frames that arrive while resolvePrincipal is awaiting the DB.
     // Without this, register_tunnel is silently lost in the race window between
     // the WebSocket upgrade and the async auth completing, causing the gateway
@@ -1848,7 +2004,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             !isTcp &&
             requestedPremiumSubdomain &&
             config.authRequired !== false &&
-            !isAdminRole(principal.role) &&
+            !isPlatformAdmin(principal.role) &&
             !hasScope(principal.scopes, "tunnel:subdomain")
           ) {
             socket.send(createGatewayError(
@@ -1881,8 +2037,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             // server binding without any changes to that logic.
             const syntheticKey = `__tcp_port_${fixedMapping.publicPort}__`;
             socketSubdomain.set(socket, syntheticKey);
-            // NOTE: do NOT add to registry (no HTTP subdomain routing required)
-            // NOTE: do NOT set ownershipBySubdomain (synthetic key, not a real subdomain)
+            socketByTunnelKey.set(syntheticKey, socket);
+            // NOTE: do NOT add to registry (no HTTP subdomain routing required).
+            // Record ownership under the synthetic key so the tunnel is listable
+            // and revocable by its owner from the web panel.
+            ownershipBySubdomain.set(syntheticKey, principal.userId);
             registered = true;
             metrics.setGauge("gateway_active_tunnels", registry.count());
 
@@ -1916,6 +2075,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               existingREntry.connected = false;  // will be marked true after bind
               existingREntry.disconnectedAt = undefined;
               existingREntry.accessLink = accessLink;
+            } else if (redirectTokenByTunnelKey.has(syntheticKey)) {
+              // A prior binding for this exact fixed port exists but the client
+              // didn't (or couldn't) replay its token — purge the stale entry so
+              // the panel doesn't show a duplicate "offline" ghost that, if
+              // removed, would revoke this live tunnel (same synthetic key).
+              purgeRedirectForKey(syntheticKey);
+              redirectToken = randomBytes(16).toString("base64url");
             } else {
               redirectToken = randomBytes(16).toString("base64url");
             }
@@ -1983,6 +2149,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               subdomain = await registry.assign(undefined, socket);
             }
             socketSubdomain.set(socket, subdomain);
+            socketByTunnelKey.set(subdomain, socket);
             ownershipBySubdomain.set(subdomain, principal.userId);
             metrics.setGauge("gateway_active_tunnels", registry.count());
             registered = true;
@@ -2137,6 +2304,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 streamTimeouts.delete(msg.streamId);
               }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               waiter(msg);
@@ -2161,6 +2329,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               const timeoutBad = streamTimeouts.get(msg.streamId);
               if (timeoutBad) { clearTimeout(timeoutBad); streamTimeouts.delete(msg.streamId); }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               return;
@@ -2186,6 +2355,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               const timeoutOversized = streamTimeouts.get(msg.streamId);
               if (timeoutOversized) { clearTimeout(timeoutOversized); streamTimeouts.delete(msg.streamId); }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               return;
@@ -2193,6 +2363,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
             existing.chunks.set(chunkMeta.index, Buffer.from(msg.bodyBase64, "base64"));
             responseChunksByStream.set(msg.streamId, existing);
+            // Progress was made — reset the idle timer so an actively-streaming
+            // large response isn't killed by the idle deadline.
+            if (responseWaiters.has(msg.streamId)) {
+              armStreamIdleTimeout(msg.streamId, socket);
+            }
 
             const expectedChunks = typeof existing.total === "number"
               ? existing.total
@@ -2221,6 +2396,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 streamTimeouts.delete(msg.streamId);
               }
               responseWaiters.delete(msg.streamId);
+              streamRejecters.delete(msg.streamId);
               activeStreamsBySocket.get(socket)?.delete(msg.streamId);
               responseChunksByStream.delete(msg.streamId);
               chunkDiagnostics.chunkStreamsReassembled += 1;
@@ -2272,12 +2448,21 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }
       };
 
-      socket.on("message", handleMessage);
+      // Wrap the async handler so a rejected message never becomes an unhandled
+      // rejection (which would otherwise be caught only by the process-level
+      // guard). Errors are logged and the connection stays alive.
+      const safeHandleMessage = (raw: WebSocket.RawData): void => {
+        handleMessage(raw).catch((err) => {
+          app.log.error({ err }, "ws message handler error");
+        });
+      };
+
+      socket.on("message", safeHandleMessage);
 
       // Replay any frames that arrived during the async auth window so that
       // register_tunnel is never silently dropped.
       for (const raw of pendingFrames) {
-        void handleMessage(raw);
+        safeHandleMessage(raw);
       }
 
       socket.on("close", () => {
@@ -2288,6 +2473,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         const subdomain = socketSubdomain.get(socket);
         if (subdomain) {
           ownershipBySubdomain.delete(subdomain);
+          socketByTunnelKey.delete(subdomain);
+          // Free the inspector ring buffer for this tunnel. Without this the
+          // captured request/response bodies (up to ~25 MB per subdomain) are
+          // pinned forever and accumulate with tunnel churn → unbounded heap.
+          capturedRequests.delete(subdomain);
         }
 
         const activeStreamIds = activeStreamsBySocket.get(socket);
@@ -2301,6 +2491,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             const waiter = responseWaiters.get(streamId);
             if (waiter) {
               responseWaiters.delete(streamId);
+              streamRejecters.delete(streamId);
               responseChunksByStream.delete(streamId);
               waiter({ type: "http_response", streamId, statusCode: 502, headers: { "content-type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ error: "Tunnel disconnected" })).toString("base64") });
             }
@@ -2428,7 +2619,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (config.metricsToken) {
       const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
       const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-      if (!provided || provided !== config.metricsToken) {
+      // Constant-time comparison to avoid leaking the token via timing.
+      const expectedBuf = Buffer.from(config.metricsToken);
+      const providedBuf = Buffer.from(provided);
+      const tokenOk = provided.length > 0
+        && expectedBuf.length === providedBuf.length
+        && timingSafeEqual(expectedBuf, providedBuf);
+      if (!tokenOk) {
         reply.header("www-authenticate", "Bearer");
         return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required for /metrics" } });
       }
@@ -2461,8 +2658,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
     try {
       const created = await userAuthStore.register(body.email, hashPassword(body.password));
-      const scopes = [...DEFAULT_USER_SCOPES];
-      const role: Principal["role"] = "owner";
+      const admin = isAdminEmail(created.email);
+      const role: Principal["role"] = admin ? "admin" : "owner";
+      const scopes = admin ? [...DEFAULT_USER_SCOPES, ...ADMIN_SCOPES] : [...DEFAULT_USER_SCOPES];
       const token = signAccessToken({ sub: created.id, role, scopes }, config.authJwtSecret, "7d");
       await auditStore.log(created.id, "user_registered", "user", created.id, { email: created.email });
       return reply.status(201).send({
@@ -2510,8 +2708,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if (!user || !verifyPassword(body.password, user.passwordHash)) {
         return reply.status(401).send({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
       }
-      const scopes = [...DEFAULT_USER_SCOPES];
-      const role: Principal["role"] = "owner";
+      const admin = isAdminEmail(user.email);
+      const role: Principal["role"] = admin ? "admin" : "owner";
+      const scopes = admin ? [...DEFAULT_USER_SCOPES, ...ADMIN_SCOPES] : [...DEFAULT_USER_SCOPES];
       const token = signAccessToken({ sub: user.id, role, scopes }, config.authJwtSecret, "7d");
       await auditStore.log(user.id, "user_login", "user", user.id, { email: user.email });
       return reply.status(200).send({
@@ -2680,8 +2879,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     // no DB record (the client never called POST /api/tunnels to reserve a subdomain).
     // We identify these by cross-referencing ownershipBySubdomain (populated at
     // WebSocket registration time) against the registry's active sessions.
+    // Subdomains whose redirect entry is a TCP tunnel — rendered by the tcp
+    // block below (with publicTcpPort), so exclude them from the HTTP live list.
+    const tcpSubdomains = new Set(
+      [...redirectByToken.values()]
+        .filter((e) => e.userId === principal.userId && e.tunnelType === "tcp" && !!e.subdomain)
+        .map((e) => e.subdomain as string),
+    );
     const liveSessions = registry.listSessions()
-      .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain))
+      .filter((s) => ownershipBySubdomain.get(s.subdomain) === principal.userId && !dbSubdomains.has(s.subdomain) && !tcpSubdomains.has(s.subdomain))
       .map((s) => {
         const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
         const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
@@ -2733,7 +2939,35 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }];
       });
 
-    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions];
+    // ── TCP tunnels (random-port and admin fixed-port) ─────────────────────
+    // Sourced from redirect entries so both live and offline TCP tunnels are
+    // listed with their public host:port. Fixed-port tunnels have no subdomain
+    // and are keyed by `tcpport_<port>` so the panel can remove them.
+    const tcpSessions = [...redirectByToken.entries()]
+      .filter(([, e]) => e.userId === principal.userId && e.tunnelType === "tcp" && !dbSubdomains.has(e.subdomain ?? ""))
+      .flatMap(([token, e]) => {
+        const isLive = e.subdomain ? !!registry.findBySubdomain(e.subdomain) : e.connected === true;
+        const idBase = e.subdomain ? e.subdomain : `tcpport_${e.publicTcpPort}`;
+        return [{
+          id: isLive ? `cli_${idBase}` : `cli_offline_${idBase}`,
+          userId: principal.userId,
+          subdomain: e.subdomain ?? null,
+          createdAt: new Date(e.createdAt).toISOString(),
+          active: isLive,
+          status: (isLive ? "live" : "offline") as "live" | "offline",
+          statusMessage: isLive ? "Client connected and forwarding traffic" : "Client machine is not reachable",
+          isCliSession: true,
+          tunnelType: "tcp" as const,
+          lastSeenAt: toIso(e.lastSeenAt),
+          disconnectedAt: isLive ? null : toIso(e.disconnectedAt),
+          redirectUrl: buildPublicUrl(`/r/${token}`),
+          publicHost: e.publicTcpHost ?? null,
+          publicPort: e.publicTcpPort ?? null,
+          accessLink: e.accessLink ?? null,
+        }];
+      });
+
+    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions, ...tcpSessions];
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
     return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
   });
@@ -2756,10 +2990,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         .status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "tunnel:read")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -2994,26 +3228,76 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
 
     const params = req.params as { id: string };
-    const existing = await store.findById(params.id);
+    const id = params.id;
+    const ownsSubdomain = (subdomain: string): boolean => {
+      if (isPlatformAdmin(principal.role)) return true;
+      if (ownershipBySubdomain.get(subdomain) === principal.userId) return true;
+      const rToken = redirectTokenByTunnelKey.get(subdomain);
+      const rEntry = rToken ? redirectByToken.get(rToken) : undefined;
+      return rEntry?.userId === principal.userId;
+    };
+    const finish = (): void => {
+      publishLiveEvent("tunnels_changed", principal.userId);
+      publishLiveEvent("gateway_status_changed");
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
+      if (idempotencyStoreKey) {
+        writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 204, body: null, contentType: "application/json" });
+      }
+    };
+
+    // ── CLI session (live/offline, no DB record) ────────────────────────────
+    // These are tunnels opened via `portivox open` that never reserved a DB
+    // subdomain. The id is `cli_<raw>` / `cli_offline_<raw>` where <raw> is a
+    // subdomain, or `tcpport_<port>` for admin fixed-port TCP tunnels (which use
+    // a synthetic key instead of a subdomain). Removing one terminates the
+    // connected client's tunnel.
+    if (id.startsWith("cli_offline_") || id.startsWith("cli_")) {
+      const raw = id.startsWith("cli_offline_")
+        ? id.slice("cli_offline_".length)
+        : id.slice("cli_".length);
+      const tunnelKey = raw.startsWith("tcpport_")
+        ? `__tcp_port_${raw.slice("tcpport_".length)}__`
+        : raw;
+      if (!tunnelKey) {
+        return reply.status(404).send({ error: { code: "TUNNEL_NOT_FOUND", message: "Tunnel not found" } });
+      }
+      if (!ownsSubdomain(tunnelKey)) {
+        metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
+        metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+        return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Tunnel does not belong to this principal" } });
+      }
+      const wasLive = revokeLiveTunnel(tunnelKey, "removed_by_owner");
+      purgeRedirectForKey(tunnelKey);
+      await releaseTcpTunnelBySubdomain(tunnelKey);
+      ownershipBySubdomain.delete(tunnelKey);
+      await auditStore.log(principal.userId, "tunnel_revoked", "tunnel_session", tunnelKey, { wasLive });
+      finish();
+      return reply.status(204).send();
+    }
+
+    // ── DB-reserved tunnel: id is a stored record ───────────────────────────
+    const existing = await store.findById(id);
     if (!existing) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "TUNNEL_NOT_FOUND" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
       return reply.status(404).send({ error: { code: "TUNNEL_NOT_FOUND", message: "Tunnel not found" } });
     }
 
-    if (existing.userId !== principal.userId) {
+    if (existing.userId !== principal.userId && !isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Tunnel does not belong to this principal" } });
     }
 
-    await store.delete(params.id);
-    await auditStore.log(principal.userId, "tunnel_deleted", "tunnel", params.id);
-    publishLiveEvent("tunnels_changed", principal.userId);
-    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
-    if (idempotencyStoreKey) {
-      writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 204, body: null, contentType: "application/json" });
-    }
+    await store.delete(id);
+    // Also terminate any live client currently connected on this subdomain, so
+    // deleting the reservation actually stops traffic instead of leaving a
+    // ghost tunnel running until the client happens to disconnect.
+    revokeLiveTunnel(existing.subdomain, "removed_by_owner");
+    purgeRedirectForKey(existing.subdomain);
+    await releaseTcpTunnelBySubdomain(existing.subdomain);
+    await auditStore.log(principal.userId, "tunnel_deleted", "tunnel", id);
+    finish();
     return reply.status(204).send();
   });
 
@@ -3072,7 +3356,20 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
     const name = body.name;
     const plaintext = `tk_${randomBytes(24).toString("hex")}`;
-    const scopes = parseScopes(body.scopesRaw, ["tunnel:create", "tunnel:read", "tunnel:delete"]);
+    // Prevent privilege amplification: a principal may only grant scopes it
+    // already holds. Without this, any caller with key:manage could mint a key
+    // carrying admin:* or "*" and escalate. Platform admins (wildcard scope)
+    // may grant anything. Non-admins get the intersection of requested and held.
+    const requestedScopes = parseScopes(body.scopesRaw, ["tunnel:create", "tunnel:read", "tunnel:delete"]);
+    const canGrantAnyScope = isPlatformAdmin(principal.role) || principal.scopes.includes("*");
+    const scopes = canGrantAnyScope
+      ? requestedScopes
+      : requestedScopes.filter((scope) => hasScope(principal.scopes, scope));
+    if (scopes.length === 0) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "NO_GRANTABLE_SCOPES" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "None of the requested scopes may be granted by this principal" } });
+    }
     const created = await authStore.createApiKey(principal.userId, name, hashApiKey(plaintext), scopes);
     await auditStore.log(principal.userId, "api_key_created", "api_key", created.id, { name: created.name });
     publishLiveEvent("api_keys_changed", principal.userId);
@@ -3194,10 +3491,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         .status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3254,10 +3551,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         .status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3292,10 +3589,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         .status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3352,10 +3649,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3383,10 +3680,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3452,10 +3749,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3499,10 +3796,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
         .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
     }
-    if (!isAdminRole(principal.role)) {
+    if (!isPlatformAdmin(principal.role)) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
-      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin or owner role required" } });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
     }
     if (!hasScope(principal.scopes, "key:manage")) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
@@ -3537,7 +3834,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const { subdomain } = req.params as { subdomain: string };
     // Ownership check: non-admin users may only inspect their own tunnels.
     const tunnelOwner = ownershipBySubdomain.get(subdomain);
-    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+    // Deny unless the caller owns this tunnel or is a platform admin. Note this
+    // is fail-CLOSED: when tunnelOwner is undefined (e.g. the tunnel already
+    // disconnected) a non-admin caller is rejected rather than allowed, so a
+    // disconnected tunnel's captured traffic can never leak cross-tenant.
+    if (!isPlatformAdmin(principal.role) && tunnelOwner !== principal.userId) {
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
     }
     const ring = capturedRequests.get(subdomain) ?? [];
@@ -3560,7 +3861,11 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const { subdomain, reqId } = req.params as { subdomain: string; reqId: string };
     // Ownership check: non-admin users may only inspect their own tunnels.
     const tunnelOwner = ownershipBySubdomain.get(subdomain);
-    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+    // Deny unless the caller owns this tunnel or is a platform admin. Note this
+    // is fail-CLOSED: when tunnelOwner is undefined (e.g. the tunnel already
+    // disconnected) a non-admin caller is rejected rather than allowed, so a
+    // disconnected tunnel's captured traffic can never leak cross-tenant.
+    if (!isPlatformAdmin(principal.role) && tunnelOwner !== principal.userId) {
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
     }
     const ring = capturedRequests.get(subdomain) ?? [];
@@ -3577,13 +3882,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     if (!principal) {
       return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
     }
-    if (!isAdminRole(principal.role) && !hasScope(principal.scopes, "tunnel:delete")) {
+    if (!isPlatformAdmin(principal.role) && !hasScope(principal.scopes, "tunnel:delete")) {
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin role or tunnel:delete scope required" } });
     }
     const { subdomain } = req.params as { subdomain: string };
     // Ownership check: non-admin users may only clear their own tunnel's buffer.
     const tunnelOwner = ownershipBySubdomain.get(subdomain);
-    if (tunnelOwner !== undefined && tunnelOwner !== principal.userId && !isAdminRole(principal.role)) {
+    // Deny unless the caller owns this tunnel or is a platform admin. Note this
+    // is fail-CLOSED: when tunnelOwner is undefined (e.g. the tunnel already
+    // disconnected) a non-admin caller is rejected rather than allowed, so a
+    // disconnected tunnel's captured traffic can never leak cross-tenant.
+    if (!isPlatformAdmin(principal.role) && tunnelOwner !== principal.userId) {
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
     }
     capturedRequests.delete(subdomain);
@@ -3611,7 +3920,16 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     // Normalize IPv4-mapped IPv6 addresses.
     const ip = req.ip.replace(/^::ffff:/, "");
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;  // 24 hours
+    const now = Date.now();
+    // Evict expired IPs before inserting so a long-lived tunnel hit by many
+    // distinct source IPs doesn't accumulate them unbounded (they're only
+    // lazily checked at connect time otherwise, never removed).
+    for (const [seenIp, seenExpiry] of entry.allowedIps) {
+      if (now > seenExpiry) {
+        entry.allowedIps.delete(seenIp);
+      }
+    }
+    const expiresAt = now + 24 * 60 * 60 * 1000;  // 24 hours
     entry.allowedIps.set(ip, expiresAt);
 
     return reply.status(200).send({
@@ -3770,6 +4088,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       bodyBase64: bodyBuffer.toString("base64"),
     };
 
+    // Set inside the (synchronous) promise executor when the stream is admitted.
+    // Guards the send below so an over-limit request is NOT forwarded to an
+    // already-saturated client (which would drop the response and double load).
+    let accepted = false;
     const responsePromise = new Promise<HttpResponse>((resolve, reject) => {
       const inflightForSocket = activeStreamsBySocket.get(tunnel.socket);
       const maxConcurrent = config.maxConcurrentStreamsPerTunnel ?? 200;
@@ -3779,28 +4101,16 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         return;
       }
 
+      accepted = true;
       responseWaiters.set(streamId, resolve);
+      streamRejecters.set(streamId, reject);
       activeStreamsBySocket.get(tunnel.socket)?.add(streamId);
-      const timeout = setTimeout(() => {
-        if (responseWaiters.has(streamId)) {
-          if (responseChunksByStream.has(streamId)) {
-            chunkDiagnostics.chunkIncompleteTimeouts += 1;
-            metrics.increment("gateway_chunk_incomplete_timeouts_total");
-            void auditStore.log(null, "chunk_stream_timeout", "tunnel_stream", streamId, {
-              errorCode: "TUNNEL_STREAM_IDLE_TIMEOUT",
-            });
-          }
-          responseWaiters.delete(streamId);
-          activeStreamsBySocket.get(tunnel.socket)?.delete(streamId);
-          streamTimeouts.delete(streamId);
-          responseChunksByStream.delete(streamId);
-          reject(new Error("TUNNEL_STREAM_IDLE_TIMEOUT"));
-        }
-      }, config.streamIdleTimeoutMs ?? config.tunnelResponseTimeoutMs);
-      streamTimeouts.set(streamId, timeout);
+      armStreamIdleTimeout(streamId, tunnel.socket);
     });
 
-    tunnel.socket.send(encodeWireMessage(outbound));
+    if (accepted) {
+      tunnel.socket.send(encodeWireMessage(outbound));
+    }
 
     try {
       const tunnelResponse = await responsePromise;
@@ -3809,6 +4119,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         clearTimeout(timeout);
         streamTimeouts.delete(streamId);
       }
+      streamRejecters.delete(streamId);
       metrics.observeRequestLatency(Date.now() - startedAt);
       reply.code(tunnelResponse.statusCode);
       // Strip hop-by-hop headers, then pass everything else through to the browser.
@@ -3858,6 +4169,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         clearTimeout(timeout);
         streamTimeouts.delete(streamId);
       }
+      streamRejecters.delete(streamId);
       const code = error instanceof Error ? error.message : "UNKNOWN_STREAM_ERROR";
       captured.durationMs = Date.now() - startedAt;
       captured.error = code;

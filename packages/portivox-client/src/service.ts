@@ -431,15 +431,30 @@ function installWindows(entry: ServiceEntry): void {
   // Pass /TR as a plain string in the argument array — spawnSync sends it
   // directly to schtasks.exe without any shell processing, so paths with
   // spaces reach Task Scheduler verbatim.
-  const userTask = spawnSchtasks([
-    "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
+  // Prefer a machine-wide ONSTART/SYSTEM task so the tunnel reconnects after a
+  // reboot even before anyone signs in; fall back to a per-user ONLOGON task if
+  // Windows denies the elevated registration.
+  const systemTask = spawnSchtasks([
+    "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F",
   ]);
-  if (!userTask.ok) {
-    throw new Error(
-      isWindowsAccessDenied(userTask.detail)
-        ? "Could not create the Windows startup task. Windows reported Access is denied. If an older elevated Portivox task exists, remove it from an Administrator terminal or choose a different --name."
-        : `schtasks create: ${userTask.detail || "unknown error"}`,
-    );
+
+  if (!systemTask.ok) {
+    if (!isWindowsAccessDenied(systemTask.detail)) {
+      throw new Error(`schtasks create: ${systemTask.detail || "unknown error"}`);
+    }
+
+    console.warn("Windows denied machine-startup service registration.");
+    console.warn("Installing a current-user startup task instead. It will reconnect after you sign in.");
+    const userTask = spawnSchtasks([
+      "/Create", "/TN", tn, "/TR", `wscript.exe "${vbsPath}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
+    ]);
+    if (!userTask.ok) {
+      throw new Error(
+        "Could not create the Windows startup task. " +
+        `${userTask.detail || systemTask.detail || "unknown error"}. ` +
+        "If an older elevated Portivox task exists, remove it from an Administrator terminal or choose a different --name.",
+      );
+    }
   }
 
   // Start immediately — non-fatal (will run at next logon if this fails)
