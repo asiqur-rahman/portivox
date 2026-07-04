@@ -49,8 +49,19 @@ portivox doctor
 portivox 3000
 portivox expose 3000
 portivox tcp 22
+portivox list          # show tunnels this machine currently has open
 portivox logout
 ```
+
+## Managing Tunnels From the Web
+
+Tunnels you open from the CLI show up in the web control panel under your
+account (use an API key created in your account, not a shared one). You can
+**remove any tunnel from the panel** — when you do, the connected client is told
+to close that tunnel immediately and will not reconnect it.
+
+`portivox list` shows the tunnels the current machine has open, with their
+public address and stable status URL.
 
 ## Always-On Tunnels
 
