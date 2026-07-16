@@ -2193,10 +2193,27 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           // An HTTP tunnel from a user WITHOUT the subdomain subscription. No
           // subdomain is registered (so there is no HTTP subdomain routing); the
           // tunnel is reachable only via a dedicated public port that raw-TCP
-          // passthrough-forwards to the local service. Modeled on the fixed-port
-          // TCP path — a synthetic key, deliberately NOT added to the registry.
+          // passthrough-forwards to the local service. It registers under the
+          // SAME `__tcp_port_<port>__` synthetic-key scheme as TCP tunnels so the
+          // listing, revocation and DELETE machinery treats it identically —
+          // visible in every panel and revocable by both the owner and admins.
           if (!isTcp && !subdomainAllowed) {
-            const syntheticKey = `__http_port_${randomBytes(6).toString("hex")}__`;
+            if (!(config.tcpTunnelEnabled ?? true)) {
+              socket.send(createGatewayError(
+                "This gateway cannot expose a public port (TCP disabled), and subdomain access requires a subscription.",
+                "TCP_TUNNEL_DISABLED",
+              ));
+              return;
+            }
+            // Allocate the public port up-front so the synthetic key embeds it.
+            // allocateTcpPort()..bindTcpTunnel() run with no intervening await, so
+            // no other registration can claim the same port in between.
+            const allocatedPort = allocateTcpPort();
+            if (allocatedPort === null) {
+              socket.send(createGatewayError("No public ports are currently available", "TCP_PORT_EXHAUSTED"));
+              return;
+            }
+            const syntheticKey = `__tcp_port_${allocatedPort}__`;
             socketSubdomain.set(socket, syntheticKey);
             socketByTunnelKey.set(syntheticKey, socket);
             ownershipBySubdomain.set(syntheticKey, principal.userId);
@@ -2219,7 +2236,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             void auditStore.log(principal.userId, "ws_tunnel_registered_port_only", "tcp_port_session", syntheticKey, { authType: principal.authType });
 
             try {
-              const binding = await bindTcpTunnel(syntheticKey, socket);
+              const binding = await bindTcpTunnel(syntheticKey, socket, allocatedPort);
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: syntheticKey,
                 userId: principal.userId,
@@ -2248,12 +2265,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             } catch (error) {
               const code = error instanceof Error ? error.message : "";
               socket.send(createGatewayError(
-                code === "TCP_TUNNEL_DISABLED"
-                  ? "This gateway cannot expose a public port (TCP disabled), and subdomain access requires a subscription."
-                  : code === "TCP_PORT_EXHAUSTED"
-                    ? "No public ports are currently available"
-                    : "Failed to allocate a public port",
-                code === "TCP_PORT_EXHAUSTED" ? "TCP_PORT_EXHAUSTED" : code === "TCP_TUNNEL_DISABLED" ? "TCP_TUNNEL_DISABLED" : "TCP_PORT_ALLOCATE_FAILED",
+                code === "TCP_PORT_EXHAUSTED" || code === "TCP_PORT_BUSY"
+                  ? "No public ports are currently available"
+                  : "Failed to allocate a public port",
+                code === "TCP_PORT_EXHAUSTED" || code === "TCP_PORT_BUSY" ? "TCP_PORT_EXHAUSTED" : "TCP_PORT_ALLOCATE_FAILED",
               ));
               socketSubdomain.delete(socket);
               socketByTunnelKey.delete(syntheticKey);
@@ -3237,8 +3252,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       };
     });
 
+    // TCP subdomains are rendered by the tcp block below (with publicTcpPort), so
+    // exclude them from the HTTP live list to avoid duplicate rows.
+    const tcpSubdomains = new Set(
+      [...redirectByToken.values()]
+        .filter((e) => e.tunnelType === "tcp" && !!e.subdomain)
+        .map((e) => e.subdomain as string),
+    );
     const liveSessions = registry.listSessions()
-      .filter((s) => !dbSubdomains.has(s.subdomain))
+      .filter((s) => !dbSubdomains.has(s.subdomain) && !tcpSubdomains.has(s.subdomain))
       .map((s) => {
         const redirectToken = redirectTokenByTunnelKey.get(s.subdomain);
         const redirectEntry = redirectToken ? redirectByToken.get(redirectToken) : undefined;
@@ -3289,7 +3311,35 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }];
       });
 
-    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions];
+    // TCP + port-only sessions (fixed-port TCP, random-port TCP, and port-only
+    // HTTP tunnels for users without the subdomain subscription). These live in
+    // redirectByToken as tunnelType "tcp" and — for the portless variants — are
+    // not in the registry, so without this block they are invisible to admins.
+    const tcpSessions = [...redirectByToken.entries()]
+      .filter(([, e]) => e.tunnelType === "tcp" && !dbSubdomains.has(e.subdomain ?? ""))
+      .flatMap(([token, e]) => {
+        const isLive = e.subdomain ? !!registry.findBySubdomain(e.subdomain) : e.connected === true;
+        const idBase = e.subdomain ? e.subdomain : `tcpport_${e.publicTcpPort}`;
+        return [{
+          id: isLive ? `cli_${idBase}` : `cli_offline_${idBase}`,
+          userId: e.userId ?? (e.subdomain ? ownershipBySubdomain.get(e.subdomain) ?? null : null),
+          subdomain: e.subdomain ?? null,
+          createdAt: new Date(e.createdAt).toISOString(),
+          active: isLive,
+          status: (isLive ? "live" : "offline") as "live" | "offline",
+          statusMessage: isLive ? "Client connected and forwarding traffic" : "Client machine is not reachable",
+          isCliSession: true,
+          tunnelType: "tcp" as const,
+          lastSeenAt: toIso(e.lastSeenAt),
+          disconnectedAt: isLive ? null : toIso(e.disconnectedAt),
+          redirectUrl: buildPublicUrl(`/r/${token}`),
+          publicHost: e.publicTcpHost ?? null,
+          publicPort: e.publicTcpPort ?? null,
+          accessLink: e.accessLink ?? null,
+        }];
+      });
+
+    const allTunnels = [...enriched, ...liveSessions, ...offlineCliSessions, ...tcpSessions];
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
     return reply.status(200).send({ count: allTunnels.length, tunnels: allTunnels });
   });

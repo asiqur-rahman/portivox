@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { GatewayApi, type GatewayStatus, type TunnelRecord } from "../api";
-import { timeAgo } from "../app/helpers";
+import { getTunnelUrl, timeAgo } from "../app/helpers";
 import type { Toast } from "../app/types";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
@@ -25,6 +25,7 @@ export function AdminGatewayPage({
   const [adminTunnels, setAdminTunnels] = useState<TunnelRecord[]>(initialTunnels);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = useCallback((options?: { silent?: boolean }) => {
     setLoading(true);
@@ -75,6 +76,29 @@ export function AdminGatewayPage({
       .catch((error: unknown) => showToast(error instanceof Error ? error.message : "Update failed", "red"))
       .finally(() => setToggling(false));
   }
+
+  function requestDestroy(tunnel: TunnelRecord) {
+    const label = tunnel.subdomain || getTunnelUrl(tunnel);
+    onConfirm({
+      title: "Destroy tunnel?",
+      message: `This immediately closes "${label}" and disconnects the connected client. A live CLI session is told to stop and will not reconnect.`,
+      confirmLabel: "Destroy tunnel",
+      danger: true,
+      onConfirm: () => {
+        setDeletingId(tunnel.id);
+        api.deleteTunnel(tunnel.id)
+          .then(() => {
+            showToast("Tunnel destroyed", "green");
+            // Optimistic removal; the tunnels_changed live event also refreshes.
+            setAdminTunnels((previous) => previous.filter((t) => t.id !== tunnel.id));
+          })
+          .catch((error: unknown) => showToast(error instanceof Error ? error.message : "Destroy failed", "red"))
+          .finally(() => setDeletingId(null));
+      },
+    });
+  }
+
+  const endpointLabel = (t: TunnelRecord) => (t.subdomain ? `${t.subdomain}.${window.location.hostname}` : getTunnelUrl(t));
 
   const isHealthy = status?.ready && !status?.draining && !status?.maintenanceMode;
   const gatewayStateLabel = status
@@ -191,10 +215,10 @@ export function AdminGatewayPage({
                 <article key={tunnel.id} className="mobile-list-card">
                   <div className="mobile-list-card-head">
                     <div className="mobile-list-title">
-                      <span className="mobile-list-icon"><i className="ti ti-topology-star-3" /></span>
+                      <span className="mobile-list-icon"><i className={`ti ti-${tunnel.tunnelType === "tcp" || !tunnel.subdomain ? "plug-connected" : "topology-star-3"}`} /></span>
                       <div>
-                        <strong>{tunnel.subdomain}</strong>
-                        <span>{timeAgo(tunnel.createdAt)}</span>
+                        <strong>{tunnel.subdomain || endpointLabel(tunnel)}</strong>
+                        <span>{timeAgo(tunnel.createdAt)}{tunnel.subdomain ? "" : " · port"}</span>
                       </div>
                     </div>
                     <span className={`mobile-status ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
@@ -204,26 +228,45 @@ export function AdminGatewayPage({
                   <div className={`tunnel-state-note ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
                     {tunnel.statusMessage ?? (tunnel.active ? "Client connected and forwarding traffic" : "Waiting for client machine to connect")}
                   </div>
-                  <button className="mobile-url-row" onClick={() => window.open(`//${tunnel.subdomain}.${window.location.hostname}`, "_blank", "noreferrer")}>
-                    <span>{tunnel.subdomain}.{window.location.hostname}</span>
-                    <i className="ti ti-external-link" />
-                  </button>
+                  {tunnel.subdomain ? (
+                    <button className="mobile-url-row" onClick={() => window.open(`//${tunnel.subdomain}.${window.location.hostname}`, "_blank", "noreferrer")}>
+                      <span>{tunnel.subdomain}.{window.location.hostname}</span>
+                      <i className="ti ti-external-link" />
+                    </button>
+                  ) : (
+                    <div className="mobile-card-meta"><span>Endpoint</span><code>{endpointLabel(tunnel)}</code></div>
+                  )}
                   <div className="mobile-card-meta">
                     <span>Tunnel ID</span>
                     <code>{tunnel.id.slice(0, 18)}{tunnel.id.length > 18 ? "..." : ""}</code>
+                  </div>
+                  <div className="mobile-card-actions">
+                    <button className="btn-ghost danger" disabled={deletingId === tunnel.id} onClick={() => requestDestroy(tunnel)}>
+                      <i className={`ti ti-${deletingId === tunnel.id ? "loader-2 spin" : "plug-connected-x"}`} /> Destroy
+                    </button>
                   </div>
                 </article>
               ))}
             </div>
             <table className="tbl">
-              <thead><tr><th>Subdomain</th><th>Tunnel ID</th><th>Created</th><th>Status</th></tr></thead>
+              <thead><tr><th>Endpoint</th><th>Type</th><th>Tunnel ID</th><th>Created</th><th>Status</th><th /></tr></thead>
               <tbody>
                 {adminTunnels.map((tunnel) => (
                   <tr key={tunnel.id}>
                     <td>
-                      <a href={`//${tunnel.subdomain}.${window.location.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--accent)" }}>
-                        {tunnel.subdomain}
-                      </a>
+                      {tunnel.subdomain ? (
+                        <a href={`//${tunnel.subdomain}.${window.location.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--accent)" }}>
+                          {tunnel.subdomain}.{window.location.hostname}
+                        </a>
+                      ) : (
+                        <code style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--text-1)" }}>{endpointLabel(tunnel)}</code>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`action-badge ${tunnel.subdomain ? "create" : "other"}`}>
+                        <i className={`ti ti-${tunnel.subdomain ? "world" : "plug"}`} />
+                        {tunnel.subdomain ? "Subdomain" : "Port"}
+                      </span>
                     </td>
                     <td><code style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>{tunnel.id.slice(0, 16)}...</code></td>
                     <td style={{ color: "var(--text-3)", fontSize: 12 }}>{timeAgo(tunnel.createdAt)}</td>
@@ -231,6 +274,13 @@ export function AdminGatewayPage({
                       <div className={`tunnel-status-inline ${tunnel.status === "offline" ? "offline" : tunnel.active ? "live" : "reserved"}`}>
                         <span>{tunnel.status === "offline" ? "Offline" : tunnel.active ? "Live" : "Reserved"}</span>
                         <small>{tunnel.statusMessage ?? (tunnel.active ? "Client connected and forwarding traffic" : "Waiting for client machine to connect")}</small>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="row-actions">
+                        <div className={`icon-btn danger${deletingId === tunnel.id ? " disabled" : ""}`} title="Destroy tunnel" onClick={() => { if (deletingId !== tunnel.id) requestDestroy(tunnel); }}>
+                          <i className={`ti ti-${deletingId === tunnel.id ? "loader-2 spin" : "plug-connected-x"}`} />
+                        </div>
                       </div>
                     </td>
                   </tr>
