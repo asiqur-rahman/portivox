@@ -15,5 +15,6 @@ export const PAGE_TITLES: Record<Page, string> = {
   "admin:audit": "Audit Log",
   "admin:gateway": "Gateway Control",
   "admin:tcp": "TCP Port Mappings",
+  "admin:users": "Users & Subscriptions",
   inspector: "Traffic Inspector",
 };

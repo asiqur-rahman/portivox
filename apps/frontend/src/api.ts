@@ -73,6 +73,13 @@ export type GatewayStatus = {
   activeTunnels: number;
 };
 
+export type AdminUser = {
+  id: string;
+  email: string;
+  subdomainEnabled: boolean;
+  createdAt: string;
+};
+
 export type GatewayLiveEventKind =
   | "connected"
   | "tunnels_changed"
@@ -80,6 +87,7 @@ export type GatewayLiveEventKind =
   | "audit_changed"
   | "api_keys_changed"
   | "tcp_mappings_changed"
+  | "users_changed"
   | "inspector_changed";
 
 export type GatewayLiveEvent = {
@@ -244,6 +252,19 @@ export class GatewayApi {
 
   async deleteTcpPortMapping(id: string): Promise<void> {
     await this.request(`/api/admin/tcp-port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async listUsers(): Promise<AdminUser[]> {
+    const result = await this.request<{ users: AdminUser[] }>("/api/admin/users", { method: "GET" });
+    return Array.isArray(result.users) ? result.users : [];
+  }
+
+  async setUserSubdomainEnabled(id: string, subdomainEnabled: boolean): Promise<AdminUser> {
+    const result = await this.request<{ user: AdminUser }>(`/api/admin/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ subdomainEnabled }),
+    });
+    return result.user;
   }
 
   async listInspectorRequests(subdomain: string): Promise<{ subdomain: string; count: number; requests: CapturedRequestSummary[] }> {

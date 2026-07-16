@@ -40,6 +40,11 @@ export type RegisterTunnel = {
   /** Stable redirect token from a previous session. The gateway reuses the
    *  same /r/:token URL on reconnect instead of minting a fresh one. */
   redirectToken?: string;
+  /** HTTP tunnels only: also expose a dedicated public port that raw-TCP
+   *  passthrough-forwards to the same local service, in addition to the
+   *  subdomain. Opt-in via the client `--with-port` flag. Ignored for TCP
+   *  tunnels (which already own a public port). */
+  withDedicatedPort?: boolean;
 };
 
 export type Registered = {
@@ -61,6 +66,11 @@ export type Registered = {
   /** Full stable status URL (/r/:token) — survives reconnects, suitable for
    *  bookmarks and automation scripts. */
   redirectUrl?: string;
+  /** HTTP tunnels only: the dedicated raw-TCP passthrough port bound alongside
+   *  the subdomain when the client requested `withDedicatedPort`. Distinct from
+   *  publicTcpHost/publicTcpPort (which denote a TCP-type tunnel's own port). */
+  dedicatedTcpHost?: string;
+  dedicatedTcpPort?: number;
 };
 
 export type HttpRequest = {

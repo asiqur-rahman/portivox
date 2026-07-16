@@ -102,6 +102,8 @@ type SessionEntry = {
   subdomain?: string | null;
   publicPort?: number | null;
   publicHost?: string | null;
+  dedicatedTcpPort?: number | null;
+  dedicatedTcpHost?: string | null;
   redirectUrl?: string | null;
   accessLink?: string | null;
   startedAt: string;
@@ -791,6 +793,7 @@ function startClient({
   localTcpHost,
   localTcpPort,
   apiKey,
+  withDedicatedPort,
   onFatalError,
   onRevoked,
 }: {
@@ -801,6 +804,7 @@ function startClient({
   localTcpHost?: string;
   localTcpPort?: number;
   apiKey?: string;
+  withDedicatedPort?: boolean;
   onFatalError?: (error: TunnelRegistrationFailure) => void;
   onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 }): void {
@@ -816,6 +820,7 @@ function startClient({
     maxResponseBodyBytes: defaultConfig.maxLocalResponseBodyBytes,
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
+    withDedicatedPort,
     onFatalError,
     onRegistered: (info) => {
       addSession({
@@ -825,6 +830,8 @@ function startClient({
         subdomain: info.subdomain ?? null,
         publicPort: info.publicPort ?? info.publicTcpPort ?? null,
         publicHost: info.publicHost ?? info.publicTcpHost ?? null,
+        dedicatedTcpPort: info.dedicatedTcpPort ?? null,
+        dedicatedTcpHost: info.dedicatedTcpHost ?? null,
         redirectUrl: info.redirectUrl ?? null,
         accessLink: info.accessLink ?? null,
         startedAt: new Date().toISOString(),
@@ -887,10 +894,12 @@ async function run(): Promise<void> {
         }
         if (s.subdomain) return `(subdomain: ${s.subdomain})`;
         if (s.publicHost && s.publicPort) return `${s.publicHost}:${s.publicPort}`;
+        if (s.dedicatedTcpPort) return `${s.dedicatedTcpHost ?? s.publicHost ?? "localhost"}:${s.dedicatedTcpPort}`;
         return "(unknown)";
       })();
       console.log(`  [${s.tunnelType.toUpperCase()}] ${publicUrl}`);
       if (s.localPort) console.log(`    Local port : ${s.localPort}`);
+      if (s.dedicatedTcpPort) console.log(`    TCP port   : ${s.dedicatedTcpHost ?? s.publicHost ?? "localhost"}:${s.dedicatedTcpPort}`);
       if (s.redirectUrl) console.log(`    Status URL : ${s.redirectUrl}`);
       if (s.accessLink) console.log(`    Access link: ${s.accessLink}`);
       console.log(`    Started    : ${s.startedAt}`);
@@ -1010,6 +1019,9 @@ async function run(): Promise<void> {
 
     // --tcp flag → TCP tunnel; default is HTTP
     const tcpMode = args.includes("--tcp");
+    // HTTP tunnels also expose a dedicated raw-TCP passthrough port alongside the
+    // subdomain BY DEFAULT. Pass --no-port to opt out. Ignored for --tcp tunnels.
+    const withDedicatedPort = !tcpMode && !args.includes("--no-port");
 
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
@@ -1044,6 +1056,7 @@ async function run(): Promise<void> {
         apiKey,
         subdomain:   requestedSubdomain,
         host,
+        withDedicatedPort,
       });
       return;
     }
@@ -1051,6 +1064,9 @@ async function run(): Promise<void> {
     // ── one-shot foreground mode (default) ────────────────────────────────
     console.log(`Connecting to gateway : ${gatewayUrl}`);
     console.log(`Local service         : ${localBase}  [${tcpMode ? "TCP" : "HTTP"}]`);
+    if (withDedicatedPort) {
+      console.log("A dedicated raw TCP port will be exposed alongside the subdomain (pass --no-port to disable).");
+    }
     startClient({
       gatewayUrl,
       localBase,
@@ -1059,6 +1075,7 @@ async function run(): Promise<void> {
       localTcpHost: host,
       localTcpPort: port,
       apiKey,
+      withDedicatedPort,
       onFatalError: (failure) => {
         const formatted = formatTunnelOpenFailure(failure, { requestedSubdomain, tcpMode });
         console.error(formatted.message);

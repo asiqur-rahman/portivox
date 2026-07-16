@@ -24,6 +24,7 @@ import { AdminAuditPage as SharedAdminAuditPage } from "./pages/AdminAuditPage";
 import { AdminGatewayPage as SharedAdminGatewayPage } from "./pages/AdminGatewayPage";
 import { AdminOverviewPage as SharedAdminOverviewPage } from "./pages/AdminOverviewPage";
 import { AdminTcpPage as SharedAdminTcpPage } from "./pages/AdminTcpPage";
+import { AdminUsersPage as SharedAdminUsersPage } from "./pages/AdminUsersPage";
 import { AuthScreen as SharedAuthScreen } from "./pages/AuthScreen";
 import { BillingPage as SharedBillingPage } from "./pages/BillingPage";
 import { DevicesPage as SharedDevicesPage } from "./pages/DevicesPage";
@@ -231,6 +232,7 @@ export function App() {
           { id: "page:admin-audit", title: "Audit Log", subtitle: "Review gateway and account events", category: "Admin pages", icon: "ti-clipboard-list", onSelect: createSearchAction("page:admin-audit", () => navigateToPage("admin:audit")) },
           { id: "page:admin-gateway", title: "Gateway Control", subtitle: "Operate maintenance, drain, and sessions", category: "Admin pages", icon: "ti-server-cog", onSelect: createSearchAction("page:admin-gateway", () => navigateToPage("admin:gateway")) },
           { id: "page:admin-tcp", title: "TCP Port Mappings", subtitle: "Manage reserved TCP public ports", category: "Admin pages", icon: "ti-network", onSelect: createSearchAction("page:admin-tcp", () => navigateToPage("admin:tcp")) },
+          { id: "page:admin-users", title: "Users & Subscriptions", subtitle: "Enable the subdomain feature per user", category: "Admin pages", icon: "ti-users", onSelect: createSearchAction("page:admin-users", () => navigateToPage("admin:users")) },
         ]
       : [];
 
@@ -462,6 +464,9 @@ export function App() {
               )}
               {currentPage === "admin:tcp" && hasAdminRole(user?.role) && (
                 <SharedAdminTcpPage api={api} showToast={showToast} onConfirm={setConfirm} />
+              )}
+              {currentPage === "admin:users" && hasAdminRole(user?.role) && (
+                <SharedAdminUsersPage api={api} showToast={showToast} />
               )}
               {currentPage === "inspector" && (
                 <SharedInspectorPage

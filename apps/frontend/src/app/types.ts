@@ -10,6 +10,7 @@ export type Page =
   | "admin:audit"
   | "admin:gateway"
   | "admin:tcp"
+  | "admin:users"
   | "inspector";
 
 export type Theme = "light" | "dark";

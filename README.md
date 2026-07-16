@@ -157,8 +157,9 @@ Frontend supports:
 - Tunnel create
 - Tunnel remove — stopping any tunnel, including a live CLI session, tells the
   connected client to close that tunnel immediately (it will not reconnect)
-- Admin panel (system state, key management, diagnostics, audit) — visible only
-  to platform admins
+- Admin panel (system state, key management, diagnostics, audit, and **Users &
+  Subscriptions** — toggle the subdomain feature per user) — visible only to
+  platform admins
 
 > **Roles:** self-registered users are resource **owners** — they manage only
 > their own tunnels and API keys. Platform **admins** (the only role that can
@@ -218,14 +219,36 @@ Optional:
   ```bash
   npm run portivox:open -- 3000 --host 0.0.0.0
   ```
+- Dedicated raw-TCP port alongside the subdomain (**on by default**):
+
+  By default, every HTTP tunnel also exposes a dedicated public port
+  (e.g. `portivox.braintechsolution.com:19005`) that raw-TCP forwards straight to
+  your local service. The same tunnel is reachable **both** ways at once — the
+  subdomain (HTTP) and the port (raw bytes, works for any client, e.g.
+  `curl http://portivox.braintechsolution.com:19005`). The port is drawn from the
+  shared `TCP_PUBLIC_PORT_START..END` pool and requires `TCP_TUNNEL_ENABLED` on the
+  gateway; if the pool is exhausted or TCP is disabled, the subdomain tunnel still
+  works and the dedicated port is simply skipped.
+
+  To opt out and expose only the subdomain:
+  ```bash
+  npm run portivox:open -- 3000 --no-port
+  ```
 - Custom gateway:
   ```bash
   npm run portivox:open -- 3000 --gateway wss://portivox.braintechsolution.com/connect
   ```
 
-When connected, the client prints the assigned public URL. By default HTTP tunnels use a public port, for example `http://portivox.braintechsolution.com:19000`.
+When connected, the client prints the assigned public URL.
 
-Custom subdomains are a premium/admin-enabled feature. Grant the API key `tunnel:subdomain`, then run `--subdomain myapp`.
+**Subdomain access is a per-user subscription feature.** By default a user's HTTP
+tunnel is exposed on a **dedicated public port only** (e.g.
+`portivox.braintechsolution.com:19000`) with no subdomain. A platform admin
+enables the subdomain feature for a user from the admin panel (**Users &
+Subscriptions**, or `PATCH /api/admin/users/:id { "subdomainEnabled": true }`).
+Once enabled, that user's HTTP tunnels get a subdomain (plus the dedicated port),
+and they can request a custom subdomain with `--subdomain myapp`. The entitlement
+is read live at tunnel-open time, so a toggle takes effect on the next `open`.
 
 ### TCP tunnel (SSH/RDP/DB)
 Expose local port `22` as a raw TCP tunnel:
@@ -268,7 +291,7 @@ Default HTTP tunnel access uses the gateway domain plus the assigned public port
 http://portivox.braintechsolution.com:19000
 ```
 
-Premium subdomain access, when enabled for the user/API key, uses:
+Subscription subdomain access, when a platform admin has enabled it for the user, uses:
 
 ```text
 http://demo.portivox.braintechsolution.com

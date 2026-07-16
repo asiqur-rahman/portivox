@@ -19,6 +19,9 @@ export type TunnelClientConfig = {
   heartbeatIntervalMs?: number;
   /** Whether to request IP link protection for TCP tunnels (default: true). */
   ipProtection?: boolean;
+  /** HTTP tunnels: also expose a dedicated raw-TCP passthrough port alongside
+   *  the subdomain (opt-in via the CLI `--with-port` flag). */
+  withDedicatedPort?: boolean;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
   /** Called once when the gateway confirms registration — used to persist the
@@ -33,6 +36,8 @@ export type TunnelClientConfig = {
     accessLink?: string;
     redirectToken?: string;
     redirectUrl?: string;
+    dedicatedTcpHost?: string;
+    dedicatedTcpPort?: number;
   }) => void;
   /** Called when the gateway revokes this tunnel (owner removed it from the web
    *  panel). The client stops and will NOT reconnect. */
@@ -119,6 +124,9 @@ export class TunnelClient {
         localPort: this.config.localTcpPort,
         // Request IP link protection (TCP only; default true unless opted out).
         ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
+        // HTTP tunnels only: ask the gateway to also expose a dedicated raw-TCP
+        // passthrough port alongside the subdomain.
+        withDedicatedPort: !isTcp ? (this.config.withDedicatedPort === true) : false,
         // Replay the stable redirect token on reconnect to keep the /r/ URL.
         redirectToken: this.redirectToken ?? undefined,
       });
@@ -158,6 +166,18 @@ export class TunnelClient {
           }
           this.logger.info(`TCP endpoint: ${msg.publicTcpHost ?? "localhost"}:${msg.publicTcpPort}`);
         }
+        // HTTP tunnels: report the dedicated raw-TCP passthrough port. When there
+        // is no subdomain, this is a "port-only" tunnel (the user's account does
+        // not have the subdomain subscription) and the port is the primary URL.
+        if (msg.dedicatedTcpPort) {
+          if (!msg.subdomain) {
+            this.logger.info("Tunnel active (port only — subdomain access requires a subscription)");
+          }
+          const label = msg.subdomain ? "Dedicated TCP port" : "Public port";
+          this.logger.info(`${label}: ${msg.dedicatedTcpHost ?? msg.publicHost ?? "localhost"}:${msg.dedicatedTcpPort}`);
+        } else if (this.config.withDedicatedPort && msg.tunnelType !== "tcp") {
+          this.logger.warn("Dedicated port was requested but is unavailable on this gateway (TCP disabled or port pool exhausted).");
+        }
         if (msg.accessLink) {
           this.logger.info(`Access link (click to whitelist your IP): ${msg.accessLink}`);
         }
@@ -174,6 +194,8 @@ export class TunnelClient {
           accessLink: msg.accessLink,
           redirectToken: msg.redirectToken,
           redirectUrl: msg.redirectUrl,
+          dedicatedTcpHost: msg.dedicatedTcpHost,
+          dedicatedTcpPort: msg.dedicatedTcpPort,
         });
         return;
       }

@@ -112,6 +112,10 @@ type SessionEntry = {
   subdomain?: string | null;
   publicPort?: number | null;
   publicHost?: string | null;
+  /** HTTP tunnels opened with --with-port: the dedicated raw-TCP passthrough
+   *  endpoint bound alongside the subdomain. */
+  dedicatedTcpPort?: number | null;
+  dedicatedTcpHost?: string | null;
   redirectUrl?: string | null;
   accessLink?: string | null;
   startedAt: string;
@@ -884,6 +888,7 @@ function startClient({
   localTcpPort,
   apiKey,
   ipProtection,
+  withDedicatedPort,
   exitAfterMs,
   heartbeatIntervalMs,
   noReconnect,
@@ -897,6 +902,7 @@ function startClient({
   localTcpPort?: number;
   apiKey?: string;
   ipProtection?: boolean;
+  withDedicatedPort?: boolean;
   exitAfterMs?: number;
   heartbeatIntervalMs?: number;
   noReconnect?: boolean;
@@ -916,6 +922,7 @@ function startClient({
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     ipProtection,
+    withDedicatedPort,
     exitAfterMs,
     heartbeatIntervalMs: heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs,
     noReconnect,
@@ -928,6 +935,8 @@ function startClient({
         subdomain: info.subdomain ?? null,
         publicPort: info.publicPort ?? info.publicTcpPort ?? null,
         publicHost: info.publicHost ?? info.publicTcpHost ?? null,
+        dedicatedTcpPort: info.dedicatedTcpPort ?? null,
+        dedicatedTcpHost: info.dedicatedTcpHost ?? null,
         redirectUrl: info.redirectUrl ?? null,
         accessLink: info.accessLink ?? null,
         startedAt: new Date().toISOString(),
@@ -1101,6 +1110,7 @@ async function run(): Promise<void> {
         }
         if (s.subdomain) return `(subdomain: ${s.subdomain})`;
         if (s.publicHost && s.publicPort) return `${s.publicHost}:${s.publicPort}`;
+        if (s.dedicatedTcpPort) return `${s.dedicatedTcpHost ?? s.publicHost ?? "localhost"}:${s.dedicatedTcpPort}`;
         return "(unknown)";
       })();
       // eslint-disable-next-line no-console
@@ -1108,6 +1118,10 @@ async function run(): Promise<void> {
       if (s.localPort) {
         // eslint-disable-next-line no-console
         console.log(`    Local port : ${s.localPort}`);
+      }
+      if (s.dedicatedTcpPort) {
+        // eslint-disable-next-line no-console
+        console.log(`    TCP port   : ${s.dedicatedTcpHost ?? s.publicHost ?? "localhost"}:${s.dedicatedTcpPort}`);
       }
       if (s.redirectUrl) {
         // eslint-disable-next-line no-console
@@ -1139,6 +1153,10 @@ async function run(): Promise<void> {
     // --tcp flag → TCP tunnel; default is HTTP
     const tcpMode = args.includes("--tcp");
     const noIpProtection = args.includes("--no-ip-protection");
+    // HTTP tunnels also expose a dedicated raw-TCP passthrough port alongside the
+    // subdomain BY DEFAULT. Pass --no-port to opt out. Ignored for --tcp tunnels
+    // (which are already port-based).
+    const withDedicatedPort = !tcpMode && !args.includes("--no-port");
 
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
@@ -1201,6 +1219,7 @@ async function run(): Promise<void> {
         subdomain:    requestedSubdomain,
         host,
         ipProtection: tcpMode ? !noIpProtection : undefined,
+        withDedicatedPort,
       });
       return;
     }
@@ -1214,6 +1233,10 @@ async function run(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log("IP link protection is ON — TCP port is dark until you click the access link.");
     }
+    if (withDedicatedPort) {
+      // eslint-disable-next-line no-console
+      console.log("A dedicated raw TCP port will be exposed alongside the subdomain (pass --no-port to disable).");
+    }
 
     startClient({
       gatewayUrl,
@@ -1224,6 +1247,7 @@ async function run(): Promise<void> {
       localTcpPort: port,
       apiKey,
       ipProtection: tcpMode ? !noIpProtection : false,
+      withDedicatedPort,
       exitAfterMs,
       heartbeatIntervalMs,
       noReconnect: false,

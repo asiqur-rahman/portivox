@@ -53,6 +53,9 @@ export type ServiceEntry = {
   host: string;
   /** TCP only; false = pass --no-ip-protection; undefined = default (true) */
   ipProtection?: boolean;
+  /** HTTP only: expose a dedicated raw-TCP passthrough port alongside the
+   *  subdomain (replays --with-port on service start). */
+  withDedicatedPort?: boolean;
   /** Portivox home to reuse even if the service runs under another account */
   portivoxHome: string;
   /** Absolute path to the Node.js binary recorded at install time */
@@ -74,6 +77,7 @@ export type InstallOpts = {
   subdomain?: string;
   host: string;
   ipProtection?: boolean;
+  withDedicatedPort?: boolean;
 };
 
 export function isServiceInfrastructureReady(): boolean {
@@ -109,11 +113,14 @@ function writeRegistry(reg: ServiceRegistry): void {
 // ── Shared: build "portivox open" argument list ───────────────────────────────
 
 function buildOpenArgs(entry: ServiceEntry): string[] {
-  const { scriptPath, port, tunnelType, gatewayUrl, subdomain, host, ipProtection } = entry;
+  const { scriptPath, port, tunnelType, gatewayUrl, subdomain, host, ipProtection, withDedicatedPort } = entry;
   const argv: string[] = [scriptPath, "open", String(port), "--host", host];
   if (tunnelType === "tcp") {
     argv.push("--tcp");
     if (ipProtection === false) argv.push("--no-ip-protection");
+  } else if (withDedicatedPort === false) {
+    // HTTP dedicated port is on by default; only replay the explicit opt-out.
+    argv.push("--no-port");
   }
   if (gatewayUrl) argv.push("--gateway", gatewayUrl);
   if (subdomain)  argv.push("--subdomain", subdomain);
@@ -678,6 +685,7 @@ export function installService(opts: InstallOpts): void {
     subdomain:   opts.subdomain,
     host:        opts.host,
     ipProtection: opts.ipProtection,
+    withDedicatedPort: opts.withDedicatedPort,
     portivoxHome: PORTIVOX_DIR,
     nodeBin,
     scriptPath,

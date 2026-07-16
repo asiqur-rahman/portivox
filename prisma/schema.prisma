@@ -12,6 +12,10 @@ model User {
   id           String      @id @default(uuid())
   email        String      @unique
   passwordHash String?
+  // Subscription entitlement: when true the user may open HTTP tunnels with a
+  // public subdomain. When false they get a dedicated public port only. Toggled
+  // by a platform admin from the admin panel.
+  subdomainEnabled Boolean @default(false)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   apiKeys      ApiKey[]

@@ -8,6 +8,9 @@ process.env.DATABASE_URL = "";
 const http = require("node:http");
 const { createGatewayServer } = require("../apps/gateway-server/dist/server.js");
 const { TunnelClient } = require("../apps/tunnel-client/dist/client.js");
+const { signAccessToken } = require("../packages/auth/index.js");
+
+const JWT_SECRET = "cli-visibility-integration-secret-key";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,7 +89,7 @@ async function main() {
       wsIdleTimeoutMs: 30000,
       maxRequestBodyBytes: 1048576,
       authRequired: true,
-      authJwtSecret: "cli-visibility-integration-secret-key",
+      authJwtSecret: JWT_SECRET,
       // Disable public-port binding so the HTTP tunnel routes purely by subdomain
       // (keeps the test independent of the TCP/HTTP public port pool).
       httpPublicPortMode: false,
@@ -106,6 +109,20 @@ async function main() {
     }
     const jwt = reg.body.accessToken;
     const auth = { authorization: `Bearer ${jwt}` };
+
+    // 1b) Grant the subdomain subscription so this HTTP tunnel gets a subdomain
+    //     (subdomain access is a per-user entitlement, off by default).
+    const adminAuth = { authorization: `Bearer ${signAccessToken({ sub: "admin-1", role: "admin", scopes: ["key:manage", "admin:read", "admin:write"] }, JWT_SECRET, "2h")}` };
+    const grant = await requestJson({
+      port: gatewayHttpPort,
+      path: `/api/admin/users/${encodeURIComponent(reg.body.user.id)}`,
+      method: "PATCH",
+      headers: adminAuth,
+      body: { subdomainEnabled: true },
+    });
+    if (grant.statusCode !== 200 || grant.body?.user?.subdomainEnabled !== true) {
+      throw new Error(`grant subdomain entitlement failed: ${grant.statusCode} ${JSON.stringify(grant.body)}`);
+    }
 
     // 2) Mint an API key from that account (owned by this user).
     const keyRes = await requestJson({

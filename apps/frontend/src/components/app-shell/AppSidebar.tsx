@@ -83,6 +83,9 @@ export function AppSidebar({
             <div data-testid="nav-admin-tcp" className={`nav-item ${currentPage === "admin:tcp" ? "active" : ""}`} onClick={() => onNavigate("admin:tcp")}>
               <i className="ti ti-network" /> TCP Ports
             </div>
+            <div data-testid="nav-admin-users" className={`nav-item ${currentPage === "admin:users" ? "active" : ""}`} onClick={() => onNavigate("admin:users")}>
+              <i className="ti ti-users" /> Users
+            </div>
           </>
         )}
       </div>

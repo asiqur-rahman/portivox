@@ -98,6 +98,7 @@ export function MobileMoreSheet({
                 { page: "admin:audit" as Page, label: "Audit", icon: "clipboard-list" },
                 { page: "admin:gateway" as Page, label: "Gateway", icon: "server-cog" },
                 { page: "admin:tcp" as Page, label: "TCP Ports", icon: "network" },
+                { page: "admin:users" as Page, label: "Users", icon: "users" },
               ].map((item) => (
                 <button
                   key={item.page}

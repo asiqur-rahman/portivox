@@ -89,6 +89,7 @@ type LiveEventKind =
   | "audit_changed"
   | "api_keys_changed"
   | "tcp_mappings_changed"
+  | "users_changed"
   | "inspector_changed";
 
 type LiveEvent = {
@@ -318,6 +319,15 @@ type UserAuthRecord = {
   id: string;
   email: string;
   passwordHash: string;
+  /** Subscription entitlement: may this user open subdomain (HTTP) tunnels? */
+  subdomainEnabled: boolean;
+  createdAt: string;
+};
+
+type UserSummary = {
+  id: string;
+  email: string;
+  subdomainEnabled: boolean;
   createdAt: string;
 };
 
@@ -338,14 +348,14 @@ class UserAuthStore {
         throw new Error("USER_EXISTS");
       }
       const row = await this.prisma.user.create({ data: { email, passwordHash } });
-      return { id: row.id, email: row.email, passwordHash: row.passwordHash ?? "", createdAt: row.createdAt.toISOString() };
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash ?? "", subdomainEnabled: row.subdomainEnabled, createdAt: row.createdAt.toISOString() };
     }
 
     const found = [...this.memory.values()].find((item) => item.email === email);
     if (found) {
       throw new Error("USER_EXISTS");
     }
-    const created: UserAuthRecord = { id: randomUUID(), email, passwordHash, createdAt: new Date().toISOString() };
+    const created: UserAuthRecord = { id: randomUUID(), email, passwordHash, subdomainEnabled: false, createdAt: new Date().toISOString() };
     this.memory.set(created.id, created);
     return created;
   }
@@ -356,7 +366,7 @@ class UserAuthStore {
       if (!row || !row.passwordHash) {
         return null;
       }
-      return { id: row.id, email: row.email, passwordHash: row.passwordHash, createdAt: row.createdAt.toISOString() };
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash, subdomainEnabled: row.subdomainEnabled, createdAt: row.createdAt.toISOString() };
     }
 
     return [...this.memory.values()].find((item) => item.email === email) ?? null;
@@ -366,9 +376,39 @@ class UserAuthStore {
     if (this.prisma) {
       const row = await this.prisma.user.findUnique({ where: { id } });
       if (!row || !row.passwordHash) return null;
-      return { id: row.id, email: row.email, passwordHash: row.passwordHash, createdAt: row.createdAt.toISOString() };
+      return { id: row.id, email: row.email, passwordHash: row.passwordHash, subdomainEnabled: row.subdomainEnabled, createdAt: row.createdAt.toISOString() };
     }
     return this.memory.get(id) ?? null;
+  }
+
+  /** List all registered users (admin use). Includes users with no password
+   *  (e.g. provisioned via API key only). */
+  async listUsers(): Promise<UserSummary[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.user.findMany({ orderBy: { createdAt: "desc" } });
+      return rows.map((r) => ({ id: r.id, email: r.email, subdomainEnabled: r.subdomainEnabled, createdAt: r.createdAt.toISOString() }));
+    }
+    return [...this.memory.values()]
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      .map((u) => ({ id: u.id, email: u.email, subdomainEnabled: u.subdomainEnabled, createdAt: u.createdAt }));
+  }
+
+  /** Toggle the subdomain subscription entitlement for a user. Returns the
+   *  updated summary, or null when the user does not exist. */
+  async setSubdomainEnabled(id: string, enabled: boolean): Promise<UserSummary | null> {
+    if (this.prisma) {
+      try {
+        const row = await this.prisma.user.update({ where: { id }, data: { subdomainEnabled: enabled } });
+        return { id: row.id, email: row.email, subdomainEnabled: row.subdomainEnabled, createdAt: row.createdAt.toISOString() };
+      } catch {
+        return null;
+      }
+    }
+    const existing = this.memory.get(id);
+    if (!existing) return null;
+    const next: UserAuthRecord = { ...existing, subdomainEnabled: enabled };
+    this.memory.set(id, next);
+    return { id: next.id, email: next.email, subdomainEnabled: next.subdomainEnabled, createdAt: next.createdAt };
   }
 
   async updatePassword(id: string, passwordHash: string): Promise<void> {
@@ -1253,7 +1293,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
       return principal.userId === event.userId || principal.authType === "anonymous";
     }
-    if (event.kind === "audit_changed" || event.kind === "tcp_mappings_changed") {
+    if (event.kind === "audit_changed" || event.kind === "tcp_mappings_changed" || event.kind === "users_changed") {
       return isPlatformAdmin(principal.role) && hasScope(principal.scopes, "key:manage");
     }
     if (event.kind === "inspector_changed") {
@@ -1500,6 +1540,21 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // provisioned out-of-band via ADMIN_EMAILS or a static AUTH_API_KEYS key.
   function isPlatformAdmin(role: Principal["role"]): boolean {
     return role === "admin";
+  }
+
+  // Subdomain access is a per-user subscription entitlement. Resolved LIVE from
+  // the user record (not from the JWT, whose scopes are frozen for 7 days) so an
+  // admin toggle takes effect on the next tunnel open. Platform admins always
+  // qualify; in dev mode (authRequired === false) everyone qualifies.
+  async function isSubdomainAllowed(principal: Principal): Promise<boolean> {
+    if (config.authRequired === false) return true;
+    if (isPlatformAdmin(principal.role)) return true;
+    try {
+      const user = await userAuthStore.findById(principal.userId);
+      return user?.subdomainEnabled === true;
+    } catch {
+      return false;
+    }
   }
 
   function filterHopByHopHeaders<T extends Record<string, unknown>>(headers: T): T {
@@ -2000,15 +2055,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           const isTcp = requestMessage.tunnelType === "tcp";
           const requestedPremiumSubdomain = !!requestMessage.requestedSubdomain;
 
-          if (
-            !isTcp &&
-            requestedPremiumSubdomain &&
-            config.authRequired !== false &&
-            !isPlatformAdmin(principal.role) &&
-            !hasScope(principal.scopes, "tunnel:subdomain")
-          ) {
+          // Subdomain access is a per-user subscription entitlement, resolved live
+          // from the user record. Users without it get a dedicated public port only.
+          const subdomainAllowed = await isSubdomainAllowed(principal);
+
+          // Requesting a specific/vanity subdomain requires the entitlement.
+          if (!isTcp && requestedPremiumSubdomain && !subdomainAllowed) {
             socket.send(createGatewayError(
-              "Subdomain tunnels are a premium feature. Ask an admin to enable tunnel:subdomain for your API key.",
+              "Subdomain access requires a subscription. Ask a platform admin to enable it for your account.",
               "SUBDOMAIN_NOT_ALLOWED",
             ));
             return;
@@ -2135,6 +2189,82 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             return;
           }
 
+          // ── PORT-ONLY PATH ────────────────────────────────────────────────
+          // An HTTP tunnel from a user WITHOUT the subdomain subscription. No
+          // subdomain is registered (so there is no HTTP subdomain routing); the
+          // tunnel is reachable only via a dedicated public port that raw-TCP
+          // passthrough-forwards to the local service. Modeled on the fixed-port
+          // TCP path — a synthetic key, deliberately NOT added to the registry.
+          if (!isTcp && !subdomainAllowed) {
+            const syntheticKey = `__http_port_${randomBytes(6).toString("hex")}__`;
+            socketSubdomain.set(socket, syntheticKey);
+            socketByTunnelKey.set(syntheticKey, socket);
+            ownershipBySubdomain.set(syntheticKey, principal.userId);
+            registered = true;
+            metrics.setGauge("gateway_active_tunnels", registry.count());
+
+            // Stable redirect URL (reused by the same owner on reconnect).
+            let redirectToken: string;
+            const incomingRToken = requestMessage.redirectToken;
+            const existingREntry = incomingRToken ? redirectByToken.get(incomingRToken) : undefined;
+            if (incomingRToken && existingREntry && (!existingREntry.userId || existingREntry.userId === principal.userId)) {
+              redirectToken = incomingRToken;
+              existingREntry.connected = false;
+              existingREntry.disconnectedAt = undefined;
+            } else {
+              redirectToken = randomBytes(16).toString("base64url");
+            }
+            const redirectUrl = buildPublicUrl(`/r/${redirectToken}`);
+
+            void auditStore.log(principal.userId, "ws_tunnel_registered_port_only", "tcp_port_session", syntheticKey, { authType: principal.authType });
+
+            try {
+              const binding = await bindTcpTunnel(syntheticKey, socket);
+              const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
+                tunnelKey: syntheticKey,
+                userId: principal.userId,
+                tunnelType: "tcp",
+                createdAt: Date.now(),
+                connected: false,
+                lastSeenAt: Date.now(),
+              };
+              rEntry.publicTcpPort = binding.publicPort;
+              rEntry.publicTcpHost = binding.publicHost;
+              rEntry.connected = true;
+              rEntry.lastSeenAt = Date.now();
+              redirectByToken.set(redirectToken, rEntry);
+              redirectTokenByTunnelKey.set(syntheticKey, redirectToken);
+              publishLiveEvent("tunnels_changed", principal.userId);
+              publishLiveEvent("gateway_status_changed");
+
+              socket.send(encodeWireMessage({
+                type: "registered",
+                tunnelType: "http",
+                dedicatedTcpHost: binding.publicHost,
+                dedicatedTcpPort: binding.publicPort,
+                redirectToken,
+                redirectUrl,
+              }));
+            } catch (error) {
+              const code = error instanceof Error ? error.message : "";
+              socket.send(createGatewayError(
+                code === "TCP_TUNNEL_DISABLED"
+                  ? "This gateway cannot expose a public port (TCP disabled), and subdomain access requires a subscription."
+                  : code === "TCP_PORT_EXHAUSTED"
+                    ? "No public ports are currently available"
+                    : "Failed to allocate a public port",
+                code === "TCP_PORT_EXHAUSTED" ? "TCP_PORT_EXHAUSTED" : code === "TCP_TUNNEL_DISABLED" ? "TCP_TUNNEL_DISABLED" : "TCP_PORT_ALLOCATE_FAILED",
+              ));
+              socketSubdomain.delete(socket);
+              socketByTunnelKey.delete(syntheticKey);
+              ownershipBySubdomain.delete(syntheticKey);
+              purgeRedirectForKey(syntheticKey);
+              metrics.setGauge("gateway_active_tunnels", registry.count());
+              registered = false;
+            }
+            return;
+          }
+
           // ── NORMAL PATH (HTTP tunnel, or TCP with no/busy mapping) ─────────
           try {
             let subdomain: string;
@@ -2251,6 +2381,30 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                   return;
                 }
               }
+
+              // Optionally expose a dedicated raw-TCP passthrough port alongside
+              // the subdomain (opt-in via the client's --with-port flag). The
+              // client already services tcp_open/tcp_data/tcp_close on this same
+              // socket and pipes them to the local port, so no relay changes are
+              // needed — we just add a second listener. Bind it under a distinct
+              // key so it coexists with any httpPublicPortMode HTTP-port binding
+              // for the same subdomain. Failure is NON-FATAL: the subdomain tunnel
+              // still works; we just omit the dedicated endpoint (never send an
+              // error frame here — the client treats pre-registration errors as
+              // fatal).
+              let dedicatedBinding: { publicPort: number; publicHost: string } | null = null;
+              if (requestMessage.withDedicatedPort && (config.tcpTunnelEnabled ?? true)) {
+                try {
+                  dedicatedBinding = await bindTcpTunnel(`dedicated:${subdomain}`, socket);
+                } catch (error) {
+                  const code = error instanceof Error ? error.message : "";
+                  app.log.warn(
+                    { subdomain, code },
+                    "failed to bind dedicated tcp port for http tunnel — continuing without it",
+                  );
+                }
+              }
+
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: subdomain,
                 userId: principal.userId,
@@ -2262,6 +2416,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               rEntry.subdomain = subdomain;
               rEntry.publicHost = publicBinding?.publicHost;
               rEntry.publicPort = publicBinding?.publicPort;
+              // Reuse the RedirectEntry TCP fields to carry the dedicated raw-TCP
+              // port so the stable /r/:token page and the console can surface it.
+              rEntry.publicTcpHost = dedicatedBinding?.publicHost;
+              rEntry.publicTcpPort = dedicatedBinding?.publicPort;
               rEntry.connected = true;
               rEntry.lastSeenAt = Date.now();
               redirectByToken.set(redirectToken, rEntry);
@@ -2273,6 +2431,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 tunnelType: "http",
                 publicHost: publicBinding?.publicHost,
                 publicPort: publicBinding?.publicPort,
+                dedicatedTcpHost: dedicatedBinding?.publicHost,
+                dedicatedTcpPort: dedicatedBinding?.publicPort,
                 redirectToken,
                 redirectUrl,
               }));
@@ -2500,6 +2660,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
         if (subdomain) {
           void releaseTcpTunnelBySubdomain(subdomain);
+          // Also release any dedicated raw-TCP passthrough port bound alongside an
+          // HTTP subdomain tunnel (--with-port). No-op when none was bound.
+          void releaseTcpTunnelBySubdomain(`dedicated:${subdomain}`);
         }
         const connectionIds = tcpConnectionsBySocket.get(socket);
         if (connectionIds) {
@@ -3816,6 +3979,89 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     publishLiveEvent("tcp_mappings_changed");
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     return reply.status(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin: user subscription entitlements (subdomain feature toggle).
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/admin/users", async (req, reply) => {
+    const endpoint = "/api/admin/users";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isPlatformAdmin(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+
+    const users = await userAuthStore.listUsers();
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({ users });
+  });
+
+  app.patch("/api/admin/users/:id", async (req, reply) => {
+    const endpoint = "/api/admin/users/:id";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiAdminLimiter.take(`api:admin:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429)
+        .send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isPlatformAdmin(principal.role)) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "ROLE_REQUIRED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Platform admin role required" } });
+    }
+    if (!hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "MISSING_SCOPE" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
+    }
+
+    const { id } = req.params as { id: string };
+    const body = req.body as Record<string, unknown> | null;
+    if (!isPlainObject(body) || !hasOnlyAllowedKeys(body, ["subdomainEnabled"]) || typeof body.subdomainEnabled !== "boolean") {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "INVALID_BODY" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "Body must be { subdomainEnabled: boolean }" } });
+    }
+
+    const updated = await userAuthStore.setSubdomainEnabled(id, body.subdomainEnabled);
+    if (!updated) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "NOT_FOUND" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "4xx" });
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "User not found" } });
+    }
+    void auditStore.log(principal.userId, "user_subdomain_entitlement_changed", "user", id, { subdomainEnabled: body.subdomainEnabled });
+    publishLiveEvent("users_changed");
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "PATCH", status_class: "2xx" });
+    return reply.status(200).send({ user: updated });
   });
 
   // ---------------------------------------------------------------------------
