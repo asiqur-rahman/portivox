@@ -42,8 +42,8 @@ npm install -g portivox-client
 2. Push tag:
 
 ```bash
-git tag portivox-client-v0.4.0
-git push origin portivox-client-v0.4.0
+git tag portivox-client-v0.5.0
+git push origin portivox-client-v0.5.0
 ```
 
 The tag version must match `packages/portivox-client/package.json` (the workflow
