@@ -5,7 +5,10 @@
 # Quick start
 # -----------
 #   cp .env.example .env          # fill in DATABASE_URL + secrets
-#   docker compose up --build     # starts nginx, gateway, redis
+#   make up                       # starts nginx, gateway, redis
+#   make rebuild                  # no-cache rebuild + recreate
+#   make down                     # stop; keep volumes
+#   make down-v                   # stop + wipe volumes (redis_data)
 #
 # With demo echo app + tunnel client:
 #   docker compose --profile demo up --build
@@ -14,8 +17,7 @@
 #   docker compose --profile scale up --build
 #
 # First-time DB migration:
-#   docker compose run --rm gateway \
-#     node -e "require('child_process').execSync('npm run db:migrate:deploy',{stdio:'inherit'})"
+#   make migrate
 #
 # ── Environment variables ────────────────────────────────────
 # All tuneable values are read from .env (see .env.example).

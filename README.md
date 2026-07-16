@@ -52,11 +52,28 @@ refuses to republish an existing version). Or run workflow manually:
 
 ### Docker Shortcuts
 
+Prefer Make (from the repo root):
+
 ```bash
-npm run docker:dev:up
-npm run docker:dev:down
-npm run docker:prod:up
-npm run docker:prod:down
+make up        # start / refresh stack (build if needed)
+make rebuild   # no-cache rebuild + recreate containers
+make down      # stop containers; keep volumes (Redis data)
+make down-v    # stop containers + wipe volumes (destructive)
+make logs      # follow logs
+make migrate   # Prisma migrate deploy in gateway
+make ps        # container status
+```
+
+Equivalent npm scripts:
+
+```bash
+npm run docker:up
+npm run docker:rebuild
+npm run docker:down
+npm run docker:down:v
+npm run docker:logs
+npm run docker:migrate
+npm run docker:ps
 ```
 
 ### Database Provider (MySQL or PostgreSQL)
@@ -101,7 +118,13 @@ npm run dev:gateway
 
 ### Option B: Docker
 ```bash
-docker compose up --build
+make up
+```
+
+Or without Make:
+
+```bash
+docker compose up --build -d
 ```
 
 By default (with NGINX):
