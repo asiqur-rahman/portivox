@@ -30,6 +30,12 @@ export type TunnelRecord = {
    * sessions; may be null if the redirect entry has not yet been created.
    */
   redirectUrl?: string | null;
+  /**
+   * Secret access link (https://host/l/:token) for IP-protected tunnels. The
+   * exposed port stays dark until this link is opened, which whitelists the
+   * visitor's IP for 24h. Null when the tunnel is not IP-protected.
+   */
+  accessLink?: string | null;
 };
 
 export type ApiKeyRecord = {

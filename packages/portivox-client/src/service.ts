@@ -103,11 +103,13 @@ function buildOpenArgs(entry: ServiceEntry): string[] {
   const argv: string[] = [scriptPath, "open", String(port), "--host", host];
   if (tunnelType === "tcp") {
     argv.push("--tcp");
-    if (ipProtection === false) argv.push("--no-ip-protection");
   } else if (withDedicatedPort === false) {
     // HTTP dedicated port is on by default; only replay the explicit opt-out.
     argv.push("--no-port");
   }
+  // IP-link protection is on by default for TCP and port-only HTTP tunnels;
+  // replay the opt-out for either type.
+  if (ipProtection === false) argv.push("--no-ip-protection");
   if (gatewayUrl) argv.push("--gateway", gatewayUrl);
   if (subdomain)  argv.push("--subdomain", subdomain);
   return argv;

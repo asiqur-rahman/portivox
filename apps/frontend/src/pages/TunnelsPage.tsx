@@ -194,6 +194,11 @@ export function TunnelsPage({
                       <i className="ti ti-copy" />
                     </button>
                     <div className="mobile-card-actions">
+                      {tunnel.accessLink && (
+                        <a className="btn-ghost" href={tunnel.accessLink} target="_blank" rel="noreferrer" title="Open to unlock the port for your network">
+                          <i className="ti ti-lock-open" /> Access link
+                        </a>
+                      )}
                       {tunnel.active && !tunnel.isCliSession && (
                         <button className="btn-ghost" onClick={() => onInspect(tunnel.subdomain ?? "")}>
                           <i className="ti ti-eye" /> Inspect
@@ -250,7 +255,7 @@ export function TunnelsPage({
                             <i className="ti ti-topology-star-3" style={{ fontSize: 14, color: "var(--accent)" }} />
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <strong>{tunnel.subdomain}</strong>
+                            <strong>{tunnel.subdomain || (tunnel.tunnelType === "tcp" ? "Port tunnel" : "-")}</strong>
                             {tunnel.isCliSession && <span className="cli-badge">CLI</span>}
                           </div>
                         </div>
@@ -278,6 +283,11 @@ export function TunnelsPage({
                             <button className="icon-btn" title="Inspect HTTP traffic" onClick={() => onInspect(tunnel.subdomain ?? "")}>
                               <i className="ti ti-eye" />
                             </button>
+                          )}
+                          {tunnel.accessLink && (
+                            <a className="icon-btn" href={tunnel.accessLink} target="_blank" rel="noreferrer" title="Open the secret access link to unlock the port for your network">
+                              <i className="ti ti-lock-open" />
+                            </a>
                           )}
                           <button className="icon-btn" title={tunnel.tunnelType === "tcp" ? "Copy address" : "Copy URL"} onClick={() => onCopy(url)}>
                             <i className="ti ti-copy" />

@@ -122,8 +122,10 @@ export class TunnelClient {
         // Tell the gateway which local port we're forwarding so it can apply
         // any admin-configured fixed public port mapping for this port.
         localPort: this.config.localTcpPort,
-        // Request IP link protection (TCP only; default true unless opted out).
-        ipProtection: isTcp ? (this.config.ipProtection !== false) : false,
+        // IP-link protection intent. Sent for HTTP too: the gateway applies it to
+        // port-only tunnels (users without subdomain access) and ignores it for
+        // subdomain-routed tunnels. Default on; --no-ip-protection turns it off.
+        ipProtection: this.config.ipProtection !== false,
         // HTTP tunnels only: ask the gateway to also expose a dedicated raw-TCP
         // passthrough port alongside the subdomain.
         withDedicatedPort: !isTcp ? (this.config.withDedicatedPort === true) : false,
@@ -179,7 +181,8 @@ export class TunnelClient {
           this.logger.warn("Dedicated port was requested but is unavailable on this gateway (TCP disabled or port pool exhausted).");
         }
         if (msg.accessLink) {
-          this.logger.info(`Access link (click to whitelist your IP): ${msg.accessLink}`);
+          this.logger.info(`Secret access link (open in a browser to unlock the port for your network): ${msg.accessLink}`);
+          this.logger.info("The public port stays closed until this link is opened. Share it only with people who should reach the service.");
         }
         if (msg.redirectUrl) {
           this.logger.info(`Status page (stable): ${msg.redirectUrl}`);

@@ -884,6 +884,76 @@ export type GatewayServer = {
   stop: () => Promise<void>;
 };
 
+/** Self-contained, theme-aware confirmation page shown when a visitor opens a
+ *  tunnel access link (/l/:token). Their IP is now whitelisted, so the exposed
+ *  port is reachable from their network for 24h. All values are pre-escaped. */
+function renderAccessGrantedPage(args: {
+  endpoint: string | null;
+  openHref: string | null;
+  ip: string;
+  online: boolean;
+  expiresLabel: string;
+}): string {
+  const { endpoint, openHref, ip, online, expiresLabel } = args;
+  const openButton = openHref
+    ? `<a class="btn" href="${openHref}" target="_blank" rel="noreferrer">Open exposed service &rarr;</a>`
+    : "";
+  const endpointBlock = endpoint
+    ? `<div class="row"><span class="lbl">Endpoint</span><code id="ep">${endpoint}</code>
+         <button class="copy" onclick="navigator.clipboard&amp;&amp;navigator.clipboard.writeText('${endpoint}')">Copy</button></div>`
+    : "";
+  const offlineNote = online
+    ? ""
+    : `<p class="warn">The tunnel client is not currently connected. The endpoint will respond once the client reconnects.</p>`;
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Tunnel access granted &middot; Portivox</title>
+<style>
+  :root{color-scheme:light dark}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:#f4f5f7;color:#1c2024}
+  .card{width:100%;max-width:460px;background:#fff;border:1px solid #e6e8eb;border-radius:16px;
+    padding:32px;box-shadow:0 10px 40px rgba(0,0,0,.08)}
+  .check{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;margin:0 auto 18px;
+    background:#e7f7ee;color:#12864a;font-size:30px}
+  h1{font-size:20px;margin:0 0 6px;text-align:center}
+  .sub{margin:0 0 22px;text-align:center;color:#60646c}
+  .row{display:flex;align-items:center;gap:10px;background:#f4f5f7;border:1px solid #e6e8eb;
+    border-radius:10px;padding:10px 12px;margin:10px 0}
+  .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#8b8d98;min-width:64px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;flex:1;word-break:break-all;color:#1c2024}
+  .copy{border:1px solid #d7dbdf;background:#fff;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;color:#1c2024}
+  .btn{display:block;text-align:center;margin-top:18px;background:#5b5bd6;color:#fff;text-decoration:none;
+    padding:12px 16px;border-radius:10px;font-weight:600}
+  .btn:hover{background:#5151cd}
+  .meta{margin-top:18px;font-size:12.5px;color:#8b8d98;text-align:center}
+  .warn{margin:14px 0 0;font-size:13px;color:#9a6700;background:#fff8e6;border:1px solid #ffe8a3;
+    border-radius:10px;padding:10px 12px}
+  @media(prefers-color-scheme:dark){
+    body{background:#0f1012;color:#eceef0}
+    .card{background:#17181a;border-color:#2a2c30;box-shadow:none}
+    .row{background:#1f2023;border-color:#2a2c30}code{color:#eceef0}
+    .copy{background:#1f2023;border-color:#3a3d42;color:#eceef0}
+    .check{background:#0f2e1f;color:#3dd68c}
+    .warn{color:#f5d78a;background:#2a2410;border-color:#4a3f16}
+  }
+</style></head><body>
+  <main class="card">
+    <div class="check">&#10003;</div>
+    <h1>Access granted</h1>
+    <p class="sub">This device can now reach the tunnel. The connection is open for the next 24 hours.</p>
+    ${endpointBlock}
+    ${openButton}
+    ${offlineNote}
+    <p class="meta">Whitelisted IP: <code style="font-size:12px">${ip}</code><br>Expires: ${expiresLabel}</p>
+  </main>
+</body></html>`;
+}
+
 export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer {
   // trustProxy: true tells Fastify to read req.ip from the X-Forwarded-For /
   // X-Real-IP headers set by nginx.  Without this, req.ip resolves to the
@@ -2220,6 +2290,26 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             registered = true;
             metrics.setGauge("gateway_active_tunnels", registry.count());
 
+            // IP-link protection: keep the public port DARK until a caller opens
+            // the secret access link (/l/:token), which whitelists their IP for
+            // 24h. On by default so the exposed port is not world-open; the client
+            // disables it with --no-ip-protection.
+            const ipProtection =
+              requestMessage.ipProtection !== false &&
+              (config.ipProtectionDefault !== false);
+            let accessToken: string | undefined;
+            let accessLink: string | undefined;
+            if (ipProtection) {
+              accessToken = randomBytes(24).toString("base64url");
+              accessLink = buildPublicUrl(`/l/${accessToken}`);
+              ipAccessByToken.set(accessToken, {
+                tunnelKey: syntheticKey,
+                allowedIps: new Map(),
+                tokenCreatedAt: Date.now(),
+              });
+              ipTokenByTunnelKey.set(syntheticKey, accessToken);
+            }
+
             // Stable redirect URL (reused by the same owner on reconnect).
             let redirectToken: string;
             const incomingRToken = requestMessage.redirectToken;
@@ -2233,10 +2323,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             }
             const redirectUrl = buildPublicUrl(`/r/${redirectToken}`);
 
-            void auditStore.log(principal.userId, "ws_tunnel_registered_port_only", "tcp_port_session", syntheticKey, { authType: principal.authType });
+            void auditStore.log(principal.userId, "ws_tunnel_registered_port_only", "tcp_port_session", syntheticKey, { authType: principal.authType, ipProtection });
 
             try {
-              const binding = await bindTcpTunnel(syntheticKey, socket, allocatedPort);
+              const binding = await bindTcpTunnel(syntheticKey, socket, allocatedPort, accessToken);
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: syntheticKey,
                 userId: principal.userId,
@@ -2247,6 +2337,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               };
               rEntry.publicTcpPort = binding.publicPort;
               rEntry.publicTcpHost = binding.publicHost;
+              rEntry.accessLink = accessLink;
               rEntry.connected = true;
               rEntry.lastSeenAt = Date.now();
               redirectByToken.set(redirectToken, rEntry);
@@ -2259,6 +2350,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 tunnelType: "http",
                 dedicatedTcpHost: binding.publicHost,
                 dedicatedTcpPort: binding.publicPort,
+                accessLink,
                 redirectToken,
                 redirectUrl,
               }));
@@ -2270,6 +2362,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                   : "Failed to allocate a public port",
                 code === "TCP_PORT_EXHAUSTED" || code === "TCP_PORT_BUSY" ? "TCP_PORT_EXHAUSTED" : "TCP_PORT_ALLOCATE_FAILED",
               ));
+              if (accessToken) { ipAccessByToken.delete(accessToken); ipTokenByTunnelKey.delete(syntheticKey); }
               socketSubdomain.delete(socket);
               socketByTunnelKey.delete(syntheticKey);
               ownershipBySubdomain.delete(syntheticKey);
@@ -4228,12 +4321,42 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const expiresAt = now + 24 * 60 * 60 * 1000;  // 24 hours
     entry.allowedIps.set(ip, expiresAt);
 
-    return reply.status(200).send({
-      whitelisted: true,
-      ip,
-      expiresAt: new Date(expiresAt).toISOString(),
-      message: `IP ${ip} has been whitelisted for 24 hours. You may now connect.`,
+    // Resolve the public endpoint (host:port) this token guards, for display.
+    const binding = tcpBindingsBySubdomain.get(entry.tunnelKey);
+    const publicHost = resolveTcpPublicHost();
+    const publicPort = binding?.publicPort ?? null;
+    const endpoint = publicPort ? `${publicHost}:${publicPort}` : null;
+    const online = !!binding;
+
+    // Human visitors get a friendly confirmation page; API clients (Accept
+    // without text/html) get the JSON payload unchanged.
+    const acceptsHtml = String(req.headers.accept ?? "").includes("text/html");
+    if (!acceptsHtml) {
+      return reply.status(200).send({
+        whitelisted: true,
+        ip,
+        endpoint,
+        online,
+        expiresAt: new Date(expiresAt).toISOString(),
+        message: `IP ${ip} has been whitelisted for 24 hours. You may now connect${endpoint ? ` to ${endpoint}` : ""}.`,
+      });
+    }
+
+    const esc = (value: string): string =>
+      value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const openHref = endpoint ? `http://${esc(endpoint)}` : null;
+    const html = renderAccessGrantedPage({
+      endpoint: endpoint ? esc(endpoint) : null,
+      openHref,
+      ip: esc(ip),
+      online,
+      expiresLabel: new Date(expiresAt).toUTCString(),
     });
+    return reply
+      .status(200)
+      .header("content-type", "text/html; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(html);
   });
 
   // ---------------------------------------------------------------------------

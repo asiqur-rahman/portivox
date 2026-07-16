@@ -241,6 +241,11 @@ export function AdminGatewayPage({
                     <code>{tunnel.id.slice(0, 18)}{tunnel.id.length > 18 ? "..." : ""}</code>
                   </div>
                   <div className="mobile-card-actions">
+                    {tunnel.accessLink && (
+                      <a className="btn-ghost" href={tunnel.accessLink} target="_blank" rel="noreferrer">
+                        <i className="ti ti-lock-open" /> Open access link
+                      </a>
+                    )}
                     <button className="btn-ghost danger" disabled={deletingId === tunnel.id} onClick={() => requestDestroy(tunnel)}>
                       <i className={`ti ti-${deletingId === tunnel.id ? "loader-2 spin" : "plug-connected-x"}`} /> Destroy
                     </button>
@@ -278,6 +283,11 @@ export function AdminGatewayPage({
                     </td>
                     <td>
                       <div className="row-actions">
+                        {tunnel.accessLink && (
+                          <a className="icon-btn" href={tunnel.accessLink} target="_blank" rel="noreferrer" title="Open the secret access link (unlocks the port for your network for 24h)">
+                            <i className="ti ti-lock-open" />
+                          </a>
+                        )}
                         <div className={`icon-btn danger${deletingId === tunnel.id ? " disabled" : ""}`} title="Destroy tunnel" onClick={() => { if (deletingId !== tunnel.id) requestDestroy(tunnel); }}>
                           <i className={`ti ti-${deletingId === tunnel.id ? "loader-2 spin" : "plug-connected-x"}`} />
                         </div>

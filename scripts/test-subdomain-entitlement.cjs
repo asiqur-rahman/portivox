@@ -79,6 +79,9 @@ function openTunnel({ wsPort, localAppPort, token }) {
       localTimeoutMs: 15000,
       maxResponseBodyBytes: 2097152,
       withDedicatedPort: true,
+      // This test exercises the entitlement/subdomain logic and reaches the port
+      // directly, so disable IP-link protection (covered by its own test).
+      ipProtection: false,
       wsHeaders: { authorization: `Bearer ${token}` },
       onRegistered: (info) => { clearTimeout(timeout); resolve({ client, info }); },
       onFatalError: (err) => { clearTimeout(timeout); reject(new Error(`fatal: ${err.message}`)); },

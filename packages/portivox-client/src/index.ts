@@ -798,6 +798,7 @@ function startClient({
   localTcpPort,
   apiKey,
   withDedicatedPort,
+  ipProtection,
   onFatalError,
   onRevoked,
 }: {
@@ -809,6 +810,7 @@ function startClient({
   localTcpPort?: number;
   apiKey?: string;
   withDedicatedPort?: boolean;
+  ipProtection?: boolean;
   onFatalError?: (error: TunnelRegistrationFailure) => void;
   onRevoked?: (info: { subdomain?: string; reason?: string }) => void;
 }): void {
@@ -825,6 +827,7 @@ function startClient({
     responseChunkBytes: defaultConfig.responseChunkBytes,
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     withDedicatedPort,
+    ipProtection,
     onFatalError,
     onRegistered: (info) => {
       addSession({
@@ -1026,6 +1029,9 @@ async function run(): Promise<void> {
     // HTTP tunnels also expose a dedicated raw-TCP passthrough port alongside the
     // subdomain BY DEFAULT. Pass --no-port to opt out. Ignored for --tcp tunnels.
     const withDedicatedPort = !tcpMode && !args.includes("--no-port");
+    // IP-link protection keeps the exposed public port dark until the secret
+    // access link is opened. On by default; --no-ip-protection turns it off.
+    const ipProtection = !args.includes("--no-ip-protection");
 
     const gatewayUrl = pickArg(args, "--gateway") ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
     const host = pickArg(args, "--host") ?? "127.0.0.1";
@@ -1061,6 +1067,7 @@ async function run(): Promise<void> {
         subdomain:   requestedSubdomain,
         host,
         withDedicatedPort,
+        ipProtection,
       });
       return;
     }
@@ -1080,6 +1087,7 @@ async function run(): Promise<void> {
       localTcpPort: port,
       apiKey,
       withDedicatedPort,
+      ipProtection,
       onFatalError: (failure) => {
         const formatted = formatTunnelOpenFailure(failure, { requestedSubdomain, tcpMode });
         console.error(formatted.message);

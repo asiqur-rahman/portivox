@@ -1215,7 +1215,7 @@ async function run(): Promise<void> {
         apiKey,
         subdomain:    requestedSubdomain,
         host,
-        ipProtection: tcpMode ? !noIpProtection : undefined,
+        ipProtection: !noIpProtection,
         withDedicatedPort,
       });
       return;
@@ -1243,7 +1243,7 @@ async function run(): Promise<void> {
       localTcpHost: host,
       localTcpPort: port,
       apiKey,
-      ipProtection: tcpMode ? !noIpProtection : false,
+      ipProtection: !noIpProtection,
       withDedicatedPort,
       exitAfterMs,
       heartbeatIntervalMs,

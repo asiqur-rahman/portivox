@@ -250,6 +250,25 @@ Once enabled, that user's HTTP tunnels get a subdomain (plus the dedicated port)
 and they can request a custom subdomain with `--subdomain myapp`. The entitlement
 is read live at tunnel-open time, so a toggle takes effect on the next `open`.
 
+### Secret access link (IP-link protection)
+
+Port-only tunnels (and raw TCP tunnels) are protected by a **secret access link**
+by default. The exposed public port stays **dark** — connections are dropped —
+until someone opens the printed access link (`https://<domain>/l/<token>`) in a
+browser. Opening it whitelists that visitor's IP for 24 hours and shows a
+"tunnel established" page with a button to open the service. Share the link only
+with people who should reach the port. The link is also available in the web
+console (Tunnels list and the admin Gateway page) as an **Open access link**
+button. To disable the gate and open the port immediately:
+
+```bash
+npm run portivox:open -- 3000 --no-ip-protection
+```
+
+The stable `https://<domain>/r/<token>` URL printed alongside is a **status page**
+(JSON) for bookmarks/automation — it reports the tunnel state and survives
+reconnects; it does not control access.
+
 ### TCP tunnel (SSH/RDP/DB)
 Expose local port `22` as a raw TCP tunnel:
 
