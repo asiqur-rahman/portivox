@@ -257,10 +257,18 @@ export class TunnelClient {
       }
     });
 
-    this.socket.on("close", () => {
+    this.socket.on("close", (code: number) => {
       this.stopHeartbeat();
       for (const connectionId of this.tcpConnections.keys()) {
         this.closeTcpConnection(connectionId, "gateway_disconnected");
+      }
+      // 4401 = the gateway rejected our credentials (API key revoked or invalid).
+      // Reconnecting would just fail again, so stop instead of looping.
+      if (code === 4401) {
+        this.logger.error("API key was revoked or is invalid — the gateway rejected this device. Stopping (will not reconnect).");
+        this.config.onFatalError?.({ message: "API key was revoked or is invalid", code: "UNAUTHORIZED" });
+        this.stop();
+        return;
       }
       this.scheduleReconnect();
     });

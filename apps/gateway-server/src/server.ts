@@ -210,6 +210,17 @@ class TunnelStore {
     return this.memory.get(id) ?? null;
   }
 
+  /** Look up a reserved tunnel by its subdomain. Used to tell a DB-reserved
+   *  tunnel (keep its offline ghost for reconnect) from an ephemeral CLI
+   *  session (purge on disconnect). */
+  async findBySubdomain(subdomain: string): Promise<TunnelRecord | null> {
+    if (this.prisma) {
+      const row = await this.prisma.tunnel.findUnique({ where: { subdomain } });
+      return row ? { id: row.id, userId: row.userId, subdomain: row.subdomain, createdAt: row.createdAt.toISOString() } : null;
+    }
+    return [...this.memory.values()].find((item) => item.subdomain === subdomain) ?? null;
+  }
+
   async delete(id: string): Promise<void> {
     if (this.prisma) {
       await this.prisma.tunnel.delete({ where: { id } });
@@ -277,18 +288,24 @@ class AuthStore {
     return [...(this.memory.get(userId) ?? [])].filter((item) => !item.revoked);
   }
 
-  async revokeApiKey(userId: string, id: string): Promise<boolean> {
+  /** Revoke (delete) a key. Returns the deleted key's hash so callers can
+   *  disconnect live devices using it, or null when no such key existed. */
+  async revokeApiKey(userId: string, id: string): Promise<string | null> {
     if (this.prisma) {
-      const deleted = await this.prisma.apiKey.deleteMany({ where: { id, userId } });
-      return deleted.count > 0;
+      const existing = await this.prisma.apiKey.findFirst({ where: { id, userId }, select: { keyHash: true } });
+      if (!existing) {
+        return null;
+      }
+      await this.prisma.apiKey.deleteMany({ where: { id, userId } });
+      return existing.keyHash;
     }
     const keys = this.memory.get(userId) ?? [];
     const targetIndex = keys.findIndex((item) => item.id === id);
     if (targetIndex < 0) {
-      return false;
+      return null;
     }
-    keys.splice(targetIndex, 1);
-    return true;
+    const [removed] = keys.splice(targetIndex, 1);
+    return removed.keyHash;
   }
 
   async validateApiKey(keyHash: string): Promise<{ userId: string; scopes: string[] } | null> {
@@ -1110,6 +1127,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // tunnels keyed by their synthetic `__tcp_port_<n>__` key, so they can be
   // revoked from the web panel.
   const socketByTunnelKey = new Map<string, WebSocket>();
+  // Live control sockets grouped by the (hashed) API key that authenticated
+  // them, so revoking a key can immediately disconnect its devices.
+  const socketsByApiKeyHash = new Map<string, Set<WebSocket>>();
   const tcpBindingsBySubdomain = new Map<string, { server: net.Server; publicPort: number }>();
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
@@ -1928,6 +1948,29 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
    *  and NOT reconnect, then close the control socket (its close handler tears
    *  down TCP bindings, registry lease, inspector buffers and IP tokens).
    *  Returns true if a live client socket was found and signalled. */
+  /** Disconnect every live client that authenticated with the given API key
+   *  hash. Sends tunnel_revoked (so the client stops without reconnecting) then
+   *  closes 4401. Used when a key is revoked so the device is logged out now. */
+  function disconnectSocketsForApiKey(keyHash: string, reason: string): number {
+    const sockets = socketsByApiKeyHash.get(keyHash);
+    if (!sockets || sockets.size === 0) {
+      return 0;
+    }
+    let closed = 0;
+    for (const socket of [...sockets]) {
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(encodeWireMessage({ type: "tunnel_revoked", reason }));
+          socket.close(4401, reason);
+        }
+        closed += 1;
+      } catch {
+        // best effort — the socket close handler still runs on teardown
+      }
+    }
+    return closed;
+  }
+
   function revokeLiveTunnel(tunnelKey: string, reason: string): boolean {
     // socketByTunnelKey covers both subdomain-routed and fixed-port TCP tunnels;
     // fall back to the registry for safety.
@@ -2090,6 +2133,14 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       let registered = false;
       let socketIdleTimer: NodeJS.Timeout | null = null;
       activeStreamsBySocket.set(socket, new Set());
+
+      // Track this socket under its API key so revoking the key disconnects it.
+      const principalKeyHash = principal.apiKey ? hashApiKey(principal.apiKey) : null;
+      if (principalKeyHash) {
+        const set = socketsByApiKeyHash.get(principalKeyHash) ?? new Set<WebSocket>();
+        set.add(socket);
+        socketsByApiKeyHash.set(principalKeyHash, set);
+      }
 
       const refreshIdleTimer = (): void => {
         if (socketIdleTimer) {
@@ -2782,16 +2833,36 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             tcpConnectionsById.delete(connectionId);
           }
         }
-        // ── Stable redirect URL: mark as disconnected (do NOT delete the entry
-        //    so the /r/:token URL stays valid during reconnect windows).
+        // ── Stable redirect URL handling on disconnect.
+        //    DB-reserved tunnels keep an offline "ghost" so the /r/:token URL
+        //    stays valid across reconnect windows. Ephemeral CLI sessions
+        //    (port-only/TCP synthetic keys, or a random subdomain with no DB
+        //    reservation) are PURGED immediately so they don't linger in the
+        //    panel after the client is closed.
         if (subdomain) {
           const rToken = redirectTokenByTunnelKey.get(subdomain);
-          if (rToken) {
-            const rEntry = redirectByToken.get(rToken);
-            if (rEntry) {
+          const rEntry = rToken ? redirectByToken.get(rToken) : undefined;
+          if (rEntry) {
+            const ownerId = rEntry.userId ?? ownershipBySubdomain.get(subdomain) ?? null;
+            const syntheticKey = subdomain.startsWith("__tcp_port_") || subdomain.startsWith("__http_port_");
+            if (syntheticKey) {
+              // Never DB-reserved — purge now.
+              purgeRedirectForKey(subdomain);
+            } else {
+              // Provisionally mark offline, then purge unless a DB reservation
+              // exists (async lookup; keep the ghost on lookup error).
               rEntry.connected = false;
               rEntry.lastSeenAt = Date.now();
               rEntry.disconnectedAt = Date.now();
+              void store.findBySubdomain(subdomain)
+                .then((reserved) => {
+                  if (!reserved) {
+                    purgeRedirectForKey(subdomain);
+                    publishLiveEvent("tunnels_changed", ownerId);
+                    publishLiveEvent("gateway_status_changed");
+                  }
+                })
+                .catch(() => { /* keep the offline ghost if the store lookup fails */ });
             }
           }
           // ── IP access cleanup: remove whitelist on disconnect.
@@ -2799,6 +2870,15 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           if (aToken) {
             ipAccessByToken.delete(aToken);
             ipTokenByTunnelKey.delete(subdomain);
+          }
+        }
+
+        // Stop tracking this socket under its API key.
+        if (principalKeyHash) {
+          const set = socketsByApiKeyHash.get(principalKeyHash);
+          if (set) {
+            set.delete(socket);
+            if (set.size === 0) socketsByApiKeyHash.delete(principalKeyHash);
           }
         }
 
@@ -3764,14 +3844,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
     }
     const params = req.params as { id: string };
-    const deleted = await authStore.revokeApiKey(principal.userId, params.id);
-    if (!deleted) {
+    const revokedHash = await authStore.revokeApiKey(principal.userId, params.id);
+    if (!revokedHash) {
       metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "API_KEY_NOT_FOUND" });
       metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
       return reply.status(404).send({ error: { code: "API_KEY_NOT_FOUND", message: "API key not found" } });
     }
-    await auditStore.log(principal.userId, "api_key_deleted", "api_key", params.id);
+    // Immediately disconnect any live device authenticated with this key.
+    const disconnectedDevices = disconnectSocketsForApiKey(revokedHash, "key_revoked");
+    await auditStore.log(principal.userId, "api_key_deleted", "api_key", params.id, { disconnectedDevices });
     publishLiveEvent("api_keys_changed", principal.userId);
+    publishLiveEvent("tunnels_changed", principal.userId);
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     if (idempotencyStoreKey) {
       writeIdempotencyReplay(idempotencyStoreKey, { statusCode: 204, body: null, contentType: "application/json" });
