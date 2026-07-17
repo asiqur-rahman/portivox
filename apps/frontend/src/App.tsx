@@ -405,6 +405,7 @@ export function App() {
               <div className="content-inner">
               {currentPage === "tunnels" && (
                 <SharedTunnelsPage
+                  api={api}
                   tunnels={tunnels}
                   loading={loading}
                   gatewayStatus={gatewayStatus}

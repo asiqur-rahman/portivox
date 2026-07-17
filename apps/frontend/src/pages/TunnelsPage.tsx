@@ -1,5 +1,15 @@
-import type { GatewayStatus, TunnelRecord } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { GatewayApi, type GatewayStatus, type TunnelRecord, type UsageStats } from "../api";
 import { getTunnelUrl } from "../app/helpers";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes < 1) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / Math.pow(1024, i);
+  return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
 
 function tunnelStatusLabel(tunnel: TunnelRecord): string {
   if (tunnel.status === "offline") return "Offline";
@@ -30,6 +40,7 @@ function tunnelSecondaryText(tunnel: TunnelRecord): string {
 }
 
 export function TunnelsPage({
+  api,
   tunnels,
   loading,
   gatewayStatus,
@@ -41,6 +52,7 @@ export function TunnelsPage({
   onCopy,
   onInspect,
 }: {
+  api: GatewayApi;
   tunnels: TunnelRecord[];
   loading: boolean;
   gatewayStatus: GatewayStatus | null;
@@ -54,6 +66,18 @@ export function TunnelsPage({
 }) {
   const activeCount = tunnels.filter((tunnel) => tunnel.active).length;
   const offlineCount = tunnels.filter((tunnel) => tunnel.status === "offline").length;
+
+  const [usage, setUsage] = useState<UsageStats | null>(null);
+  const refreshUsage = useCallback(() => {
+    api.getUsage().then(setUsage).catch(() => { /* non-fatal: leave prior value */ });
+  }, [api]);
+  useEffect(() => { refreshUsage(); }, [refreshUsage]);
+  // Usage changes as traffic flows; refresh on tunnel activity and periodically.
+  useLiveRefresh({ eventKinds: ["tunnels_changed"], refresh: refreshUsage });
+  useEffect(() => {
+    const timer = setInterval(refreshUsage, 15000);
+    return () => clearInterval(timer);
+  }, [refreshUsage]);
 
   return (
     <div className="page">
@@ -97,16 +121,22 @@ export function TunnelsPage({
             <div className="metric-icon"><i className="ti ti-transfer" /></div>
             Data transferred
           </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>-</div>
-          <div className="metric-sub">Metrics coming soon</div>
+          <div className="metric-val" style={{ fontSize: 22 }}>{usage ? formatBytes(usage.totalBytes) : "..."}</div>
+          <div className="metric-sub">
+            {usage ? `${formatBytes(usage.bytesIn)} in · ${formatBytes(usage.bytesOut)} out` : "Since gateway start"}
+          </div>
         </div>
         <div className="metric-card">
           <div className="metric-label">
             <div className="metric-icon"><i className="ti ti-activity" /></div>
             Avg latency
           </div>
-          <div className="metric-val" style={{ fontSize: 22 }}>-</div>
-          <div className="metric-sub">Metrics coming soon</div>
+          <div className="metric-val" style={{ fontSize: 22 }}>
+            {usage == null ? "..." : usage.requests > 0 ? `${usage.avgLatencyMs} ms` : "-"}
+          </div>
+          <div className="metric-sub">
+            {usage && usage.requests > 0 ? `Across ${usage.requests} request${usage.requests === 1 ? "" : "s"}` : "No HTTP requests yet"}
+          </div>
         </div>
       </div>
 

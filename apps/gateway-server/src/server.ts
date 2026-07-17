@@ -560,6 +560,52 @@ class DeviceStore {
   }
 }
 
+type UsageStats = { bytesIn: number; bytesOut: number; totalBytes: number; requests: number; avgLatencyMs: number };
+
+/** In-memory per-user usage meter: bytes relayed (HTTP + TCP) and HTTP request
+ *  latency, aggregated since gateway start. "Meter & show" only — no quota
+ *  enforcement and no persistence (counters reset on restart). */
+class UsageMeter {
+  private readonly byUser = new Map<string, { bytesIn: number; bytesOut: number; requests: number; latencySumMs: number }>();
+
+  private entry(userId: string): { bytesIn: number; bytesOut: number; requests: number; latencySumMs: number } {
+    let e = this.byUser.get(userId);
+    if (!e) {
+      e = { bytesIn: 0, bytesOut: 0, requests: 0, latencySumMs: 0 };
+      this.byUser.set(userId, e);
+    }
+    return e;
+  }
+
+  recordBytes(userId: string | null, bytesIn: number, bytesOut: number): void {
+    if (!userId) return;
+    const e = this.entry(userId);
+    if (bytesIn > 0) e.bytesIn += bytesIn;
+    if (bytesOut > 0) e.bytesOut += bytesOut;
+  }
+
+  recordRequest(userId: string | null, latencyMs: number, bytesIn: number, bytesOut: number): void {
+    if (!userId) return;
+    const e = this.entry(userId);
+    e.requests += 1;
+    if (latencyMs > 0) e.latencySumMs += latencyMs;
+    if (bytesIn > 0) e.bytesIn += bytesIn;
+    if (bytesOut > 0) e.bytesOut += bytesOut;
+  }
+
+  get(userId: string): UsageStats {
+    const e = this.byUser.get(userId);
+    if (!e) return { bytesIn: 0, bytesOut: 0, totalBytes: 0, requests: 0, avgLatencyMs: 0 };
+    return {
+      bytesIn: e.bytesIn,
+      bytesOut: e.bytesOut,
+      totalBytes: e.bytesIn + e.bytesOut,
+      requests: e.requests,
+      avgLatencyMs: e.requests > 0 ? Math.round(e.latencySumMs / e.requests) : 0,
+    };
+  }
+}
+
 class AuditStore {
   private readonly prisma: PrismaClient | null;
   private readonly ownsPrisma: boolean;
@@ -1146,6 +1192,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     onLogged: () => publishLiveEvent("audit_changed"),
   });
   const deviceStore = new DeviceStore(sharedPrisma);
+  const usage = new UsageMeter();
+  const meteringSince = Date.now();
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
   // Emails provisioned as platform admins (case-insensitive). See ADMIN_EMAILS.
@@ -1900,10 +1948,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     /** When provided, incoming TCP connections must have their IP whitelisted in
      *  ipAccessByToken[accessToken] before being forwarded to the tunnel client. */
     accessToken?: string,
+    /** Owning user id for usage metering (falls back to ownershipBySubdomain). */
+    ownerUserId?: string | null,
   ): Promise<{ publicPort: number; publicHost: string }> {
     if (!(config.tcpTunnelEnabled ?? true)) {
       throw new Error("TCP_TUNNEL_DISABLED");
     }
+    const usageOwnerId = ownerUserId ?? ownershipBySubdomain.get(key) ?? null;
     if (tcpBindingsBySubdomain.has(key)) {
       const existing = tcpBindingsBySubdomain.get(key)!;
       return { publicPort: existing.publicPort, publicHost: resolveTcpPublicHost() };
@@ -1978,6 +2029,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           connectionId,
           dataBase64: Buffer.from(chunk).toString("base64"),
         }));
+        // Usage metering: bytes flowing out to the public peer.
+        usage.recordBytes(usageOwnerId, 0, chunk.length);
         // Backpressure: if the tunnel client is draining slower than this public
         // peer produces, ws.bufferedAmount backs up in gateway heap. Pause the
         // source until the buffer drains, then resume — bounding memory use.
@@ -2434,7 +2487,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 ipProtection,
               });
             try {
-              const tcpBinding = await bindTcpTunnel(syntheticKey, socket, fixedMapping.publicPort, accessToken);
+              const tcpBinding = await bindTcpTunnel(syntheticKey, socket, fixedMapping.publicPort, accessToken, principal.userId);
 
               // Store/update the redirect entry after we have the public host.
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
@@ -2541,7 +2594,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             void auditStore.log(principal.userId, "ws_tunnel_registered_port_only", "tcp_port_session", syntheticKey, { authType: principal.authType, ipProtection });
 
             try {
-              const binding = await bindTcpTunnel(syntheticKey, socket, allocatedPort, accessToken);
+              const binding = await bindTcpTunnel(syntheticKey, socket, allocatedPort, accessToken, principal.userId);
               const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                 tunnelKey: syntheticKey,
                 userId: principal.userId,
@@ -2642,7 +2695,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
                 ipTokenByTunnelKey.set(subdomain, accessToken);
               }
               try {
-                const tcpBinding = await bindTcpTunnel(subdomain, socket, undefined, accessToken);
+                const tcpBinding = await bindTcpTunnel(subdomain, socket, undefined, accessToken, principal.userId);
 
                 const rEntry: RedirectEntry = redirectByToken.get(redirectToken) ?? {
                   tunnelKey: subdomain,
@@ -2718,7 +2771,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               let dedicatedBinding: { publicPort: number; publicHost: string } | null = null;
               if (requestMessage.withDedicatedPort && (config.tcpTunnelEnabled ?? true)) {
                 try {
-                  dedicatedBinding = await bindTcpTunnel(`dedicated:${subdomain}`, socket);
+                  dedicatedBinding = await bindTcpTunnel(`dedicated:${subdomain}`, socket, undefined, undefined, principal.userId);
                 } catch (error) {
                   const code = error instanceof Error ? error.message : "";
                   app.log.warn(
@@ -2909,7 +2962,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               if (msg.dataBase64.length > maxChunkBytes) {
                 app.log.warn({ connectionId: msg.connectionId }, "tcp_data frame exceeds size limit — dropped");
               } else {
-                conn.write(Buffer.from(msg.dataBase64, "base64"));
+                const inbound = Buffer.from(msg.dataBase64, "base64");
+                conn.write(inbound);
+                // Usage metering: bytes flowing in from the client to the peer.
+                usage.recordBytes(principal.userId, inbound.length, 0);
               }
             }
           }
@@ -3927,6 +3983,31 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return reply.status(204).send();
   });
 
+  // ---------------------------------------------------------------------------
+  // Usage: bytes relayed + request latency for the current user (since gateway
+  // start; in-memory, no quota enforcement).
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/usage", async (req, reply) => {
+    const endpoint = "/api/usage";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiReadLimiter.take(`api:read:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    const stats = usage.get(principal.userId);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({ ...stats, since: new Date(meteringSince).toISOString() });
+  });
+
   app.post("/api/keys", async (req, reply) => {
     const endpoint = "/api/keys";
     const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
@@ -4896,6 +4977,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }
       }
       const respBody = Buffer.from(tunnelResponse.bodyBase64, "base64");
+      // Usage metering: attribute request/response bytes + latency to the owner.
+      usage.recordRequest(ownershipBySubdomain.get(subdomain) ?? null, Date.now() - startedAt, bodyBuffer.byteLength, respBody.byteLength);
       captured.durationMs = Date.now() - startedAt;
       captured.statusCode = tunnelResponse.statusCode;
       captured.responseHeaders = responseHeaders as Record<string, string | string[] | undefined>;

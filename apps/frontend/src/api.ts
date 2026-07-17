@@ -79,6 +79,15 @@ export type GatewayStatus = {
   activeTunnels: number;
 };
 
+export type UsageStats = {
+  bytesIn: number;
+  bytesOut: number;
+  totalBytes: number;
+  requests: number;
+  avgLatencyMs: number;
+  since: string;
+};
+
 export type AdminUser = {
   id: string;
   email: string;
@@ -284,6 +293,10 @@ export class GatewayApi {
       body: JSON.stringify({ subdomainEnabled }),
     });
     return result.user;
+  }
+
+  async getUsage(): Promise<UsageStats> {
+    return this.request<UsageStats>("/api/usage", { method: "GET" });
   }
 
   async listDevices(): Promise<DeviceRecord[]> {
