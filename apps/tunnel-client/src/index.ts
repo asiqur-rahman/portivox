@@ -924,8 +924,6 @@ async function runRegister(apiKey: string, gatewayOverride?: string): Promise<vo
     // eslint-disable-next-line no-console
     console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
   }
-  // eslint-disable-next-line no-console
-  console.log(`Next: portivox 3000`);
 }
 
 // ── Client runner ─────────────────────────────────────────────────────────────

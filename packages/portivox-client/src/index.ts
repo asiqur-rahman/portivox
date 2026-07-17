@@ -826,7 +826,6 @@ async function runRegister(apiKey: string, gatewayOverride?: string): Promise<vo
   } else {
     console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
   }
-  console.log("Next: portivox 3000");
 }
 
 // ── Client runner ─────────────────────────────────────────────────────────────
