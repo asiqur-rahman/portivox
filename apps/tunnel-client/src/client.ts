@@ -38,6 +38,11 @@ export type TunnelClientConfig = {
   /** HTTP tunnels: also expose a dedicated raw-TCP passthrough port alongside
    *  the subdomain (opt-in via the CLI `--with-port` flag). */
   withDedicatedPort?: boolean;
+  /** Device identity reported to the gateway for the console device roster. */
+  deviceId?: string;
+  deviceName?: string;
+  platform?: string;
+  clientVersion?: string;
   /** Heartbeat interval in ms (default: 5000). */
   heartbeatIntervalMs?: number;
   /** Exit the process with code 1 if the tunnel has not connected within this many ms. */
@@ -162,6 +167,11 @@ export class TunnelClient {
         // Send back the stable redirect token on reconnect so the gateway can
         // reuse the same /r/:token URL.
         redirectToken: this.redirectToken ?? undefined,
+        // Device identity for the console device roster.
+        deviceId: this.config.deviceId,
+        deviceName: this.config.deviceName,
+        platform: this.config.platform,
+        clientVersion: this.config.clientVersion,
       });
       this.startHeartbeat();
     });

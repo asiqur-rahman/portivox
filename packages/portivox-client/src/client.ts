@@ -22,6 +22,11 @@ export type TunnelClientConfig = {
   /** HTTP tunnels: also expose a dedicated raw-TCP passthrough port alongside
    *  the subdomain (opt-in via the CLI `--with-port` flag). */
   withDedicatedPort?: boolean;
+  /** Device identity reported to the gateway for the console device roster. */
+  deviceId?: string;
+  deviceName?: string;
+  platform?: string;
+  clientVersion?: string;
   /** Called when tunnel registration fails before the tunnel becomes active. */
   onFatalError?: (error: { message: string; code?: string }) => void;
   /** Called once when the gateway confirms registration — used to persist the
@@ -131,6 +136,11 @@ export class TunnelClient {
         withDedicatedPort: !isTcp ? (this.config.withDedicatedPort === true) : false,
         // Replay the stable redirect token on reconnect to keep the /r/ URL.
         redirectToken: this.redirectToken ?? undefined,
+        // Device identity for the console device roster.
+        deviceId: this.config.deviceId,
+        deviceName: this.config.deviceName,
+        platform: this.config.platform,
+        clientVersion: this.config.clientVersion,
       });
       this.startHeartbeat();
     });

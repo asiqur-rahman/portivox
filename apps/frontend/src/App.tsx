@@ -418,7 +418,7 @@ export function App() {
                 />
               )}
               {currentPage === "devices" && (
-                <SharedDevicesPage user={user} onCopy={copyToClipboard} />
+                <SharedDevicesPage user={user} api={api} onCopy={copyToClipboard} showToast={showToast} onConfirm={setConfirm} />
               )}
               {currentPage === "usage" && (
                 <SharedUsagePage api={api} tunnelCount={tunnels.length} />

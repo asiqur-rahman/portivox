@@ -17,7 +17,7 @@ import {
 } from "./service";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
 
@@ -103,6 +103,9 @@ const PACKAGE_VERSION = readPackageVersion();
 type SavedClientConfig = {
   gatewayUrl?: string;
   apiKey?: string;
+  /** Stable per-machine identifier, generated once and reused so the gateway
+   *  can show this machine as a single device across restarts/reconnects. */
+  deviceId?: string;
 };
 
 type SessionEntry = {
@@ -158,6 +161,22 @@ function writeSavedConfig(next: SavedClientConfig): void {
   // mode 0o600 = owner read/write only — prevents other users on shared machines
   // from reading the API key stored in this file.
   writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
+}
+
+/** Stable device identity for this machine. Generated once and persisted so the
+ *  gateway can show it as a single device in the console across restarts. */
+function getOrCreateDeviceId(): string {
+  const saved = readSavedConfig();
+  if (saved.deviceId && /^[a-z0-9-]{8,}$/i.test(saved.deviceId)) {
+    return saved.deviceId;
+  }
+  const deviceId = randomUUID();
+  try {
+    writeSavedConfig({ ...saved, deviceId });
+  } catch {
+    // non-fatal — fall back to an ephemeral id for this run
+  }
+  return deviceId;
 }
 
 // ── Session helpers ───────────────────────────────────────────────────────────
@@ -920,6 +939,10 @@ function startClient({
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     ipProtection,
     withDedicatedPort,
+    deviceId: getOrCreateDeviceId(),
+    deviceName: hostname(),
+    platform: process.platform,
+    clientVersion: PACKAGE_VERSION,
     exitAfterMs,
     heartbeatIntervalMs: heartbeatIntervalMs ?? defaultConfig.heartbeatIntervalMs,
     noReconnect,

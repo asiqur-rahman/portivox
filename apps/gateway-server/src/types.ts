@@ -45,6 +45,16 @@ export type RegisterTunnel = {
    *  subdomain. Opt-in via the client `--with-port` flag. Ignored for TCP
    *  tunnels (which already own a public port). */
   withDedicatedPort?: boolean;
+  /** Stable, client-generated identifier for the machine running the client
+   *  (persisted in the client's local config). Used to build the device roster
+   *  shown in the console. */
+  deviceId?: string;
+  /** Human-friendly device name (hostname). */
+  deviceName?: string;
+  /** Client OS platform (e.g. "win32", "linux", "darwin"). */
+  platform?: string;
+  /** Portivox client version. */
+  clientVersion?: string;
 };
 
 export type Registered = {

@@ -86,6 +86,18 @@ export type AdminUser = {
   createdAt: string;
 };
 
+export type DeviceRecord = {
+  id: string;
+  deviceId: string;
+  name: string;
+  platform: string | null;
+  clientVersion: string | null;
+  lastKeyHash: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  online: boolean;
+};
+
 export type GatewayLiveEventKind =
   | "connected"
   | "tunnels_changed"
@@ -94,6 +106,7 @@ export type GatewayLiveEventKind =
   | "api_keys_changed"
   | "tcp_mappings_changed"
   | "users_changed"
+  | "devices_changed"
   | "inspector_changed";
 
 export type GatewayLiveEvent = {
@@ -271,6 +284,15 @@ export class GatewayApi {
       body: JSON.stringify({ subdomainEnabled }),
     });
     return result.user;
+  }
+
+  async listDevices(): Promise<DeviceRecord[]> {
+    const result = await this.request<{ devices: DeviceRecord[] }>("/api/devices", { method: "GET" });
+    return Array.isArray(result.devices) ? result.devices : [];
+  }
+
+  async removeDevice(id: string): Promise<void> {
+    await this.request(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   async listInspectorRequests(subdomain: string): Promise<{ subdomain: string; count: number; requests: CapturedRequestSummary[] }> {

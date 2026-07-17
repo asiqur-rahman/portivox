@@ -18,6 +18,23 @@ model User {
   apiKeys      ApiKey[]
   tunnels      Tunnel[]
   auditEvents  AuditEvent[]
+  devices      Device[]
+}
+
+model Device {
+  id            String   @id @default(uuid())
+  userId        String
+  deviceId      String
+  name          String
+  platform      String?
+  clientVersion String?
+  lastKeyHash   String?
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId])
 }
 
 model ApiKey {

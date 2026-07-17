@@ -90,6 +90,7 @@ type LiveEventKind =
   | "api_keys_changed"
   | "tcp_mappings_changed"
   | "users_changed"
+  | "devices_changed"
   | "inspector_changed";
 
 type LiveEvent = {
@@ -437,6 +438,119 @@ class UserAuthStore {
     if (existing) {
       this.memory.set(id, { ...existing, passwordHash });
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.prisma && this.ownsPrisma) {
+      await this.prisma.$disconnect();
+    }
+  }
+}
+
+type DeviceRecord = {
+  id: string;
+  deviceId: string;
+  name: string;
+  platform: string | null;
+  clientVersion: string | null;
+  lastKeyHash: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+};
+
+/** Roster of machines that have connected a Portivox client, keyed by a stable
+ *  client-generated deviceId. Persisted (dual-mode); online status is layered on
+ *  top from live sockets by the server. */
+class DeviceStore {
+  private readonly prisma: PrismaClient | null;
+  private readonly ownsPrisma: boolean;
+  private readonly memory = new Map<string, DeviceRecord[]>();
+
+  constructor(prisma?: PrismaClient | null) {
+    this.prisma = prisma ?? (process.env.DATABASE_URL ? new PrismaClient() : null);
+    this.ownsPrisma = !prisma && this.prisma !== null;
+  }
+
+  /** Insert or refresh a device for a user. Returns the stored record. */
+  async upsert(userId: string, input: { deviceId: string; name: string; platform?: string | null; clientVersion?: string | null; lastKeyHash?: string | null }): Promise<DeviceRecord> {
+    const now = new Date();
+    if (this.prisma) {
+      const row = await this.prisma.device.upsert({
+        where: { userId_deviceId: { userId, deviceId: input.deviceId } },
+        create: { userId, deviceId: input.deviceId, name: input.name, platform: input.platform ?? null, clientVersion: input.clientVersion ?? null, lastKeyHash: input.lastKeyHash ?? null },
+        update: { name: input.name, platform: input.platform ?? null, clientVersion: input.clientVersion ?? null, lastKeyHash: input.lastKeyHash ?? null, lastSeenAt: now },
+      });
+      return this.toRecord(row);
+    }
+    const list = this.memory.get(userId) ?? [];
+    const existing = list.find((d) => d.deviceId === input.deviceId);
+    if (existing) {
+      existing.name = input.name;
+      existing.platform = input.platform ?? null;
+      existing.clientVersion = input.clientVersion ?? null;
+      existing.lastKeyHash = input.lastKeyHash ?? null;
+      existing.lastSeenAt = now.toISOString();
+      return existing;
+    }
+    const created: DeviceRecord = {
+      id: randomUUID(), deviceId: input.deviceId, name: input.name,
+      platform: input.platform ?? null, clientVersion: input.clientVersion ?? null,
+      lastKeyHash: input.lastKeyHash ?? null, firstSeenAt: now.toISOString(), lastSeenAt: now.toISOString(),
+    };
+    list.push(created);
+    this.memory.set(userId, list);
+    return created;
+  }
+
+  /** Stamp lastSeenAt for a device (e.g. on disconnect). Best-effort. */
+  async touch(userId: string, deviceId: string): Promise<void> {
+    if (this.prisma) {
+      try {
+        await this.prisma.device.update({ where: { userId_deviceId: { userId, deviceId } }, data: { lastSeenAt: new Date() } });
+      } catch { /* device may have been forgotten */ }
+      return;
+    }
+    const existing = (this.memory.get(userId) ?? []).find((d) => d.deviceId === deviceId);
+    if (existing) existing.lastSeenAt = new Date().toISOString();
+  }
+
+  async list(userId: string): Promise<DeviceRecord[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.device.findMany({ where: { userId }, orderBy: { lastSeenAt: "desc" } });
+      return rows.map((row) => this.toRecord(row));
+    }
+    return [...(this.memory.get(userId) ?? [])].sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
+  }
+
+  async findById(userId: string, id: string): Promise<DeviceRecord | null> {
+    if (this.prisma) {
+      const row = await this.prisma.device.findFirst({ where: { id, userId } });
+      return row ? this.toRecord(row) : null;
+    }
+    return (this.memory.get(userId) ?? []).find((d) => d.id === id) ?? null;
+  }
+
+  /** Forget a device. Returns its deviceId (to disconnect live sockets) or null. */
+  async remove(userId: string, id: string): Promise<string | null> {
+    if (this.prisma) {
+      const row = await this.prisma.device.findFirst({ where: { id, userId }, select: { deviceId: true } });
+      if (!row) return null;
+      await this.prisma.device.deleteMany({ where: { id, userId } });
+      return row.deviceId;
+    }
+    const list = this.memory.get(userId) ?? [];
+    const idx = list.findIndex((d) => d.id === id);
+    if (idx < 0) return null;
+    const [removed] = list.splice(idx, 1);
+    return removed.deviceId;
+  }
+
+  private toRecord(row: { id: string; deviceId: string; name: string; platform: string | null; clientVersion: string | null; lastKeyHash: string | null; firstSeenAt: Date; lastSeenAt: Date }): DeviceRecord {
+    return {
+      id: row.id, deviceId: row.deviceId, name: row.name, platform: row.platform,
+      clientVersion: row.clientVersion, lastKeyHash: row.lastKeyHash,
+      firstSeenAt: row.firstSeenAt.toISOString(), lastSeenAt: row.lastSeenAt.toISOString(),
+    };
   }
 
   async close(): Promise<void> {
@@ -1031,6 +1145,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   }), sharedPrisma, {
     onLogged: () => publishLiveEvent("audit_changed"),
   });
+  const deviceStore = new DeviceStore(sharedPrisma);
   const parsedApiKeys = parseApiKeys(config.authApiKeys);
   const staticApiKeyScopes = parseScopes(config.authApiKeyScopes, ["tunnel:create", "tunnel:read", "tunnel:delete", "key:manage"]);
   // Emails provisioned as platform admins (case-insensitive). See ADMIN_EMAILS.
@@ -1130,6 +1245,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // Live control sockets grouped by the (hashed) API key that authenticated
   // them, so revoking a key can immediately disconnect its devices.
   const socketsByApiKeyHash = new Map<string, Set<WebSocket>>();
+  // Live control sockets grouped by client-reported deviceId, so the console can
+  // show device online status and disconnect a device on demand.
+  const socketsByDeviceId = new Map<string, Set<WebSocket>>();
   const tcpBindingsBySubdomain = new Map<string, { server: net.Server; publicPort: number }>();
   const tcpConnectionsById = new Map<string, net.Socket>();
   const tcpConnectionsBySocket = new WeakMap<object, Set<string>>();
@@ -1374,7 +1492,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       }
       return principal.userId === event.userId || isAdminRole(principal.role);
     }
-    if (event.kind === "api_keys_changed") {
+    if (event.kind === "api_keys_changed" || event.kind === "devices_changed") {
       if (!isAdminRole(principal.role) || !hasScope(principal.scopes, "key:manage")) {
         return false;
       }
@@ -1948,6 +2066,33 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
    *  and NOT reconnect, then close the control socket (its close handler tears
    *  down TCP bindings, registry lease, inspector buffers and IP tokens).
    *  Returns true if a live client socket was found and signalled. */
+  function isDeviceOnline(deviceId: string): boolean {
+    const set = socketsByDeviceId.get(deviceId);
+    return !!set && set.size > 0;
+  }
+
+  /** Disconnect every live socket for a device (used when the device is
+   *  forgotten from the console). Sends tunnel_revoked then closes 4401. */
+  function disconnectSocketsForDevice(deviceId: string, reason: string): number {
+    const sockets = socketsByDeviceId.get(deviceId);
+    if (!sockets || sockets.size === 0) {
+      return 0;
+    }
+    let closed = 0;
+    for (const socket of [...sockets]) {
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(encodeWireMessage({ type: "tunnel_revoked", reason }));
+          socket.close(4401, reason);
+        }
+        closed += 1;
+      } catch {
+        // best effort
+      }
+    }
+    return closed;
+  }
+
   /** Disconnect every live client that authenticated with the given API key
    *  hash. Sends tunnel_revoked (so the client stops without reconnecting) then
    *  closes 4401. Used when a key is revoked so the device is logged out now. */
@@ -2141,6 +2286,8 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         set.add(socket);
         socketsByApiKeyHash.set(principalKeyHash, set);
       }
+      // Set once the client reports a device identity in register_tunnel.
+      let socketDeviceId: string | null = null;
 
       const refreshIdleTimer = (): void => {
         if (socketIdleTimer) {
@@ -2175,6 +2322,23 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           const requestMessage = msg as RegisterTunnel;
           const isTcp = requestMessage.tunnelType === "tcp";
           const requestedPremiumSubdomain = !!requestMessage.requestedSubdomain;
+
+          // ── Device roster ─────────────────────────────────────────────────
+          // Record/refresh this machine as a device and mark it online. Only
+          // for real (non-anonymous) users with a client-reported deviceId.
+          if (requestMessage.deviceId && principal.authType !== "anonymous" && !socketDeviceId) {
+            socketDeviceId = requestMessage.deviceId;
+            const set = socketsByDeviceId.get(socketDeviceId) ?? new Set<WebSocket>();
+            set.add(socket);
+            socketsByDeviceId.set(socketDeviceId, set);
+            void deviceStore.upsert(principal.userId, {
+              deviceId: requestMessage.deviceId,
+              name: requestMessage.deviceName || requestMessage.deviceId,
+              platform: requestMessage.platform ?? null,
+              clientVersion: requestMessage.clientVersion ?? null,
+              lastKeyHash: principalKeyHash,
+            }).then(() => publishLiveEvent("devices_changed", principal.userId)).catch(() => { /* non-fatal */ });
+          }
 
           // Subdomain access is a per-user subscription entitlement, resolved live
           // from the user record. Users without it get a dedicated public port only.
@@ -2880,6 +3044,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
             set.delete(socket);
             if (set.size === 0) socketsByApiKeyHash.delete(principalKeyHash);
           }
+        }
+        // Mark the device offline (once its last socket closes) + stamp lastSeen.
+        if (socketDeviceId) {
+          const set = socketsByDeviceId.get(socketDeviceId);
+          if (set) {
+            set.delete(socket);
+            if (set.size === 0) socketsByDeviceId.delete(socketDeviceId);
+          }
+          void deviceStore.touch(principal.userId, socketDeviceId)
+            .then(() => publishLiveEvent("devices_changed", principal.userId))
+            .catch(() => { /* non-fatal */ });
         }
 
         registry.removeBySocket(socket);
@@ -3684,6 +3859,71 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     await releaseTcpTunnelBySubdomain(existing.subdomain);
     await auditStore.log(principal.userId, "tunnel_deleted", "tunnel", id);
     finish();
+    return reply.status(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Devices: the roster of machines that have connected a client for this user.
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/devices", async (req, reply) => {
+    const endpoint = "/api/devices";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiReadLimiter.take(`api:read:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role) || !hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing role or scope key:manage" } });
+    }
+    const devices = (await deviceStore.list(principal.userId)).map((d) => ({ ...d, online: isDeviceOnline(d.deviceId) }));
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
+    return reply.status(200).send({ count: devices.length, devices });
+  });
+
+  app.delete("/api/devices/:id", async (req, reply) => {
+    const endpoint = "/api/devices/:id";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiWriteLimiter.take(`api:write:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    if (!isAdminRole(principal.role) || !hasScope(principal.scopes, "key:manage")) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing role or scope key:manage" } });
+    }
+    const { id } = req.params as { id: string };
+    const deviceId = await deviceStore.remove(principal.userId, id);
+    if (!deviceId) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "DEVICE_NOT_FOUND" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
+      return reply.status(404).send({ error: { code: "DEVICE_NOT_FOUND", message: "Device not found" } });
+    }
+    // Disconnect any live sockets from that device (it is being forgotten).
+    const disconnected = disconnectSocketsForDevice(deviceId, "device_forgotten");
+    await auditStore.log(principal.userId, "device_forgotten", "device", id, { deviceId, disconnected });
+    publishLiveEvent("devices_changed", principal.userId);
+    if (disconnected > 0) publishLiveEvent("tunnels_changed", principal.userId);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "2xx" });
     return reply.status(204).send();
   });
 
@@ -4757,6 +4997,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       await userAuthStore.close();
       await auditStore.close();
       await tcpPortMappingStore.close();
+      await deviceStore.close();
       if (sharedPrisma) {
         await sharedPrisma.$disconnect();
       }

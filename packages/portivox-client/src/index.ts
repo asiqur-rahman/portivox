@@ -15,7 +15,7 @@ import {
 } from "./service";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "fs";
 import { dirname, join, resolve as resolvePath } from "path";
-import { homedir } from "os";
+import { homedir, hostname } from "os";
 import { randomUUID } from "crypto";
 import net from "net";
 
@@ -140,6 +140,9 @@ function removeSession(id: string): void {
 type SavedClientConfig = {
   gatewayUrl?: string;
   apiKey?: string;
+  /** Stable per-machine identifier so the gateway shows this machine as one
+   *  device across restarts/reconnects. */
+  deviceId?: string;
 };
 
 type ValidatedPrincipal = {
@@ -440,6 +443,21 @@ function writeSavedConfig(next: SavedClientConfig): void {
   // mode 0o600 = owner read/write only — prevents other users on shared machines
   // from reading the API key stored in this file.
   writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
+}
+
+/** Stable device identity for this machine (persisted, reused across restarts). */
+function getOrCreateDeviceId(): string {
+  const saved = readSavedConfig();
+  if (saved.deviceId && /^[a-z0-9-]{8,}$/i.test(saved.deviceId)) {
+    return saved.deviceId;
+  }
+  const deviceId = randomUUID();
+  try {
+    writeSavedConfig({ ...saved, deviceId });
+  } catch {
+    // non-fatal — ephemeral id for this run
+  }
+  return deviceId;
 }
 
 // ── Prompter helpers ──────────────────────────────────────────────────────────
@@ -828,6 +846,10 @@ function startClient({
     wsHeaders: apiKey ? { "x-api-key": apiKey } : undefined,
     withDedicatedPort,
     ipProtection,
+    deviceId: getOrCreateDeviceId(),
+    deviceName: hostname(),
+    platform: process.platform,
+    clientVersion: PACKAGE_VERSION,
     onFatalError,
     onRegistered: (info) => {
       addSession({
