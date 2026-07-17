@@ -175,7 +175,7 @@ export function ApiKeysPage({
             <label className="form-lbl">Custom gateway registration</label>
             <div className="code-block">
               <code>portivox register tk_YOUR_API_KEY --gateway wss://your-gateway.example.com/connect</code>
-              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy("portivox register tk_YOUR_API_KEY --gateway wss://your-gateway.example.com/connect")} title="Copy">
+              <div className="icon-btn" style={{ color: "oklch(80% 0.10 213)" }} onClick={() => onCopy("portivox register tk_YOUR_API_KEY --gateway wss://your-gateway.example.com/connect")} title="Copy">
                 <i className="ti ti-copy" />
               </div>
             </div>
@@ -184,7 +184,7 @@ export function ApiKeysPage({
             <label className="form-lbl">Custom gateway tunnel open</label>
             <div className="code-block">
               <code>portivox open 3000 --gateway wss://your-gateway.example.com/connect</code>
-              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy("portivox open 3000 --gateway wss://your-gateway.example.com/connect")} title="Copy">
+              <div className="icon-btn" style={{ color: "oklch(80% 0.10 213)" }} onClick={() => onCopy("portivox open 3000 --gateway wss://your-gateway.example.com/connect")} title="Copy">
                 <i className="ti ti-copy" />
               </div>
             </div>

@@ -165,21 +165,21 @@ export function DevicesPage({
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>Install package</p>
             <div className="code-block">
               <code>{installCmd}</code>
-              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(installCmd)} title="Copy"><i className="ti ti-copy" /></div>
+              <div className="icon-btn" style={{ color: "oklch(80% 0.10 213)" }} onClick={() => onCopy(installCmd)} title="Copy"><i className="ti ti-copy" /></div>
             </div>
           </div>
           <div>
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>Register API key</p>
             <div className="code-block">
               <code>{registerCmd}</code>
-              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(registerCmd)} title="Copy"><i className="ti ti-copy" /></div>
+              <div className="icon-btn" style={{ color: "oklch(80% 0.10 213)" }} onClick={() => onCopy(registerCmd)} title="Copy"><i className="ti ti-copy" /></div>
             </div>
           </div>
           <div>
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>Start tunnel</p>
             <div className="code-block">
               <code>{openCmd}</code>
-              <div className="icon-btn" style={{ color: "#b4a9ff" }} onClick={() => onCopy(openCmd)} title="Copy"><i className="ti ti-copy" /></div>
+              <div className="icon-btn" style={{ color: "oklch(80% 0.10 213)" }} onClick={() => onCopy(openCmd)} title="Copy"><i className="ti ti-copy" /></div>
             </div>
           </div>
           {user && user.email !== "local@anonymous" && (
