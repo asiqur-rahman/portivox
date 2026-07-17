@@ -76,6 +76,11 @@ export function ApiKeysPage({
           </div>
         ) : (
           <>
+            <p style={{ padding: "0 2px 12px", margin: 0, fontSize: 12, color: "var(--text-3)", lineHeight: 1.6 }}>
+              <i className="ti ti-info-circle" style={{ marginRight: 6, color: "var(--accent)" }} />
+              A key that isn't used by any device may be automatically revoked. Register a device with it
+              (<code>portivox register</code>) to keep it active.
+            </p>
             <div className="mobile-card-list">
               {activeKeys.map((key) => (
                 <article key={key.id} className="mobile-list-card">
@@ -87,13 +92,18 @@ export function ApiKeysPage({
                         <span>{new Date(key.createdAt).toLocaleDateString()}</span>
                       </div>
                     </div>
-                    <span className="mobile-status live">Active</span>
+                    <span className={`mobile-status ${(key.deviceCount ?? 0) > 0 ? "live" : ""}`}>
+                      {(key.deviceCount ?? 0) > 0 ? `${key.deviceCount} device${key.deviceCount === 1 ? "" : "s"}` : "No device"}
+                    </span>
                   </div>
                   <div className="mobile-chip-row">
                     {key.scopes.map((scope) => (
                       <span key={scope} className="chip chip-purple">{scope}</span>
                     ))}
                   </div>
+                  {(key.deviceCount ?? 0) === 0 && (
+                    <div className="mobile-card-meta block"><span style={{ color: "var(--yellow)" }}>Not used by any device — may be revoked</span></div>
+                  )}
                   <div className="mobile-card-actions">
                     <button className="stop-btn" disabled={loading} onClick={() => onRevokeKey(key.id, key.name)}>
                       Delete
@@ -107,6 +117,7 @@ export function ApiKeysPage({
                 <tr>
                   <th>Name</th>
                   <th>Scopes</th>
+                  <th>Devices</th>
                   <th>Created</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
@@ -128,6 +139,13 @@ export function ApiKeysPage({
                           <span key={scope} className="chip chip-purple" style={{ fontSize: 10 }}>{scope}</span>
                         ))}
                       </div>
+                    </td>
+                    <td>
+                      {(key.deviceCount ?? 0) > 0 ? (
+                        <span className="action-badge create"><i className="ti ti-device-desktop" />{key.deviceCount}</span>
+                      ) : (
+                        <span className="action-badge other" title="No device uses this key — it may be automatically revoked"><i className="ti ti-alert-triangle" />unused</span>
+                      )}
                     </td>
                     <td style={{ color: "var(--text-3)", fontSize: 12 }}>{new Date(key.createdAt).toLocaleDateString()}</td>
                     <td>

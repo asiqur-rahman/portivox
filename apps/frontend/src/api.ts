@@ -56,6 +56,8 @@ export type ApiKeyRecord = {
   createdAt: string;
   revoked: boolean;
   scopes: string[];
+  /** Number of devices currently registered against this key. */
+  deviceCount?: number;
 };
 
 export type AuditItem = {

@@ -173,6 +173,23 @@ async function main() {
       client = undefined;
     }
 
+    // 5) A key's registered-device count is surfaced in GET /api/keys.
+    {
+      const keyRes = await requestJson({ port: gatewayPort, path: "/api/keys", method: "POST", headers: { authorization: `Bearer ${token}` }, body: { name: "count-key" } });
+      if (keyRes.statusCode !== 201 || !keyRes.body?.apiKey?.token) throw new Error(`key create failed: ${keyRes.statusCode}`);
+      const apiKey = keyRes.body.apiKey.token;
+      const keyId = keyRes.body.apiKey.id;
+      // Fresh key: no device yet.
+      let keys = await requestJson({ port: gatewayPort, path: "/api/keys", method: "GET", headers: { authorization: `Bearer ${token}` } });
+      let k = keys.body.keys.find((x) => x.id === keyId);
+      if (!k || k.deviceCount !== 0) throw new Error(`new key should have deviceCount 0, got ${JSON.stringify(k)}`);
+      // Register a device WITH that key → count becomes 1.
+      await requestJson({ port: gatewayPort, path: "/api/devices/register", method: "POST", headers: { "x-api-key": apiKey }, body: { deviceId: "count-device-1", name: "cd", platform: "linux" } });
+      keys = await requestJson({ port: gatewayPort, path: "/api/keys", method: "GET", headers: { authorization: `Bearer ${token}` } });
+      k = keys.body.keys.find((x) => x.id === keyId);
+      if (!k || k.deviceCount !== 1) throw new Error(`key should have deviceCount 1 after device registers, got ${JSON.stringify(k)}`);
+    }
+
     console.log("Devices test passed");
   } finally {
     if (client) client.stop();

@@ -4202,10 +4202,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope key:manage" } });
     }
     const keys = await authStore.listApiKeys(principal.userId);
+    // Count devices registered against each key (Device.lastKeyHash) so the
+    // console can show usage per key and flag keys no device is using.
+    const devices = await deviceStore.list(principal.userId);
+    const deviceCountByHash = new Map<string, number>();
+    for (const d of devices) {
+      if (d.lastKeyHash) deviceCountByHash.set(d.lastKeyHash, (deviceCountByHash.get(d.lastKeyHash) ?? 0) + 1);
+    }
     metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "GET", status_class: "2xx" });
     return reply.status(200).send({
       count: keys.length,
-      keys: keys.map((item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, revoked: item.revoked, scopes: item.scopes })),
+      keys: keys.map((item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, revoked: item.revoked, scopes: item.scopes, deviceCount: deviceCountByHash.get(item.keyHash) ?? 0 })),
     });
   });
 
