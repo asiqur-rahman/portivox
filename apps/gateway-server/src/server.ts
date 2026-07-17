@@ -3921,7 +3921,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       if (!ownsSubdomain(tunnelKey)) {
         metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
         metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
-        return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Tunnel does not belong to this principal" } });
+        return reply.status(403).send({ error: { code: "FORBIDDEN", message: "This tunnel was opened by a different identity (e.g. the gateway's static/server API key, or another account), so your account can't remove it. Register the client with an API key generated in this account, or ask a platform admin." } });
       }
       const wasLive = revokeLiveTunnel(tunnelKey, "removed_by_owner");
       purgeRedirectForKey(tunnelKey);
