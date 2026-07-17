@@ -21,3 +21,7 @@ test-results/
 # OS/editor
 .DS_Store
 Thumbs.db
+
+# Claude Code local machine state (do not share)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
