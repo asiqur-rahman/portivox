@@ -349,6 +349,25 @@ async function verifyApiKeyWithGateway(gatewayUrl: string, apiKey: string): Prom
   await fetchValidatedPrincipal(gatewayUrl, apiKey);
 }
 
+/** Register this machine as a device (best-effort) so it shows in the console
+ *  roster right after `portivox register`, before any tunnel is opened. */
+async function registerDeviceWithGateway(gatewayUrl: string, apiKey: string): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    await fetch(`${gatewayApiBaseUrl(gatewayUrl)}/api/devices/register`, {
+      method: "POST",
+      headers: { "x-api-key": apiKey, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ deviceId: getOrCreateDeviceId(), name: hostname(), platform: process.platform, clientVersion: PACKAGE_VERSION }),
+      signal: controller.signal,
+    });
+  } catch {
+    // Non-fatal: older gateways lack this endpoint; recorded on first tunnel.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchValidatedPrincipal(gatewayUrl: string, apiKey: string): Promise<ValidatedPrincipal> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -801,7 +820,9 @@ async function runRegister(apiKey: string, gatewayOverride?: string): Promise<vo
   const gatewayUrl = gatewayOverride ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
   await verifyApiKeyWithGateway(gatewayUrl, apiKey);
   writeSavedConfig({ ...saved, apiKey, gatewayUrl });
+  await registerDeviceWithGateway(gatewayUrl, apiKey);
   console.log(`✔ API key verified and saved to ${CONFIG_PATH}`);
+  console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
   console.log("Next: portivox 3000");
 }
 

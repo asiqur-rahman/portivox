@@ -114,6 +114,17 @@ async function main() {
     if (!reg.body?.accessToken) throw new Error(`register failed: ${reg.statusCode} ${JSON.stringify(reg.body)}`);
     const token = reg.body.accessToken;
 
+    // 0) Registering a device (no tunnel yet) records it, offline.
+    {
+      const preId = "pre-reg-device-0001";
+      const regDev = await requestJson({ port: gatewayPort, path: "/api/devices/register", method: "POST", headers: { authorization: `Bearer ${token}` }, body: { deviceId: preId, name: "pre-machine", platform: "linux", clientVersion: "1.0.0" } });
+      if (regDev.statusCode !== 200 || !regDev.body?.device) throw new Error(`device register failed: ${regDev.statusCode} ${JSON.stringify(regDev.body)}`);
+      const pre = await listDevices(gatewayPort, token);
+      const preDev = pre.body.devices?.find((d) => d.deviceId === preId);
+      if (!preDev) throw new Error("registered device not listed before opening a tunnel");
+      if (preDev.online !== false) throw new Error("registered-but-not-connected device should be offline");
+    }
+
     // 1) Connect → device appears online.
     {
       const opened = await openDevice({ wsPort, localAppPort, token, deviceId });

@@ -426,6 +426,26 @@ async function verifyApiKeyWithGateway(gatewayUrl: string, apiKey: string): Prom
   await fetchValidatedPrincipal(gatewayUrl, apiKey);
 }
 
+/** Register this machine as a device with the gateway (best-effort) so it shows
+ *  in the console roster right after `portivox register`, before any tunnel. */
+async function registerDeviceWithGateway(gatewayUrl: string, apiKey: string): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    await fetch(`${gatewayApiBaseUrl(gatewayUrl)}/api/devices/register`, {
+      method: "POST",
+      headers: { "x-api-key": apiKey, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ deviceId: getOrCreateDeviceId(), name: hostname(), platform: process.platform, clientVersion: PACKAGE_VERSION }),
+      signal: controller.signal,
+    });
+  } catch {
+    // Non-fatal: older gateways lack this endpoint; the device is still recorded
+    // when the first tunnel opens.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchValidatedPrincipal(gatewayUrl: string, apiKey: string): Promise<ValidatedPrincipal> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -887,8 +907,13 @@ async function runRegister(apiKey: string, gatewayOverride?: string): Promise<vo
   const gatewayUrl = gatewayOverride ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
   await verifyApiKeyWithGateway(gatewayUrl, apiKey);
   writeSavedConfig({ ...saved, apiKey, gatewayUrl });
+  // Record this machine in the device roster right away (offline until a tunnel
+  // opens). Best-effort — never blocks a successful registration.
+  await registerDeviceWithGateway(gatewayUrl, apiKey);
   // eslint-disable-next-line no-console
   console.log(`✔ API key verified and saved to ${CONFIG_PATH}`);
+  // eslint-disable-next-line no-console
+  console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
   // eslint-disable-next-line no-console
   console.log(`Next: portivox 3000`);
 }

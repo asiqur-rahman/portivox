@@ -3987,6 +3987,46 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     return reply.status(200).send({ count: devices.length, devices });
   });
 
+  // Register/refresh a device without opening a tunnel — called by `portivox
+  // register` so the machine appears in the roster (offline) right away.
+  app.post("/api/devices/register", async (req, reply) => {
+    const endpoint = "/api/devices/register";
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "UNAUTHORIZED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    const apiLimit = apiWriteLimiter.take(`api:write:${principal.userId}`);
+    applyRateLimitHeaders(reply, apiLimit);
+    if (!apiLimit.allowed) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "RATE_LIMITED" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.header("retry-after", Math.ceil(apiLimit.retryAfterMs / 1000)).status(429).send({ error: { code: "RATE_LIMITED", message: "API request limit exceeded" } });
+    }
+    const body = req.body as Record<string, unknown> | null;
+    if (!isPlainObject(body) || typeof body.deviceId !== "string" || !body.deviceId.trim()) {
+      metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "INVALID_BODY" });
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "4xx" });
+      return reply.status(400).send({ error: { code: "INVALID_BODY", message: "deviceId is required" } });
+    }
+    // Anonymous (dev mode) principals have no real account to own a device.
+    if (principal.authType === "anonymous") {
+      metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
+      return reply.status(200).send({ device: null });
+    }
+    const device = await deviceStore.upsert(principal.userId, {
+      deviceId: body.deviceId,
+      name: typeof body.name === "string" && body.name.trim() ? body.name : body.deviceId,
+      platform: typeof body.platform === "string" ? body.platform : null,
+      clientVersion: typeof body.clientVersion === "string" ? body.clientVersion : null,
+      lastKeyHash: principal.apiKey ? hashApiKey(principal.apiKey) : null,
+    });
+    publishLiveEvent("devices_changed", principal.userId);
+    metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "POST", status_class: "2xx" });
+    return reply.status(200).send({ device: { ...device, online: isDeviceOnline(device.deviceId) } });
+  });
+
   app.delete("/api/devices/:id", async (req, reply) => {
     const endpoint = "/api/devices/:id";
     const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
