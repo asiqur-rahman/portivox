@@ -153,6 +153,14 @@ export function DevicesPage({
           <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.65 }}>
             Install the Portivox client on the target machine, register the API key once, then open the local port that should be exposed through the gateway.
           </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, background: "var(--accent-bg)", border: "1px solid var(--border)" }}>
+            <i className="ti ti-info-circle" style={{ color: "var(--accent)", marginTop: 1 }} />
+            <span style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6 }}>
+              Use an API key you generate under <strong>API Keys</strong> in this account. A device (and its
+              tunnels) shows up here only for the account that owns the key — a shared server key opens tunnels
+              under the gateway admin identity, so they won't appear on your account.
+            </span>
+          </div>
           <div>
             <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>Install package</p>
             <div className="code-block">

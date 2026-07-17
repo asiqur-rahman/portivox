@@ -150,6 +150,7 @@ type ValidatedPrincipal = {
   authType: string;
   role: string;
   scopes: string[];
+  keySource?: "static" | "user";
 };
 
 type TunnelRegistrationFailure = {
@@ -818,11 +819,18 @@ function runConfigSet(key: string, value: string): void {
 async function runRegister(apiKey: string, gatewayOverride?: string): Promise<void> {
   const saved = readSavedConfig();
   const gatewayUrl = gatewayOverride ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
-  await verifyApiKeyWithGateway(gatewayUrl, apiKey);
+  const principal = await fetchValidatedPrincipal(gatewayUrl, apiKey);
   writeSavedConfig({ ...saved, apiKey, gatewayUrl });
   await registerDeviceWithGateway(gatewayUrl, apiKey);
   console.log(`✔ API key verified and saved to ${CONFIG_PATH}`);
-  console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
+  if (principal.keySource === "static") {
+    console.warn("⚠  This is a shared SERVER key (from the gateway's AUTH_API_KEYS).");
+    console.warn("   Tunnels and devices opened with it belong to the gateway admin identity,");
+    console.warn("   not your account — they will not show in your console. For account-scoped");
+    console.warn("   access, generate a personal key in the console (API Keys) and register that.");
+  } else {
+    console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
+  }
   console.log("Next: portivox 3000");
 }
 

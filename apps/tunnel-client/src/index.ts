@@ -129,6 +129,7 @@ type ValidatedPrincipal = {
   authType: string;
   role: string;
   scopes: string[];
+  keySource?: "static" | "user";
 };
 
 type TunnelRegistrationFailure = {
@@ -905,15 +906,29 @@ function runConfigSet(key: string, value: string): void {
 async function runRegister(apiKey: string, gatewayOverride?: string): Promise<void> {
   const saved = readSavedConfig();
   const gatewayUrl = gatewayOverride ?? saved.gatewayUrl ?? defaultConfig.gatewayUrl;
-  await verifyApiKeyWithGateway(gatewayUrl, apiKey);
+  const principal = await fetchValidatedPrincipal(gatewayUrl, apiKey);
   writeSavedConfig({ ...saved, apiKey, gatewayUrl });
   // Record this machine in the device roster right away (offline until a tunnel
   // opens). Best-effort — never blocks a successful registration.
   await registerDeviceWithGateway(gatewayUrl, apiKey);
   // eslint-disable-next-line no-console
   console.log(`✔ API key verified and saved to ${CONFIG_PATH}`);
-  // eslint-disable-next-line no-console
-  console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
+  if (principal.keySource === "static") {
+    // Shared/server key: everything opened with it belongs to the gateway's
+    // built-in admin identity, not a personal account — so it will NOT appear
+    // in a user's console (Devices/Tunnels) and can't be managed there.
+    // eslint-disable-next-line no-console
+    console.warn("⚠  This is a shared SERVER key (from the gateway's AUTH_API_KEYS).");
+    // eslint-disable-next-line no-console
+    console.warn("   Tunnels and devices opened with it belong to the gateway admin identity,");
+    // eslint-disable-next-line no-console
+    console.warn("   not your account — they will not show in your console. For account-scoped");
+    // eslint-disable-next-line no-console
+    console.warn("   access, generate a personal key in the console (API Keys) and register that.");
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`This device (${hostname()}) is now registered — see it under Devices.`);
+  }
   // eslint-disable-next-line no-console
   console.log(`Next: portivox 3000`);
 }

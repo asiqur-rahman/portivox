@@ -80,6 +80,9 @@ type Principal = {
   apiKey?: string;
   scopes: string[];
   role: "owner" | "admin" | "viewer";
+  /** For api_key auth: "static" = a shared gateway key (AUTH_API_KEYS, owned by
+   *  the built-in admin identity), "user" = a personal account-minted key. */
+  keySource?: "static" | "user";
 };
 
 type LiveEventKind =
@@ -1493,6 +1496,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           authType: principal.authType,
           role: principal.role,
           scopes: principal.scopes,
+          keySource: principal.keySource,
         },
       },
     };
@@ -1748,7 +1752,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     const apiKeyHeader = headers["x-api-key"];
     const apiKey = Array.isArray(apiKeyHeader) ? String(apiKeyHeader[0]) : apiKeyHeader ? String(apiKeyHeader) : undefined;
     if (validateApiKey(parsedApiKeys, apiKey)) {
-      return { userId: `apikey_${hashApiKey(apiKey!).slice(0, 12)}`, authType: "api_key", apiKey, scopes: staticApiKeyScopes, role: "admin" };
+      return { userId: `apikey_${hashApiKey(apiKey!).slice(0, 12)}`, authType: "api_key", apiKey, scopes: staticApiKeyScopes, role: "admin", keySource: "static" };
     }
     if (apiKey) {
       const owned = await authStore.validateApiKey(hashApiKey(apiKey));
@@ -1757,7 +1761,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         // administration is intentionally unreachable via a self-service key —
         // otherwise any user with key:manage could mint themselves admin access.
         // Operators who need admin-over-API use a static AUTH_API_KEYS key above.
-        return { userId: owned.userId, authType: "api_key", apiKey, scopes: owned.scopes, role: "owner" };
+        return { userId: owned.userId, authType: "api_key", apiKey, scopes: owned.scopes, role: "owner", keySource: "user" };
       }
     }
 
