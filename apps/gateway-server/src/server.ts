@@ -304,6 +304,21 @@ class AuthStore {
     return [...(this.memory.get(userId) ?? [])].filter((item) => !item.revoked);
   }
 
+  /** All active (non-revoked) keys across all users — for the unused-key sweep. */
+  async listAllActiveKeys(): Promise<Array<{ id: string; userId: string; keyHash: string; createdAt: string }>> {
+    if (this.prisma) {
+      const rows = await this.prisma.apiKey.findMany({ where: { revoked: false } });
+      return rows.map((r: { id: string; userId: string; keyHash: string; createdAt: Date }) => ({ id: r.id, userId: r.userId, keyHash: r.keyHash, createdAt: r.createdAt.toISOString() }));
+    }
+    const out: Array<{ id: string; userId: string; keyHash: string; createdAt: string }> = [];
+    for (const [userId, keys] of this.memory.entries()) {
+      for (const k of keys) {
+        if (!k.revoked) out.push({ id: k.id, userId, keyHash: k.keyHash, createdAt: k.createdAt });
+      }
+    }
+    return out;
+  }
+
   /** Revoke (delete) a key. Returns the deleted key's hash so callers can
    *  disconnect live devices using it, or null when no such key existed. */
   async revokeApiKey(userId: string, id: string): Promise<string | null> {
@@ -543,6 +558,21 @@ class DeviceStore {
       return row ? this.toRecord(row) : null;
     }
     return (this.memory.get(userId) ?? []).find((d) => d.id === id) ?? null;
+  }
+
+  /** Set of key hashes that at least one device is registered against — used to
+   *  tell which API keys are actually in use. */
+  async allKeyHashes(): Promise<Set<string>> {
+    const set = new Set<string>();
+    if (this.prisma) {
+      const rows = await this.prisma.device.findMany({ select: { lastKeyHash: true } });
+      for (const r of rows) if (r.lastKeyHash) set.add(r.lastKeyHash);
+      return set;
+    }
+    for (const list of this.memory.values()) {
+      for (const d of list) if (d.lastKeyHash) set.add(d.lastKeyHash);
+    }
+    return set;
   }
 
   /** Forget a device. Returns its deviceId (to disconnect live sockets) or null. */
@@ -1389,6 +1419,45 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
   }, 60 * 60 * 1000);  // run every hour
   redirectSweep.unref();
+
+  // ── Unused API key sweep ────────────────────────────────────────────────
+  // Auto-revoke user-minted keys that no device is registered against and that
+  // are older than the TTL (default 24h). A grace period avoids revoking a key
+  // between creation and the first `portivox register`. Env-overridable; set
+  // UNUSED_API_KEY_TTL_MS=0 to disable. Never touches static AUTH_API_KEYS keys.
+  const unusedKeyTtlMs = Number(process.env.UNUSED_API_KEY_TTL_MS ?? 24 * 60 * 60 * 1000);
+  const unusedKeySweepIntervalMs = Number(process.env.UNUSED_API_KEY_SWEEP_INTERVAL_MS ?? 60 * 60 * 1000);
+  const sweepUnusedApiKeys = async (): Promise<void> => {
+    if (!(unusedKeyTtlMs > 0)) return;
+    const cutoff = Date.now() - unusedKeyTtlMs;
+    let keys: Array<{ id: string; userId: string; keyHash: string; createdAt: string }>;
+    let usedHashes: Set<string>;
+    try {
+      keys = await authStore.listAllActiveKeys();
+      usedHashes = await deviceStore.allKeyHashes();
+    } catch {
+      return; // never let the sweep crash the process
+    }
+    for (const k of keys) {
+      if (Date.parse(k.createdAt) >= cutoff) continue;          // still within grace period
+      if (usedHashes.has(k.keyHash)) continue;                  // a device is registered with it
+      if (socketsByApiKeyHash.has(k.keyHash)) continue;         // a client is live on it right now
+      try {
+        const hash = await authStore.revokeApiKey(k.userId, k.id);
+        if (hash) {
+          disconnectSocketsForApiKey(hash, "key_unused_revoked");
+          void auditStore.log(k.userId, "api_key_auto_revoked", "api_key", k.id, { reason: "unused", ttlMs: unusedKeyTtlMs });
+          publishLiveEvent("api_keys_changed", k.userId);
+        }
+      } catch {
+        // best-effort per key
+      }
+    }
+  };
+  const unusedKeySweep = unusedKeyTtlMs > 0
+    ? setInterval(() => { void sweepUnusedApiKeys(); }, unusedKeySweepIntervalMs)
+    : null;
+  if (unusedKeySweep && typeof unusedKeySweep.unref === "function") unusedKeySweep.unref();
 
   const registrySweep = setInterval(() => {
     const evicted = registry.sweepStaleSockets();
@@ -5188,6 +5257,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       isReady = false;
       clearInterval(idempotencySweep);
       clearInterval(redirectSweep);
+      if (unusedKeySweep) clearInterval(unusedKeySweep);
       clearInterval(registrySweep);
       for (const socket of wsServer.clients) {
         socket.close(1012, "server_shutdown");

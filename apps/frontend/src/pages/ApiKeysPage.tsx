@@ -78,7 +78,7 @@ export function ApiKeysPage({
           <>
             <p style={{ padding: "0 2px 12px", margin: 0, fontSize: 12, color: "var(--text-3)", lineHeight: 1.6 }}>
               <i className="ti ti-info-circle" style={{ marginRight: 6, color: "var(--accent)" }} />
-              A key that isn't used by any device may be automatically revoked. Register a device with it
+              A key not used by any device is automatically revoked after 24 hours. Register a device with it
               (<code>portivox register</code>) to keep it active.
             </p>
             <div className="mobile-card-list">
@@ -102,7 +102,7 @@ export function ApiKeysPage({
                     ))}
                   </div>
                   {(key.deviceCount ?? 0) === 0 && (
-                    <div className="mobile-card-meta block"><span style={{ color: "var(--yellow)" }}>Not used by any device — may be revoked</span></div>
+                    <div className="mobile-card-meta block"><span style={{ color: "var(--yellow)" }}>Not used by any device — auto-revoked after 24h</span></div>
                   )}
                   <div className="mobile-card-actions">
                     <button className="stop-btn" disabled={loading} onClick={() => onRevokeKey(key.id, key.name)}>
