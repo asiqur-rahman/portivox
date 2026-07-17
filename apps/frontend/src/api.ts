@@ -36,6 +36,18 @@ export type TunnelRecord = {
    * visitor's IP for 24h. Null when the tunnel is not IP-protected.
    */
   accessLink?: string | null;
+  /** Key to address this tunnel in the TCP inspector (raw/port tunnels only). */
+  inspectKey?: string | null;
+};
+
+export type TcpConnectionRecord = {
+  id: string;
+  remoteIp: string;
+  openedAt: number;
+  closedAt: number | null;
+  bytesIn: number;
+  bytesOut: number;
+  closeReason: string | null;
 };
 
 export type ApiKeyRecord = {
@@ -318,6 +330,14 @@ export class GatewayApi {
 
   async clearInspectorRequests(subdomain: string): Promise<void> {
     await this.request(`/api/inspect/${encodeURIComponent(subdomain)}`, { method: "DELETE" });
+  }
+
+  async listTcpConnections(key: string): Promise<{ key: string; count: number; connections: TcpConnectionRecord[] }> {
+    return this.request(`/api/inspect-tcp/${encodeURIComponent(key)}`, { method: "GET" });
+  }
+
+  async clearTcpConnections(key: string): Promise<void> {
+    await this.request(`/api/inspect-tcp/${encodeURIComponent(key)}`, { method: "DELETE" });
   }
 
   subscribeEvents(

@@ -1,5 +1,5 @@
-﻿import { useCallback, useEffect, useState } from "react";
-import { GatewayApi, type CapturedRequestDetail, type CapturedRequestSummary, type TunnelRecord } from "../api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { GatewayApi, type CapturedRequestDetail, type CapturedRequestSummary, type TcpConnectionRecord, type TunnelRecord } from "../api";
 import { subscribeGatewayLiveEvents } from "../app/live-events";
 
 function methodClass(method: string): string {
@@ -23,19 +23,26 @@ function statusClass(code: number | null, error: string | null): string {
 }
 
 function decodeBase64Body(b64: string): string {
-  try {
-    return atob(b64);
-  } catch {
-    return b64;
-  }
+  try { return atob(b64); } catch { return b64; }
 }
 
 function tryPrettyJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
+  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes < 1) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / Math.pow(1024, i);
+  return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+function formatDuration(openedAt: number, closedAt: number | null): string {
+  const ms = (closedAt ?? Date.now()) - openedAt;
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
 }
 
 function buildCurlCommand(req: CapturedRequestDetail, baseUrl: string): string {
@@ -49,6 +56,11 @@ function buildCurlCommand(req: CapturedRequestDetail, baseUrl: string): string {
   return `curl -X ${req.method} '${url}' \\\n  ${headerArgs}${bodyArg}`;
 }
 
+function tunnelLabel(t: TunnelRecord): string {
+  if (t.tunnelType === "tcp") return t.subdomain ?? (t.publicPort ? `port ${t.publicPort}` : "TCP tunnel");
+  return t.subdomain ?? "";
+}
+
 export function InspectorPage({
   api,
   tunnels,
@@ -60,108 +72,92 @@ export function InspectorPage({
   initialSubdomain: string | null;
   onBack: () => void;
 }) {
-  // CLI sessions are TCP tunnels — HTTP inspector has nothing to show for them.
-  // Only expose HTTP (non-CLI) tunnels in the dropdown.
-  const httpTunnels = tunnels.filter((t) => !t.isCliSession);
-  const [subdomain, setSubdomain] = useState<string>(
-    initialSubdomain ?? httpTunnels[0]?.subdomain ?? ""
+  // Inspectable = HTTP tunnels (request capture, keyed by subdomain) plus TCP /
+  // port tunnels (connection capture, keyed by inspectKey).
+  const inspectable = useMemo(
+    () => tunnels.filter((t) => (t.tunnelType === "tcp" ? !!t.inspectKey : !!t.subdomain)),
+    [tunnels],
   );
+
+  const [selectedId, setSelectedId] = useState<string>(() => {
+    if (initialSubdomain) {
+      const match = inspectable.find((t) => t.subdomain === initialSubdomain);
+      if (match) return match.id;
+    }
+    return inspectable[0]?.id ?? "";
+  });
+
+  const current = inspectable.find((t) => t.id === selectedId) ?? null;
+  const mode: "http" | "tcp" = current?.tunnelType === "tcp" ? "tcp" : "http";
+  const httpKey = mode === "http" ? current?.subdomain ?? "" : "";
+  const tcpKey = mode === "tcp" ? current?.inspectKey ?? "" : "";
+  const eventKey = mode === "tcp" ? tcpKey : httpKey;
+
+  // HTTP state
   const [requests, setRequests] = useState<CapturedRequestSummary[]>([]);
   const [selected, setSelected] = useState<CapturedRequestDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [activeTab, setActiveTab] = useState<"req-headers" | "req-body" | "res-headers" | "res-body">("res-body");
+  // TCP state
+  const [connections, setConnections] = useState<TcpConnectionRecord[]>([]);
   const [clearing, setClearing] = useState(false);
 
   const fetchList = useCallback(() => {
-    if (!subdomain) return;
-    api.listInspectorRequests(subdomain)
-      .then((data) => setRequests(data.requests))
-      .catch(() => {});
-  }, [api, subdomain]);
-
-  useEffect(() => {
-    fetchList();
-  }, [fetchList]);
-
-  useEffect(() => {
-    if (selected && !requests.some((request) => request.id === selected.id)) {
-      setSelected(null);
+    if (mode === "http") {
+      if (!httpKey) return;
+      api.listInspectorRequests(httpKey).then((data) => setRequests(data.requests)).catch(() => {});
+    } else {
+      if (!tcpKey) return;
+      api.listTcpConnections(tcpKey).then((data) => setConnections(data.connections)).catch(() => {});
     }
+  }, [api, mode, httpKey, tcpKey]);
+
+  useEffect(() => { fetchList(); }, [fetchList]);
+
+  useEffect(() => {
+    if (selected && !requests.some((request) => request.id === selected.id)) setSelected(null);
   }, [requests, selected]);
 
+  // Live refresh on inspector_changed for the selected tunnel.
   useEffect(() => {
-    if (!subdomain) {
-      return;
-    }
-
+    if (!eventKey) return;
     let listTimer: ReturnType<typeof setTimeout> | null = null;
-    let detailTimer: ReturnType<typeof setTimeout> | null = null;
-
     const unsubscribe = subscribeGatewayLiveEvents((event) => {
-      if (event.kind !== "inspector_changed") {
-        return;
-      }
-      if (event.subdomain && event.subdomain !== subdomain) {
-        return;
-      }
-
-      if (listTimer) {
-        clearTimeout(listTimer);
-      }
-      listTimer = setTimeout(() => {
-        listTimer = null;
-        fetchList();
-      }, 120);
-
-      if (selected) {
-        if (detailTimer) {
-          clearTimeout(detailTimer);
-        }
-        detailTimer = setTimeout(() => {
-          detailTimer = null;
-          api.getInspectorRequest(subdomain, selected.id)
-            .then((data) => setSelected(data.request))
-            .catch(() => setSelected(null));
-        }, 150);
-      }
+      if (event.kind !== "inspector_changed") return;
+      if (event.subdomain && event.subdomain !== eventKey) return;
+      if (listTimer) clearTimeout(listTimer);
+      listTimer = setTimeout(() => { listTimer = null; fetchList(); }, 120);
     });
+    return () => { unsubscribe(); if (listTimer) clearTimeout(listTimer); };
+  }, [fetchList, eventKey]);
 
-    return () => {
-      unsubscribe();
-      if (listTimer) {
-        clearTimeout(listTimer);
-      }
-      if (detailTimer) {
-        clearTimeout(detailTimer);
-      }
-    };
-  }, [api, fetchList, selected, subdomain]);
+  // TCP byte counts update mid-connection without events — poll while viewing.
+  useEffect(() => {
+    if (mode !== "tcp" || !tcpKey) return;
+    const timer = setInterval(fetchList, 3000);
+    return () => clearInterval(timer);
+  }, [mode, tcpKey, fetchList]);
 
   const selectRequest = (id: string) => {
     setLoadingDetail(true);
     setActiveTab("res-body");
-    api.getInspectorRequest(subdomain, id)
-      .then((data) => setSelected(data.request))
-      .catch(() => setSelected(null))
-      .finally(() => setLoadingDetail(false));
+    api.getInspectorRequest(httpKey, id).then((data) => setSelected(data.request)).catch(() => setSelected(null)).finally(() => setLoadingDetail(false));
   };
 
-  const clearRequests = () => {
+  const clearAll = () => {
     setClearing(true);
-    api.clearInspectorRequests(subdomain)
-      .then(() => {
-        setRequests([]);
-        setSelected(null);
-      })
-      .catch(() => {})
-      .finally(() => setClearing(false));
+    const done = () => { setClearing(false); };
+    if (mode === "http") {
+      api.clearInspectorRequests(httpKey).then(() => { setRequests([]); setSelected(null); }).catch(() => {}).finally(done);
+    } else {
+      api.clearTcpConnections(tcpKey).then(() => setConnections([])).catch(() => {}).finally(done);
+    }
   };
 
   const copyAsCurl = () => {
     if (!selected) return;
-    const base = `${window.location.protocol}//${subdomain}.${window.location.hostname}`;
-    const command = buildCurlCommand(selected, base);
-    navigator.clipboard.writeText(command).catch(() => {});
+    const base = `${window.location.protocol}//${httpKey}.${window.location.hostname}`;
+    navigator.clipboard.writeText(buildCurlCommand(selected, base)).catch(() => {});
   };
 
   const renderBody = () => {
@@ -174,10 +170,7 @@ export function InspectorPage({
         <table className="inspector-headers-tbl">
           <tbody>
             {entries.map(([key, value]) => (
-              <tr key={key}>
-                <td>{key}</td>
-                <td>{Array.isArray(value) ? value.join(", ") : String(value ?? "")}</td>
-              </tr>
+              <tr key={key}><td>{key}</td><td>{Array.isArray(value) ? value.join(", ") : String(value ?? "")}</td></tr>
             ))}
           </tbody>
         </table>
@@ -186,15 +179,11 @@ export function InspectorPage({
     const b64 = activeTab === "req-body" ? selected.requestBodyBase64 : selected.responseBodyBase64;
     const truncated = activeTab === "req-body" ? selected.requestBodyTruncated : selected.responseBodyTruncated;
     if (!b64) return <p className="inspector-no-body">Empty body.</p>;
-    const raw = decodeBase64Body(b64);
-    const display = tryPrettyJson(raw);
+    const display = tryPrettyJson(decodeBase64Body(b64));
     return (
       <>
         {truncated && (
-          <div className="inspector-truncated-note">
-            <i className="ti ti-alert-triangle" />
-            Body truncated at 64 KB, full payload not stored.
-          </div>
+          <div className="inspector-truncated-note"><i className="ti ti-alert-triangle" />Body truncated at 64 KB, full payload not stored.</div>
         )}
         <pre className="inspector-body-pre">{display}</pre>
       </>
@@ -212,51 +201,88 @@ export function InspectorPage({
           <span className="inspector-live-badge"><span className="inspector-live-dot" />Live capture</span>
         </div>
         <div className="inspector-toolbar-right">
-          {httpTunnels.length > 0 && (
+          {inspectable.length > 0 && (
             <select
               className="form-inp inspector-tunnel-select"
-              value={subdomain}
+              value={selectedId}
               onChange={(event) => {
-                setSubdomain(event.target.value);
-                setRequests([]);
-                setSelected(null);
+                setSelectedId(event.target.value);
+                setRequests([]); setSelected(null); setConnections([]);
               }}
             >
-              {httpTunnels.map((tunnel) => <option key={tunnel.id} value={tunnel.subdomain ?? ""}>{tunnel.subdomain ?? ""}</option>)}
+              {inspectable.map((tunnel) => (
+                <option key={tunnel.id} value={tunnel.id}>
+                  {tunnel.tunnelType === "tcp" ? `${tunnelLabel(tunnel)} · TCP` : tunnelLabel(tunnel)}
+                </option>
+              ))}
             </select>
           )}
           <button className="btn-ghost" onClick={fetchList}><i className="ti ti-refresh" /> Refresh</button>
-          <button className="btn-ghost" disabled={clearing || requests.length === 0} onClick={clearRequests}>
+          <button className="btn-ghost" disabled={clearing || (mode === "http" ? requests.length === 0 : connections.length === 0)} onClick={clearAll}>
             <i className="ti ti-trash" /> Clear
           </button>
         </div>
       </div>
 
-      {httpTunnels.length === 0 ? (
+      {inspectable.length === 0 ? (
         <div className="empty">
           <i className="ti ti-plug-connected" />
-          <div className="empty-title">No HTTP tunnels available</div>
+          <div className="empty-title">No tunnels to inspect</div>
           <div className="empty-desc">
-            The traffic inspector captures <strong>HTTP</strong> requests only.
-            Raw TCP sessions forward bytes directly and do not produce request logs.
-            <br /><br />
-            Start an HTTP tunnel from the tunnels page, then return here to inspect live request traffic.
+            Open a tunnel from the tunnels page, then return here. HTTP tunnels show request/response
+            traffic; raw TCP / port tunnels show live connection activity.
           </div>
-          <button className="btn-ghost empty-cta-btn" onClick={onBack}>
-            <i className="ti ti-arrow-left" /> Back to tunnels
-          </button>
+          <button className="btn-ghost empty-cta-btn" onClick={onBack}><i className="ti ti-arrow-left" /> Back to tunnels</button>
         </div>
-      ) : !subdomain ? (
+      ) : !current ? (
         <div className="empty">
           <i className="ti ti-eye-off" />
           <div className="empty-title">No tunnel selected</div>
-          <div className="empty-desc">Choose an HTTP tunnel to review live request traffic.</div>
+          <div className="empty-desc">Choose a tunnel to review its live traffic.</div>
+        </div>
+      ) : mode === "tcp" ? (
+        <div className="section">
+          <div className="section-head">
+            <div className="section-title"><i className="ti ti-plug-connected" /> {connections.length} connection{connections.length !== 1 ? "s" : ""} · {tunnelLabel(current)}</div>
+          </div>
+          <p style={{ padding: "0 18px", margin: "0 0 8px", fontSize: 12, color: "var(--text-3)" }}>
+            Raw TCP forwards bytes directly, so there are no HTTP request logs. This shows live
+            connection activity (source IP, bytes, duration) for the exposed port.
+          </p>
+          {connections.length === 0 ? (
+            <div className="inspector-list-empty" style={{ padding: 28 }}>
+              <i className="ti ti-antenna-bars-1" />
+              <p className="inspector-list-empty-title">Waiting for connections...</p>
+              <p className="inspector-list-empty-copy">Connect to the exposed port to see activity here.</p>
+            </div>
+          ) : (
+            <table className="tbl">
+              <thead><tr><th>Source IP</th><th>Opened</th><th>Duration</th><th>In</th><th>Out</th><th>Status</th></tr></thead>
+              <tbody>
+                {connections.map((c) => (
+                  <tr key={c.id}>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 12.5 }}>{c.remoteIp || "unknown"}</td>
+                    <td style={{ color: "var(--text-3)", fontSize: 12 }}>{new Date(c.openedAt).toLocaleTimeString()}</td>
+                    <td style={{ color: "var(--text-3)", fontSize: 12 }}>{formatDuration(c.openedAt, c.closedAt)}</td>
+                    <td style={{ fontSize: 12 }}>{formatBytes(c.bytesIn)}</td>
+                    <td style={{ fontSize: 12 }}>{formatBytes(c.bytesOut)}</td>
+                    <td>
+                      <div className={`tunnel-status-inline ${c.closedAt === null ? "live" : "offline"}`}>
+                        <span className={`status-dot ${c.closedAt === null ? "dot-green" : "dot-gray"}`} />
+                        {c.closedAt === null ? "Open" : "Closed"}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       ) : (
         <div className="inspector-layout">
           <div className="inspector-list-pane">
             <div className="inspector-list-head">
-              <span className="inspector-subdomain">{subdomain}</span>
+              <span className="inspector-subdomain">{httpKey}</span>
               <span className="inspector-request-count">{requests.length} request{requests.length !== 1 ? "s" : ""}</span>
             </div>
             <div className="inspector-list-scroll">
@@ -287,10 +313,7 @@ export function InspectorPage({
 
           <div className="inspector-detail-pane">
             {!selected ? (
-              <div className="inspector-empty-detail">
-                <i className="ti ti-click" />
-                <p>Select a request to review</p>
-              </div>
+              <div className="inspector-empty-detail"><i className="ti ti-click" /><p>Select a request to review</p></div>
             ) : (
               <>
                 <div className="inspector-detail-head">
@@ -302,15 +325,11 @@ export function InspectorPage({
                         {selected.error ? "ERR" : selected.statusCode ?? "..."}
                       </span>
                     )}
-                    {selected.durationMs !== null && (
-                      <span className="inspector-detail-duration">{selected.durationMs} ms</span>
-                    )}
+                    {selected.durationMs !== null && <span className="inspector-detail-duration">{selected.durationMs} ms</span>}
                   </div>
                   <div className="inspector-detail-actions">
                     {loadingDetail && <i className="ti ti-loader-2 spin" style={{ fontSize: 16, color: "var(--text-3)" }} />}
-                    <button className="btn-ghost" onClick={copyAsCurl} title="Copy as cURL">
-                      <i className="ti ti-terminal" /> Copy cURL
-                    </button>
+                    <button className="btn-ghost" onClick={copyAsCurl} title="Copy as cURL"><i className="ti ti-terminal" /> Copy cURL</button>
                   </div>
                 </div>
 
@@ -322,9 +341,7 @@ export function InspectorPage({
                   ))}
                 </div>
 
-                <div className="inspector-body-scroll">
-                  {renderBody()}
-                </div>
+                <div className="inspector-body-scroll">{renderBody()}</div>
               </>
             )}
           </div>
@@ -333,4 +350,3 @@ export function InspectorPage({
     </div>
   );
 }
-

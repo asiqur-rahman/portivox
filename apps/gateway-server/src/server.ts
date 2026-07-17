@@ -160,6 +160,18 @@ type CapturedRequest = {
   error: string | null;
 };
 
+/** A single public TCP connection to a raw/port tunnel. Raw byte streams can't
+ *  be parsed as requests, so the inspector records connection-level activity. */
+type TcpConnRecord = {
+  id: string;
+  remoteIp: string;
+  openedAt: number;
+  closedAt: number | null;
+  bytesIn: number;
+  bytesOut: number;
+  closeReason: string | null;
+};
+
 class TunnelStore {
   private readonly prisma: PrismaClient | null;
   private readonly ownsPrisma: boolean;
@@ -1305,6 +1317,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
   // ── Traffic Inspector ─────────────────────────────────────────────────────
   // Keyed by subdomain → ring buffer of the most recent captured requests.
   const capturedRequests = new Map<string, CapturedRequest[]>();
+  // Per-tunnel-key ring of raw TCP connection records + a by-connectionId index
+  // for O(1) byte updates from the inbound relay path.
+  const capturedTcpConnections = new Map<string, TcpConnRecord[]>();
+  const tcpConnRecordById = new Map<string, TcpConnRecord>();
   const MAX_INSPECT_PER_TUNNEL = 200;
   const MAX_INSPECT_BODY_BYTES = 64 * 1024; // 64 KB body capture limit
 
@@ -2007,6 +2023,17 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
       const connectionId = randomUUID();
       tcpConnectionsById.set(connectionId, conn);
       connectionIds.add(connectionId);
+      // Inspector: record this connection (raw TCP has no parseable requests, so
+      // we track connection-level activity per tunnel key).
+      const connRecord: TcpConnRecord = { id: connectionId, remoteIp, openedAt: Date.now(), closedAt: null, bytesIn: 0, bytesOut: 0, closeReason: null };
+      {
+        const ring = capturedTcpConnections.get(key) ?? [];
+        ring.unshift(connRecord);
+        if (ring.length > MAX_INSPECT_PER_TUNNEL) ring.length = MAX_INSPECT_PER_TUNNEL;
+        capturedTcpConnections.set(key, ring);
+      }
+      tcpConnRecordById.set(connectionId, connRecord);
+      publishLiveEvent("inspector_changed", usageOwnerId, key);
       // Single backpressure resume timer per connection (guards against
       // spawning overlapping intervals when multiple buffered data events fire
       // after conn.pause()).
@@ -2029,8 +2056,9 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           connectionId,
           dataBase64: Buffer.from(chunk).toString("base64"),
         }));
-        // Usage metering: bytes flowing out to the public peer.
+        // Usage metering + inspector: bytes flowing out to the public peer.
         usage.recordBytes(usageOwnerId, 0, chunk.length);
+        connRecord.bytesOut += chunk.length;
         // Backpressure: if the tunnel client is draining slower than this public
         // peer produces, ws.bufferedAmount backs up in gateway heap. Pause the
         // source until the buffer drains, then resume — bounding memory use.
@@ -2062,6 +2090,13 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
         }
         tcpConnectionsById.delete(connectionId);
         connectionIds.delete(connectionId);
+        // Inspector: finalize the connection record.
+        if (connRecord.closedAt === null) {
+          connRecord.closedAt = Date.now();
+          connRecord.closeReason = reason ?? "closed";
+        }
+        tcpConnRecordById.delete(connectionId);
+        publishLiveEvent("inspector_changed", usageOwnerId, key);
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(encodeWireMessage({ type: "tcp_close", connectionId, reason }));
         }
@@ -2964,8 +2999,10 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
               } else {
                 const inbound = Buffer.from(msg.dataBase64, "base64");
                 conn.write(inbound);
-                // Usage metering: bytes flowing in from the client to the peer.
+                // Usage metering + inspector: bytes flowing in from the client.
                 usage.recordBytes(principal.userId, inbound.length, 0);
+                const rec = tcpConnRecordById.get(msg.connectionId);
+                if (rec) rec.bytesIn += inbound.length;
               }
             }
           }
@@ -3017,6 +3054,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           // captured request/response bodies (up to ~25 MB per subdomain) are
           // pinned forever and accumulate with tunnel churn → unbounded heap.
           capturedRequests.delete(subdomain);
+          capturedTcpConnections.delete(subdomain);
         }
 
         const activeStreamIds = activeStreamsBySocket.get(socket);
@@ -3546,6 +3584,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           publicHost: e.publicTcpHost ?? null,
           publicPort: e.publicTcpPort ?? null,
           accessLink: e.accessLink ?? null,
+          inspectKey: e.tunnelKey,
         }];
       });
 
@@ -3740,6 +3779,7 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
           publicHost: e.publicTcpHost ?? null,
           publicPort: e.publicTcpPort ?? null,
           accessLink: e.accessLink ?? null,
+          inspectKey: e.tunnelKey,
         }];
       });
 
@@ -4690,6 +4730,46 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     }
     capturedRequests.delete(subdomain);
     publishLiveEvent("inspector_changed", tunnelOwner ?? principal.userId, subdomain);
+    return reply.status(204).send();
+  });
+
+  /** GET /api/inspect-tcp/:key — connection-level activity for a raw/port tunnel.
+   *  Raw byte streams have no parseable requests, so we report per-connection
+   *  records (remote IP, bytes in/out, duration, status). */
+  app.get("/api/inspect-tcp/:key", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    if (!hasScope(principal.scopes, "tunnel:read")) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Missing scope tunnel:read" } });
+    }
+    const { key } = req.params as { key: string };
+    // Fail-closed ownership check (mirrors the HTTP inspector).
+    const tunnelOwner = ownershipBySubdomain.get(key);
+    if (!isPlatformAdmin(principal.role) && tunnelOwner !== principal.userId) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
+    }
+    const ring = capturedTcpConnections.get(key) ?? [];
+    return reply.status(200).send({ key, count: ring.length, connections: ring });
+  });
+
+  /** DELETE /api/inspect-tcp/:key — clear the connection ring for a tunnel. */
+  app.delete("/api/inspect-tcp/:key", async (req, reply) => {
+    const principal = await resolvePrincipal(req.headers as Record<string, unknown>);
+    if (!principal) {
+      return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Valid API key or bearer token is required" } });
+    }
+    if (!isPlatformAdmin(principal.role) && !hasScope(principal.scopes, "tunnel:delete")) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Admin role or tunnel:delete scope required" } });
+    }
+    const { key } = req.params as { key: string };
+    const tunnelOwner = ownershipBySubdomain.get(key);
+    if (!isPlatformAdmin(principal.role) && tunnelOwner !== principal.userId) {
+      return reply.status(403).send({ error: { code: "FORBIDDEN", message: "Not your tunnel" } });
+    }
+    capturedTcpConnections.delete(key);
+    publishLiveEvent("inspector_changed", tunnelOwner ?? principal.userId, key);
     return reply.status(204).send();
   });
 
