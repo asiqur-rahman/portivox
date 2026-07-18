@@ -1,4 +1,7 @@
-const CACHE_NAME = "portivox-shell-v1";
+// Bumping this version forces every installed client to drop its old cache —
+// including any previously cached API GET responses (see fetch handler notes
+// below), which otherwise stay stale forever until a hard reload.
+const CACHE_NAME = "portivox-shell-v2";
 const CORE_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/favicon.svg", "/icons.svg"];
 
 self.addEventListener("install", (event) => {
@@ -14,6 +17,12 @@ self.addEventListener("activate", (event) => {
     ).then(() => self.clients.claim()),
   );
 });
+
+// Only the immutable, content-hashed Vite build output belongs in a
+// cache-first strategy — it never changes under a given filename.
+function isImmutableStaticAsset(pathname) {
+  return pathname.startsWith("/assets/");
+}
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
@@ -33,6 +42,18 @@ self.addEventListener("fetch", (event) => {
           return (await cache.match("/index.html")) || Response.error();
         }),
     );
+    return;
+  }
+
+  // Every other request — in particular every `/api/*` call (tunnels, keys,
+  // devices, usage, admin, inspect, /l/, /r/, /healthz, /readyz, etc.) — is
+  // dynamic and must always reach the network. Serving these from Cache
+  // Storage is what caused deletes/updates to appear to "not take effect"
+  // until a hard reload bypassed the service worker. Only intercept (and
+  // cache-first) the content-hashed static build assets and the known shell
+  // files; everything else is left alone so the browser fetches it normally.
+  const isShellFile = CORE_ASSETS.includes(url.pathname);
+  if (!isImmutableStaticAsset(url.pathname) && !isShellFile) {
     return;
   }
 

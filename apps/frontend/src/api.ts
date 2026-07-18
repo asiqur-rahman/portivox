@@ -426,6 +426,10 @@ export class GatewayApi {
     const headers = this.buildHeaders(auth, true, init.headers as Record<string, string> | undefined);
 
     const response = await fetch(`${this.baseUrl}${path}`, {
+      // Belt-and-suspenders against any HTTP-level or intermediary caching of
+      // API responses (the service worker is the primary guard — see
+      // public/sw.js — but this keeps GETs live even without one).
+      cache: "no-store",
       ...init,
       headers,
     });
