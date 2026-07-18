@@ -3959,13 +3959,6 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
 
     const params = req.params as { id: string };
     const id = params.id;
-    const ownsSubdomain = (subdomain: string): boolean => {
-      if (isPlatformAdmin(principal.role)) return true;
-      if (ownershipBySubdomain.get(subdomain) === principal.userId) return true;
-      const rToken = redirectTokenByTunnelKey.get(subdomain);
-      const rEntry = rToken ? redirectByToken.get(rToken) : undefined;
-      return rEntry?.userId === principal.userId;
-    };
     const finish = (): void => {
       publishLiveEvent("tunnels_changed", principal.userId);
       publishLiveEvent("gateway_status_changed");
@@ -3976,22 +3969,40 @@ export function createGatewayServer(config: GatewayRuntimeConfig): GatewayServer
     };
 
     // ── CLI session (live/offline, no DB record) ────────────────────────────
-    // These are tunnels opened via `portivox open` that never reserved a DB
-    // subdomain. The id is `cli_<raw>` / `cli_offline_<raw>` where <raw> is a
-    // subdomain, or `tcpport_<port>` for admin fixed-port TCP tunnels (which use
-    // a synthetic key instead of a subdomain). Removing one terminates the
-    // connected client's tunnel.
+    // Tunnels opened via `portivox open` that never reserved a DB subdomain.
+    // We RESOLVE the id back to the exact session the tunnel LIST emitted it
+    // from — by regenerating the same id from each redirect entry — and use that
+    // entry's real tunnelKey + owner. This guarantees "if it's in your list, you
+    // can remove it", independent of how the internal key was derived (subdomain,
+    // __tcp_port_<n>__, or any legacy scheme). Falls back to the legacy string
+    // reconstruction only when no entry matches (e.g. a registry-only session).
     if (id.startsWith("cli_offline_") || id.startsWith("cli_")) {
       const raw = id.startsWith("cli_offline_")
         ? id.slice("cli_offline_".length)
         : id.slice("cli_".length);
-      const tunnelKey = raw.startsWith("tcpport_")
-        ? `__tcp_port_${raw.slice("tcpport_".length)}__`
-        : raw;
+      let tunnelKey: string | null = null;
+      let ownerId: string | null = null;
+      for (const entry of redirectByToken.values()) {
+        const idBase = entry.subdomain
+          ? entry.subdomain
+          : (entry.publicTcpPort ? `tcpport_${entry.publicTcpPort}` : null);
+        if (idBase && idBase === raw) {
+          tunnelKey = entry.tunnelKey;
+          ownerId = entry.userId ?? null;
+          break;
+        }
+      }
+      if (!tunnelKey) {
+        // Legacy / registry-only fallback: reconstruct the key from the id.
+        tunnelKey = raw.startsWith("tcpport_") ? `__tcp_port_${raw.slice("tcpport_".length)}__` : raw;
+        ownerId = ownershipBySubdomain.get(tunnelKey) ?? null;
+      }
       if (!tunnelKey) {
         return reply.status(404).send({ error: { code: "TUNNEL_NOT_FOUND", message: "Tunnel not found" } });
       }
-      if (!ownsSubdomain(tunnelKey)) {
+      // Owner-or-admin only. ownerId came from the same entry the list showed,
+      // so a tunnel visible in the caller's own list always passes here.
+      if (!isPlatformAdmin(principal.role) && ownerId !== principal.userId) {
         metrics.incrementLabeled("gateway_errors_labeled_total", { endpoint, error_code: "FORBIDDEN" });
         metrics.incrementLabeled("gateway_requests_labeled_total", { endpoint, method: "DELETE", status_class: "4xx" });
         return reply.status(403).send({ error: { code: "FORBIDDEN", message: "This tunnel was opened by a different identity (e.g. the gateway's static/server API key, or another account), so your account can't remove it. Register the client with an API key generated in this account, or ask a platform admin." } });
