@@ -46,7 +46,9 @@ COPY --from=builder /app/prisma                                   ./prisma
 RUN chown -R node:node /app
 
 COPY apps/gateway-server/docker-entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+RUN apk add --no-cache wget \
+  && sed -i 's/\r$//' /entrypoint.sh \
+  && chmod +x /entrypoint.sh
 
 USER node
 

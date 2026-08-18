@@ -14,7 +14,7 @@ services:
       - ROOT_DOMAIN=portivox.braintechsolution.com
       - TZ=Asia/Dhaka
     hostname: portivox-nginx
-    image: asiqurrahman/portivox-nginx:production
+    image: asiqurrahman/portivox-nginx:latest
     labels:
       icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
     restart: unless-stopped
@@ -28,6 +28,16 @@ services:
     networks:
       - portivox-network
     privileged: false
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1/healthz
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
     x-casaos:
       envs:
         - container: ROOT_DOMAIN
@@ -73,7 +83,7 @@ services:
       - REDIS_URL=redis://portivox-redis:6379
       - REDIS_KEY_PREFIX=portivox:registry
       - REGISTRY_LEASE_TTL_MS=30000
-      - CORS_ALLOWED_ORIGINS=https://portivox.braintechsolution.com,http://localhost:8180
+      - CORS_ALLOWED_ORIGINS=https://portivox.braintechsolution.com,http://localhost:8180,http://127.0.0.1:8180
       - CORS_ALLOW_CREDENTIALS=true
       - SECURITY_HEADERS_ENABLED=true
       - IDEMPOTENCY_ENABLED=true
@@ -90,7 +100,7 @@ services:
       - HEARTBEAT_INTERVAL_MS=5000
       - TZ=Asia/Dhaka
     hostname: portivox-gateway
-    image: asiqurrahman/portivox-gateway:production
+    image: asiqurrahman/portivox-gateway:latest
     labels:
       icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
     restart: unless-stopped
@@ -100,14 +110,14 @@ services:
     devices: []
     cap_add: []
     networks:
-      portivox-network:
-        aliases:
-          - gateway
+      - portivox-network
     privileged: false
     healthcheck:
       test:
-        - CMD-SHELL
-        - node -e "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:8080/healthz
       interval: 15s
       timeout: 5s
       retries: 12

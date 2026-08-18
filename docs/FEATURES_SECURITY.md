@@ -30,8 +30,10 @@ This document summarizes what is implemented in this project today, with focus o
   - Linux/macOS: `~/.portivox/client.json`
 
 ### 4) Dockerization
-- Dockerfiles for gateway and client.
-- `docker-compose.yml` for gateway + redis + sample app + client.
+- Dockerfiles for gateway, nginx (SPA), and client.
+- `docker-compose.yml` for nginx + gateway + redis (+ optional demo client).
+- CasaOS import: `casaos-portivox-final.yml` (nginx, gateway, MySQL, Redis).
+- Docker Hub publish: `make push` (`asiqurrahman/portivox-gateway`, `asiqurrahman/portivox-nginx`).
 - Docker smoke test automation script implemented.
 
 ### 5) Test Coverage (Implemented)

@@ -93,7 +93,6 @@ Further reading:
 - Customer security summary: [`docs/SECURITY_SUMMARY.md`](docs/SECURITY_SUMMARY.md)
 - Features and controls: [`docs/FEATURES_SECURITY.md`](docs/FEATURES_SECURITY.md)
 - NGINX / single-domain routing: [`docs/NGINX_SINGLE_SUBDOMAIN.md`](docs/NGINX_SINGLE_SUBDOMAIN.md)
-- Production notes: [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md)
 - npm client publish: [`docs/CLIENT_PUBLISH.md`](docs/CLIENT_PUBLISH.md)
 
 ---
@@ -259,7 +258,7 @@ Import the ready-made compose file. No git clone on the NAS.
 |---|---|
 | Dashboard | `http://<host>:8180` |
 | Tunnel client | `ws://<host>:8180/connect` (or `wss://` behind TLS) |
-| Images | `asiqurrahman/portivox-nginx:production` · `asiqurrahman/portivox-gateway:production` |
+| Images | `asiqurrahman/portivox-nginx:latest` · `asiqurrahman/portivox-gateway:latest` |
 | Data | `/DATA/AppData/portivox/mysql` · `/DATA/AppData/portivox/redis` |
 
 The published gateway image is built with **`DB_PROVIDER=mysql`**.
