@@ -41,12 +41,13 @@ COPY --from=builder /app/package.json                             ./package.json
 # Prisma schema needed by the entrypoint migration step
 COPY --from=builder /app/prisma                                   ./prisma
 
-COPY apps/gateway-server/docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
 # Drop privileges: run as the built-in non-root `node` user so a container
-# escape has a smaller blast radius. chown so the entrypoint can read/generate.
+# escape has a smaller blast radius. chown so the process can read/generate.
 RUN chown -R node:node /app
+
+COPY apps/gateway-server/docker-entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
 USER node
 
 EXPOSE 8080 7000

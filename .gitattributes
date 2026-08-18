@@ -1,0 +1,2 @@
+# Shell scripts copied into Linux images must stay LF, even on Windows checkouts.
+*.sh text eol=lf

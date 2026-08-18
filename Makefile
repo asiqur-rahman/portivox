@@ -1,35 +1,111 @@
-# Portivox / Tunnelix — Docker Compose lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
+#  Portivox — Makefile
 #
-#   make up        Start (or refresh) the stack; build if needed
-#   make rebuild   Force no-cache image rebuild, then recreate containers
-#   make down      Stop and remove containers; keep volumes (Redis data)
-#   make down-v    Stop and remove containers + volumes (wipes redis_data)
+#  Stack management, build, and Docker Hub publish.
 #
-# Optional:
-#   make logs      Follow compose logs
-#   make migrate   Run Prisma migrate deploy inside the gateway container
-#   make ps        Show container status
+#  Services:  nginx · gateway · redis  (+ mysql in CasaOS)
+#  Compose:   docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: up rebuild down down-v logs migrate ps
+# ── Configuration ─────────────────────────────────────────────────────────────
+DOCKER_USER    ?= asiqurrahman
+TAG            ?= production
+GIT_SHA        := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+GATEWAY_IMAGE  := $(DOCKER_USER)/portivox-gateway
+NGINX_IMAGE    := $(DOCKER_USER)/portivox-nginx
+DB_PROVIDER    ?= mysql
 
+COMPOSE        := docker compose
+
+.DEFAULT_GOAL := help
+
+.PHONY: help up down restart rebuild logs \
+        build clean push \
+        migrate ps status
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+help:
+	@echo ""
+	@echo "  Portivox — Docker targets"
+	@echo "  ─────────────────────────────────────────────────────────"
+	@echo ""
+	@echo "  Stack"
+	@echo "    make up              Start nginx + gateway + redis (build if needed)"
+	@echo "    make down            Stop all containers (volumes kept)"
+	@echo "    make restart         Restart all containers"
+	@echo "    make rebuild         No-cache rebuild and recreate containers"
+	@echo "    make ps              Show running containers"
+	@echo "    make status          Show container status + ports"
+	@echo "    make logs            Tail all container logs"
+	@echo "    make logs s=gateway  Tail logs for a single service"
+	@echo ""
+	@echo "  Build"
+	@echo "    make build           Build gateway + nginx images locally"
+	@echo "    make clean           Stop stack, remove volumes + images"
+	@echo ""
+	@echo "  Push to Docker Hub"
+	@echo "    make push            Interactive — shows last version, pick next"
+	@echo "    make push VERSION=x.y.z  Non-interactive"
+	@echo ""
+	@echo "  Database"
+	@echo "    make migrate         Run Prisma migrate deploy (inside gateway)"
+	@echo ""
+	@echo "  Images: $(GATEWAY_IMAGE)  $(NGINX_IMAGE)"
+	@echo "  Git:    $(GIT_SHA)"
+	@echo ""
+
+# ── Stack ─────────────────────────────────────────────────────────────────────
 up:
-	docker compose up -d --build
-
-rebuild:
-	docker compose build --no-cache
-	docker compose up -d --force-recreate
+	$(COMPOSE) up -d --build
 
 down:
-	docker compose down --remove-orphans
+	$(COMPOSE) down --remove-orphans
 
-down-v:
-	docker compose down --remove-orphans --volumes
+restart: down up
+
+rebuild:
+	$(COMPOSE) build --no-cache
+	$(COMPOSE) up -d --force-recreate
 
 logs:
-	docker compose logs -f
-
-migrate:
-	docker compose run --rm gateway node scripts/prisma-runner.cjs migrate deploy
+ifdef s
+	$(COMPOSE) logs -f $(s)
+else
+	$(COMPOSE) logs -f
+endif
 
 ps:
-	docker compose ps
+	$(COMPOSE) ps
+
+status:
+	$(COMPOSE) ps --format "table {{.Name}}\t{{.Service}}\t{{.Status}}\t{{.Ports}}"
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+build:
+	docker build -f apps/gateway-server/Dockerfile \
+		--build-arg DB_PROVIDER=$(DB_PROVIDER) \
+		-t $(GATEWAY_IMAGE):$(TAG) \
+		-t $(GATEWAY_IMAGE):latest \
+		-t $(GATEWAY_IMAGE):$(GIT_SHA) \
+		.
+	docker build -f infra/nginx/Dockerfile \
+		-t $(NGINX_IMAGE):$(TAG) \
+		-t $(NGINX_IMAGE):latest \
+		-t $(NGINX_IMAGE):$(GIT_SHA) \
+		.
+
+# ── Clean ─────────────────────────────────────────────────────────────────────
+clean:
+	$(COMPOSE) down -v --remove-orphans
+	-docker image rm -f \
+		$(GATEWAY_IMAGE):$(TAG) $(GATEWAY_IMAGE):latest $(GATEWAY_IMAGE):$(GIT_SHA) \
+		$(NGINX_IMAGE):$(TAG) $(NGINX_IMAGE):latest $(NGINX_IMAGE):$(GIT_SHA)
+	-docker image prune -f
+
+# ── Push (interactive version picker) ─────────────────────────────────────────
+push:
+	node ops/docker-push.mjs $(if $(VERSION),--version $(VERSION),)
+
+# ── Database ──────────────────────────────────────────────────────────────────
+migrate:
+	$(COMPOSE) run --rm gateway node scripts/prisma-runner.cjs migrate deploy

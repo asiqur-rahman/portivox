@@ -24,7 +24,7 @@ FROM nginx:1.27-alpine AS runner
 
 COPY infra/nginx/nginx.conf    /etc/nginx/nginx.conf.template
 COPY infra/nginx/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh /etc/nginx/nginx.conf.template && chmod +x /entrypoint.sh
 
 COPY --from=frontend-builder /app/apps/frontend/dist /usr/share/nginx/html
 

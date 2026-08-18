@@ -1,0 +1,310 @@
+name: portivox
+services:
+  portivox-nginx:
+    cpu_shares: 90
+    command: []
+    container_name: portivox-nginx
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    depends_on:
+      - portivox-gateway
+    environment:
+      - ROOT_DOMAIN=portivox.braintechsolution.com
+      - TZ=Asia/Dhaka
+    hostname: portivox-nginx
+    image: asiqurrahman/portivox-nginx:production
+    labels:
+      icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
+    restart: unless-stopped
+    volumes: []
+    ports:
+      - target: 80
+        published: "8180"
+        protocol: tcp
+    devices: []
+    cap_add: []
+    networks:
+      - portivox-network
+    privileged: false
+    x-casaos:
+      envs:
+        - container: ROOT_DOMAIN
+          description:
+            en_US: Root domain for wildcard tunnel hostnames. Must match gateway ROOT_DOMAIN. No equals sign.
+        - container: TZ
+          description:
+            en_US: Timezone
+      ports:
+        - container: "80"
+          description:
+            en_US: Web dashboard, API, and WebSocket /connect
+      networks:
+        - container: portivox-network
+          description:
+            en_US: Isolated Portivox bridge network
+
+  portivox-gateway:
+    cpu_shares: 90
+    command: []
+    container_name: portivox-gateway
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    depends_on:
+      - portivox-mysql
+      - portivox-redis
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_PORT=8080
+      - GATEWAY_WS_PORT=7000
+      - ROOT_DOMAIN=portivox.braintechsolution.com
+      - GATEWAY_PUBLIC_BASE_URL=https://portivox.braintechsolution.com
+      - AUTH_REQUIRED=true
+      - AUTH_JWT_SECRET=portivox_jwt_secret_change_me_in_production_32ch
+      - DB_PROVIDER=mysql
+      - DATABASE_URL=mysql://portivox:portivox_change_me@portivox-mysql:3306/portivox
+      - MAX_REQUEST_BODY_BYTES=1048576
+      - TUNNEL_RESPONSE_TIMEOUT_MS=20000
+      - WS_IDLE_TIMEOUT_MS=30000
+      - REGISTRY_BACKEND=redis
+      - REDIS_URL=redis://portivox-redis:6379
+      - REDIS_KEY_PREFIX=portivox:registry
+      - REGISTRY_LEASE_TTL_MS=30000
+      - CORS_ALLOWED_ORIGINS=https://portivox.braintechsolution.com,http://localhost:8180
+      - CORS_ALLOW_CREDENTIALS=true
+      - SECURITY_HEADERS_ENABLED=true
+      - IDEMPOTENCY_ENABLED=true
+      - TCP_TUNNEL_ENABLED=true
+      - TCP_TUNNEL_BIND_HOST=0.0.0.0
+      - TCP_PUBLIC_HOST=portivox.braintechsolution.com
+      - TCP_PUBLIC_PORT_START=19000
+      - TCP_PUBLIC_PORT_END=19099
+      - HTTP_PUBLIC_PORT_MODE=true
+      - IP_PROTECTION_DEFAULT=true
+      - TCP_CONNECTION_RATE_LIMIT=10
+      - API_RATE_LIMIT_READ_PER_MIN=600
+      - API_RATE_LIMIT_WRITE_PER_MIN=300
+      - HEARTBEAT_INTERVAL_MS=5000
+      - TZ=Asia/Dhaka
+    hostname: portivox-gateway
+    image: asiqurrahman/portivox-gateway:production
+    labels:
+      icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
+    restart: unless-stopped
+    volumes: []
+    ports:
+      - "19000-19099:19000-19099/tcp"
+    devices: []
+    cap_add: []
+    networks:
+      portivox-network:
+        aliases:
+          - gateway
+    privileged: false
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "const http=require('node:http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});"
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    x-casaos:
+      envs:
+        - container: ROOT_DOMAIN
+          description:
+            en_US: Root domain tunnels live under. Wildcard DNS must point here.
+        - container: GATEWAY_PUBLIC_BASE_URL
+          description:
+            en_US: Public URL returned in access links. No trailing slash. No equals sign.
+        - container: AUTH_JWT_SECRET
+          description:
+            en_US: JWT signing secret (min 32 characters, no equals sign)
+        - container: DATABASE_URL
+          description:
+            en_US: MySQL URL. Must match MYSQL_USER and MYSQL_PASSWORD. Do not add query params with extra equals signs.
+        - container: CORS_ALLOWED_ORIGINS
+          description:
+            en_US: Comma-separated browser origins allowed to call the API
+        - container: TCP_PUBLIC_HOST
+          description:
+            en_US: Hostname clients use for TCP and public-port tunnels
+        - container: TZ
+          description:
+            en_US: Timezone
+      ports:
+        - container: "19000"
+          description:
+            en_US: TCP and HTTP public-port tunnels (host range 19000-19099)
+      networks:
+        - container: portivox-network
+          description:
+            en_US: Isolated Portivox bridge network
+
+  portivox-mysql:
+    cpu_shares: 90
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    container_name: portivox-mysql
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    environment:
+      - MYSQL_ROOT_PASSWORD=portivox_root_change_me
+      - MYSQL_DATABASE=portivox
+      - MYSQL_USER=portivox
+      - MYSQL_PASSWORD=portivox_change_me
+      - TZ=Asia/Dhaka
+    hostname: portivox-mysql
+    image: mysql:8.0
+    labels:
+      icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /DATA/AppData/portivox/mysql
+        target: /var/lib/mysql
+        bind:
+          create_host_path: true
+    ports: []
+    devices: []
+    cap_add: []
+    networks:
+      - portivox-network
+    privileged: false
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uportivox -pportivox_change_me --silent
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    x-casaos:
+      envs:
+        - container: MYSQL_ROOT_PASSWORD
+          description:
+            en_US: MySQL root password — change before production (no equals sign)
+        - container: MYSQL_DATABASE
+          description:
+            en_US: Database name
+        - container: MYSQL_USER
+          description:
+            en_US: Application username — must match DATABASE_URL
+        - container: MYSQL_PASSWORD
+          description:
+            en_US: Application password — must match DATABASE_URL (no equals sign)
+        - container: TZ
+          description:
+            en_US: Timezone
+      volumes:
+        - container: /var/lib/mysql
+          description:
+            en_US: MySQL data
+      networks:
+        - container: portivox-network
+          description:
+            en_US: Isolated Portivox bridge network
+
+  portivox-redis:
+    cpu_shares: 90
+    command:
+      - redis-server
+      - --appendonly
+      - yes
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    container_name: portivox-redis
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      - TZ=Asia/Dhaka
+    hostname: portivox-redis
+    image: redis:7-alpine
+    labels:
+      icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /DATA/AppData/portivox/redis
+        target: /data
+        bind:
+          create_host_path: true
+    ports: []
+    devices: []
+    cap_add: []
+    networks:
+      - portivox-network
+    privileged: false
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    x-casaos:
+      envs:
+        - container: TZ
+          description:
+            en_US: Timezone
+      volumes:
+        - container: /data
+          description:
+            en_US: Redis AOF persistence
+      networks:
+        - container: portivox-network
+          description:
+            en_US: Isolated Portivox bridge network
+
+networks:
+  portivox-network:
+    name: portivox-network
+    driver: bridge
+
+x-casaos:
+  architectures:
+    - amd64
+  author: Md. Asiqur Rahman Khan
+  category: Networking
+  description:
+    en_US: Self-hosted HTTP and TCP tunnel gateway. Expose local services with a
+      web dashboard, API keys, IP-link protection, and wildcard subdomain routing.
+  developer: asiqur-rahman
+  hostname: ""
+  icon: https://cdn.jsdelivr.net/gh/asiqur-rahman/portivox@main/docs/logo.svg
+  id: com.asiqurrahman.portivox
+  index: /
+  is_uncontrolled: false
+  main: portivox-nginx
+  port_map: "8180"
+  scheme: http
+  store_app_id: portivox
+  tagline:
+    en_US: Self-hosted HTTP and TCP tunnels
+  thumbnail: ""
+  title:
+    custom: ""
+    en_US: Portivox
+  networks:
+    - container: portivox-network
+      description:
+        en_US: Isolated bridge network shared by nginx, gateway, MySQL, and Redis
+  tips:
+    before_install:
+      en_US: Change MYSQL_PASSWORD, MYSQL_ROOT_PASSWORD, DATABASE_URL, and AUTH_JWT_SECRET
+        before production. DATABASE_URL must not contain extra equals signs because
+        CasaOS splits on them. Set ROOT_DOMAIN, GATEWAY_PUBLIC_BASE_URL, CORS_ALLOWED_ORIGINS,
+        and TCP_PUBLIC_HOST to your real domain. Point wildcard DNS (*.your-domain)
+        at this host. Dashboard is on port 8180. Open host TCP 19000-19099 for public-port
+        and TCP tunnels. After first start, register a user in the web UI.

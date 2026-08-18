@@ -8,7 +8,7 @@
 #   make up                       # starts nginx, gateway, redis
 #   make rebuild                  # no-cache rebuild + recreate
 #   make down                     # stop; keep volumes
-#   make down-v                   # stop + wipe volumes (redis_data)
+#   make clean                    # stop + wipe volumes + local images
 #
 # With demo echo app + tunnel client:
 #   docker compose --profile demo up --build
@@ -33,6 +33,7 @@ services:
       dockerfile: infra/nginx/Dockerfile
       network: host
     container_name: portivox-nginx
+    hostname: portivox-nginx
     restart: unless-stopped
     environment:
       ROOT_DOMAIN: "${ROOT_DOMAIN:-portivox.braintechsolution.com}"
@@ -51,6 +52,7 @@ services:
       args:
         DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway
+    hostname: portivox-gateway
     restart: unless-stopped
     environment:
       NODE_ENV:                   "${NODE_ENV:-production}"
@@ -106,6 +108,7 @@ services:
       args:
         DB_PROVIDER: "${DB_PROVIDER:-mysql}"
     container_name: portivox-gateway-2
+    hostname: portivox-gateway-2
     profiles: ["scale"]
     restart: unless-stopped
     environment:
@@ -149,6 +152,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: portivox-redis
+    hostname: portivox-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
@@ -167,6 +171,7 @@ services:
   sample-local-app:
     image: hashicorp/http-echo:1.0.0
     container_name: portivox-sample-local-app
+    hostname: portivox-sample-local-app
     profiles: ["demo"]
     restart: "no"
     command: ["-text=hello-from-docker-local-app", "-listen=:3000"]
@@ -179,6 +184,7 @@ services:
       context: .
       dockerfile: apps/tunnel-client/Dockerfile
     container_name: portivox-client
+    hostname: portivox-client
     profiles: ["demo"]
     restart: "no"
     command:
